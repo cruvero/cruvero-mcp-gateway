@@ -97,7 +97,6 @@ func (s *Sweeper) Stop() {
 	stopCh := s.stopCh
 	doneCh := s.doneCh
 	s.running = false
-	s.stopCh = nil
 	s.mu.Unlock()
 
 	close(stopCh)
