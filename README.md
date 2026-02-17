@@ -60,6 +60,12 @@ For migrating standalone MCP servers to optional gateway integration (registrati
 
 - [docs/MCP-SERVER-FLEET-GATEWAY-INTEGRATION.md](docs/MCP-SERVER-FLEET-GATEWAY-INTEGRATION.md)
 
+## Contributing
+
+Contribution process, branch rules, and required local quality gates are documented in:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+
 ## Repository Layout
 
 ```
