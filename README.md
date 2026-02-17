@@ -54,6 +54,20 @@ Use a repository `.devcontainer` so development and verification run in a reprod
 
 Local-first validation in the devcontainer is required before Argo CD sync or deployment PRs.
 
+## GitHub Actions Standards
+
+Any GitHub Actions workflow in this repository must follow these rules:
+
+- Use `cruvero-org-runners` for `runs-on`.
+- Publish/pull container images from Harbor using org secrets:
+  - `HARBOR_URL`
+  - `HARBOR_TOKEN`
+- Sonar workflows must use org secrets:
+  - `SONAR_HOST_URL`
+  - `SONAR_TOKEN`
+- Sonar workflows must use repo secret:
+  - `SONAR_PROJECT_KEY`
+
 ## MCP Server Fleet Spec
 
 For migrating standalone MCP servers to optional gateway integration (registration, heartbeat, Cruvero registry-managed non-secret settings, minimal containers, Vault-managed secrets, Helm/Argo GitOps), use:

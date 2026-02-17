@@ -617,6 +617,20 @@ Deployment is managed through Argo CD manifests in `deploy/argocd/`, following t
 - Helm sources use `values.yaml` + environment overlay files (for example `values-dev.yaml`).
 - Dev environment enables automated sync first; staging/prod stay gated until explicitly enabled.
 
+### GitHub Actions and Secret Conventions
+
+Any GitHub Actions workflow in this repository must follow these standards:
+
+- Use `cruvero-org-runners` for `runs-on`.
+- Harbor image operations must use org secrets:
+  - `HARBOR_URL`
+  - `HARBOR_TOKEN`
+- Sonar workflows must use org secrets:
+  - `SONAR_HOST_URL`
+  - `SONAR_TOKEN`
+- Sonar workflows must use repo secret:
+  - `SONAR_PROJECT_KEY`
+
 ### Secret Management (Vault Operator)
 
 Application runtime secrets are sourced by Vault operator resources, not committed plaintext Kubernetes Secret manifests:
