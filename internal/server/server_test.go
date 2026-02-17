@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/events"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
@@ -65,6 +66,108 @@ func TestReadyzReturns503WhenNotReady(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+}
+
+func TestReadyzCruveroNeverConnectedNoCacheReturns503(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+	cfg.NATSURL = ""
+
+	srv := New(cfg, testLogger())
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["nats"] != "disconnected" {
+		t.Fatalf("expected nats disconnected, got %+v", payload["nats"])
+	}
+}
+
+func TestReadyzCruveroConnectedReturns200(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+
+	srv := New(cfg, testLogger())
+	manager := events.NewDegradationManager(nil, nil, nil, testLogger())
+	if err := manager.OnReconnect(context.Background()); err != nil {
+		t.Fatalf("set connected state: %v", err)
+	}
+	srv.SetDegradationManager(manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "ok" {
+		t.Fatalf("expected status ok, got %+v", payload["status"])
+	}
+	if payload["nats"] != "connected" {
+		t.Fatalf("expected nats connected, got %+v", payload["nats"])
+	}
+}
+
+func TestReadyzCruveroDegradedWithCacheReturns200AndSettings(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+
+	store := &serverTestConfigStore{
+		keys: []string{"config.server_settings"},
+		values: map[string][]byte{
+			"config.server_settings": []byte(`{"config_version":9,"servers":[{"server_name":"svc-a","effective_settings":{"max_concurrency":4}}]}`),
+		},
+	}
+	manager := events.NewDegradationManager(nil, store, nil, testLogger())
+	if err := manager.LoadCachedConfig(context.Background()); err != nil {
+		t.Fatalf("load cached config: %v", err)
+	}
+
+	srv := New(cfg, testLogger())
+	srv.SetDegradationManager(manager)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "degraded" {
+		t.Fatalf("expected status degraded, got %+v", payload["status"])
+	}
+	if payload["nats"] != "disconnected" {
+		t.Fatalf("expected nats disconnected, got %+v", payload["nats"])
+	}
+	if payload["settings_sync_status"] != "cached" {
+		t.Fatalf("expected settings_sync_status cached, got %+v", payload["settings_sync_status"])
+	}
+	if payload["settings_config_version"] != float64(9) {
+		t.Fatalf("expected settings_config_version 9, got %+v", payload["settings_config_version"])
 	}
 }
 
@@ -335,4 +438,21 @@ func freeNATSPort(t *testing.T) int {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+type serverTestConfigStore struct {
+	keys   []string
+	values map[string][]byte
+}
+
+func (s *serverTestConfigStore) Save(ctx context.Context, key string, value []byte) error {
+	return nil
+}
+
+func (s *serverTestConfigStore) Load(ctx context.Context, key string) ([]byte, error) {
+	return s.values[key], nil
+}
+
+func (s *serverTestConfigStore) Keys(ctx context.Context) ([]string, error) {
+	return append([]string(nil), s.keys...), nil
 }

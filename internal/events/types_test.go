@@ -26,6 +26,15 @@ func TestSubjectForConfig(t *testing.T) {
 	}
 }
 
+func TestSubjectForConfigRequest(t *testing.T) {
+	t.Parallel()
+
+	got := SubjectForConfigRequest("gw-1")
+	if got != "mcpgw.gw-1.config.request" {
+		t.Fatalf("unexpected subject: %q", got)
+	}
+}
+
 func TestEventEnvelopeJSONRoundTrip(t *testing.T) {
 	t.Parallel()
 

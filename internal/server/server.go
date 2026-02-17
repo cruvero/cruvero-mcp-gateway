@@ -39,7 +39,9 @@ type Server struct {
 	cleanupInterval   time.Duration
 	cleanupMaxIdleTTL time.Duration
 	eventsClient      *events.Client
+	eventSubscriber   *events.Subscriber
 	eventPublisher    *events.Publisher
+	degradation       *events.DegradationManager
 }
 
 // New builds a configured HTTP server with middleware and routes.
@@ -80,7 +82,33 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 			srv.eventsClient = natsClient
 			srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
 			policyEngine.SetViolationEventPublisher(srv.eventPublisher)
+
+			subscriber := events.NewSubscriber(natsClient, logger)
+			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimiterStore, logger)
+			serverHandler := events.NewServerConfigHandler(nil, logger)
+			serverSettingsHandler := events.NewServerSettingsConfigHandler(nil, nil, logger)
+			authHandler := events.NewAuthConfigHandler(logger)
+			subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
+			if startErr := subscriber.Start(context.Background()); startErr != nil {
+				logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
+			} else {
+				srv.eventSubscriber = subscriber
+			}
+
+			degradation := events.NewDegradationManager(natsClient, nil, srv.eventSubscriber, logger)
+			natsClient.SetDisconnectHandler(func() {
+				degradation.OnDisconnect()
+			})
+			natsClient.SetReconnectHandler(func() {
+				if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
+					logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
+				}
+			})
+			srv.degradation = degradation
 		}
+	}
+	if cfg != nil && cfg.CruveroEnabled && srv.degradation == nil {
+		srv.degradation = events.NewDegradationManager(nil, nil, nil, logger)
 	}
 
 	srv.proxyPolicyMW = policy.PolicyMiddleware(policyEngine, logger)
@@ -112,6 +140,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	defer func() {
+		if s.eventSubscriber != nil {
+			_ = s.eventSubscriber.Stop()
+		}
 		if s.eventsClient != nil {
 			_ = s.eventsClient.Close()
 		}
@@ -231,7 +262,53 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+
+	if s.cfg != nil && s.cfg.CruveroEnabled {
+		natsStatus := "disconnected"
+		status := "degraded"
+		everConnected := false
+		hasCachedConfig := false
+		settingsSyncStatus := "unknown"
+		settingsConfigVersion := int64(0)
+
+		if s.degradation != nil {
+			switch s.degradation.Status() {
+			case events.DegradationStatusConnected:
+				status = "ok"
+				natsStatus = "connected"
+			case events.DegradationStatusDegraded:
+				status = "degraded"
+			case events.DegradationStatusDisconnected:
+				status = "degraded"
+			}
+			everConnected = s.degradation.EverConnected()
+			hasCachedConfig = s.degradation.HasCachedConfig()
+			settingsSyncStatus = s.degradation.SettingsSyncStatus()
+			settingsConfigVersion = s.degradation.SettingsConfigVersion()
+		}
+
+		payload := map[string]any{
+			"status": status,
+			"nats":   natsStatus,
+		}
+		if settingsSyncStatus != "" {
+			payload["settings_sync_status"] = settingsSyncStatus
+		}
+		if settingsConfigVersion > 0 {
+			payload["settings_config_version"] = settingsConfigVersion
+		}
+
+		if !everConnected && !hasCachedConfig {
+			payload["status"] = "not_ready"
+			writeJSON(w, http.StatusServiceUnavailable, payload)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
@@ -292,4 +369,12 @@ func defaultProfiles(cfg *config.Config) map[string]*types.PolicyProfile {
 		"premium": premium,
 		"admin":   admin,
 	}
+}
+
+// SetDegradationManager overrides server degradation state integration.
+func (s *Server) SetDegradationManager(manager *events.DegradationManager) {
+	if s == nil {
+		return
+	}
+	s.degradation = manager
 }

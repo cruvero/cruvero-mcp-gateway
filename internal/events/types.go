@@ -88,3 +88,12 @@ func SubjectForConfig(gatewayID string, scope string) string {
 	cfgScope := strings.TrimSpace(scope)
 	return fmt.Sprintf("mcpgw.%s.config.%s", gateway, cfgScope)
 }
+
+// SubjectForConfigRequest returns the subject used to request a full config snapshot.
+func SubjectForConfigRequest(gatewayID string) string {
+	gateway := strings.TrimSpace(gatewayID)
+	if gateway == "" {
+		gateway = "unknown"
+	}
+	return fmt.Sprintf("mcpgw.%s.config.request", gateway)
+}
