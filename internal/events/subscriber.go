@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -113,6 +114,53 @@ func (s *Subscriber) Start(ctx context.Context) error {
 	return nil
 }
 
+// LoadCachedConfig loads cached config keys and applies them through registered handlers.
+func (s *Subscriber) LoadCachedConfig(ctx context.Context, configStore ConfigStore) error {
+	if s == nil {
+		return fmt.Errorf("load cached config: subscriber is nil")
+	}
+	if s.client == nil {
+		return fmt.Errorf("load cached config: client is nil")
+	}
+	if configStore == nil {
+		return nil
+	}
+	if ctx == nil {
+		return fmt.Errorf("load cached config: context is nil")
+	}
+
+	keys, err := configStore.Keys(ctx)
+	if err != nil {
+		return fmt.Errorf("load cached config: list keys: %w", err)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		subject := cacheKeyToSubject(s.client.GatewayID(), key)
+		if subject == "" {
+			continue
+		}
+
+		payload, loadErr := configStore.Load(ctx, key)
+		if loadErr != nil {
+			return fmt.Errorf("load cached config: load key %q: %w", key, loadErr)
+		}
+
+		s.mu.RLock()
+		handler := s.handlers[subject]
+		s.mu.RUnlock()
+		if handler == nil {
+			continue
+		}
+
+		if handleErr := handler.Handle(ctx, payload); handleErr != nil {
+			return fmt.Errorf("load cached config: apply key %q: %w", key, handleErr)
+		}
+	}
+
+	return nil
+}
+
 // Stop unsubscribes from all subjects and drains the NATS connection.
 func (s *Subscriber) Stop() error {
 	if s == nil {
@@ -161,5 +209,20 @@ func (s *Subscriber) routeMessage(ctx context.Context, msg *nats.Msg) {
 
 	if err := handler.Handle(ctx, msg.Data); err != nil {
 		s.logger.ErrorContext(ctx, "config handler failed", slog.String("subject", msg.Subject), slog.String("error", err.Error()))
+	}
+}
+
+func cacheKeyToSubject(gatewayID string, key string) string {
+	switch strings.TrimSpace(key) {
+	case configCachePolicyKey:
+		return SubjectForConfig(gatewayID, ConfigScopePolicy)
+	case configCacheServersKey:
+		return SubjectForConfig(gatewayID, ConfigScopeServers)
+	case configCacheServerSettingsKey:
+		return SubjectForConfig(gatewayID, ConfigScopeServerSettings)
+	case configCacheAuthKey:
+		return SubjectForConfig(gatewayID, ConfigScopeAuth)
+	default:
+		return ""
 	}
 }

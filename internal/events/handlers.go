@@ -62,16 +62,12 @@ type serverSettingsUpdater interface {
 	UpdateEffectiveSettings(configVersion int64, settingsByServer map[string]map[string]any) error
 }
 
-type configSaver interface {
-	Save(ctx context.Context, key string, value []byte) error
-}
-
 // PolicyConfigHandler applies policy profile updates.
 type PolicyConfigHandler struct {
 	engine       policyEngineUpdater
 	limiterStore *ratelimit.LimiterStore
 	logger       *slog.Logger
-	configStore  configSaver
+	configStore  ConfigStore
 }
 
 // NewPolicyConfigHandler creates a policy config handler.
@@ -87,7 +83,7 @@ func NewPolicyConfigHandler(engine *policy.Engine, limiterStore *ratelimit.Limit
 }
 
 // SetConfigStore sets an optional config persistence store.
-func (h *PolicyConfigHandler) SetConfigStore(configStore configSaver) {
+func (h *PolicyConfigHandler) SetConfigStore(configStore ConfigStore) {
 	if h == nil {
 		return
 	}
@@ -142,7 +138,7 @@ func (h *PolicyConfigHandler) Handle(ctx context.Context, data []byte) error {
 type ServerConfigHandler struct {
 	registrationService serverConfigUpdater
 	logger              *slog.Logger
-	configStore         configSaver
+	configStore         ConfigStore
 }
 
 // NewServerConfigHandler creates a server config handler.
@@ -154,7 +150,7 @@ func NewServerConfigHandler(registrationService serverConfigUpdater, logger *slo
 }
 
 // SetConfigStore sets an optional config persistence store.
-func (h *ServerConfigHandler) SetConfigStore(configStore configSaver) {
+func (h *ServerConfigHandler) SetConfigStore(configStore ConfigStore) {
 	if h == nil {
 		return
 	}
@@ -200,12 +196,12 @@ func (h *ServerConfigHandler) Handle(ctx context.Context, data []byte) error {
 // ServerSettingsConfigHandler applies versioned non-secret backend settings.
 type ServerSettingsConfigHandler struct {
 	registrationService serverSettingsUpdater
-	configStore         configSaver
+	configStore         ConfigStore
 	logger              *slog.Logger
 }
 
 // NewServerSettingsConfigHandler creates a server settings config handler.
-func NewServerSettingsConfigHandler(registrationService serverSettingsUpdater, configStore configSaver, logger *slog.Logger) *ServerSettingsConfigHandler {
+func NewServerSettingsConfigHandler(registrationService serverSettingsUpdater, configStore ConfigStore, logger *slog.Logger) *ServerSettingsConfigHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
@@ -265,7 +261,7 @@ func (h *ServerSettingsConfigHandler) Handle(ctx context.Context, data []byte) e
 // AuthConfigHandler validates auth config payloads.
 type AuthConfigHandler struct {
 	logger      *slog.Logger
-	configStore configSaver
+	configStore ConfigStore
 }
 
 // NewAuthConfigHandler creates an auth config handler.
@@ -277,7 +273,7 @@ func NewAuthConfigHandler(logger *slog.Logger) *AuthConfigHandler {
 }
 
 // SetConfigStore sets an optional config persistence store.
-func (h *AuthConfigHandler) SetConfigStore(configStore configSaver) {
+func (h *AuthConfigHandler) SetConfigStore(configStore ConfigStore) {
 	if h == nil {
 		return
 	}

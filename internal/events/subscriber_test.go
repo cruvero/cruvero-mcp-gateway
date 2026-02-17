@@ -2,6 +2,8 @@ package events
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -162,10 +164,129 @@ func TestSubscriberStartErrors(t *testing.T) {
 	}
 }
 
+func TestSubscriberLoadCachedConfig(t *testing.T) {
+	t.Parallel()
+
+	port := freePort(t)
+	srv := runNATSServer(t, port)
+	defer srv.Shutdown()
+
+	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-cache")
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	var policyCalls atomic.Int32
+	var serverCalls atomic.Int32
+	subscriber := NewSubscriber(client, nil)
+	subscriber.RegisterGatewaySubjects(
+		ConfigHandlerFunc(func(ctx context.Context, data []byte) error {
+			policyCalls.Add(1)
+			return nil
+		}),
+		ConfigHandlerFunc(func(ctx context.Context, data []byte) error {
+			serverCalls.Add(1)
+			return nil
+		}),
+		nil,
+		nil,
+	)
+
+	store := &mockConfigStore{
+		keys: []string{configCachePolicyKey, configCacheServersKey},
+		values: map[string][]byte{
+			configCachePolicyKey:  []byte(`{"profiles":[{"name":"default","rate_limit":10,"rate_burst":20,"enforcement_mode":"enforce"}]}`),
+			configCacheServersKey: []byte(`{"spiffe_allow_list":["spiffe://cluster-a"]}`),
+		},
+	}
+	if err := subscriber.LoadCachedConfig(context.Background(), store); err != nil {
+		t.Fatalf("load cached config: %v", err)
+	}
+	if policyCalls.Load() != 1 || serverCalls.Load() != 1 {
+		t.Fatalf("expected both handlers to be called once, got policy=%d servers=%d", policyCalls.Load(), serverCalls.Load())
+	}
+}
+
+func TestSubscriberLoadCachedConfigErrors(t *testing.T) {
+	t.Parallel()
+
+	if err := (*Subscriber)(nil).LoadCachedConfig(context.Background(), &mockConfigStore{}); err == nil {
+		t.Fatal("expected error for nil subscriber")
+	}
+
+	subscriber := NewSubscriber(nil, nil)
+	if err := subscriber.LoadCachedConfig(context.Background(), &mockConfigStore{}); err == nil {
+		t.Fatal("expected error for nil client")
+	}
+
+	port := freePort(t)
+	srv := runNATSServer(t, port)
+	defer srv.Shutdown()
+
+	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-cache-errors")
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	subscriber = NewSubscriber(client, nil)
+	if err := subscriber.LoadCachedConfig(nil, &mockConfigStore{}); err == nil {
+		t.Fatal("expected error for nil context")
+	}
+
+	errStore := &mockConfigStore{keysErr: errors.New("boom")}
+	if err := subscriber.LoadCachedConfig(context.Background(), errStore); err == nil {
+		t.Fatal("expected key loading error")
+	}
+
+	store := &mockConfigStore{
+		keys:     []string{configCachePolicyKey},
+		loadErrs: map[string]error{configCachePolicyKey: sql.ErrNoRows},
+	}
+	if err := subscriber.LoadCachedConfig(context.Background(), store); err == nil {
+		t.Fatal("expected key load error")
+	}
+}
+
 // ConfigHandlerFunc adapts a function into a ConfigHandler.
 type ConfigHandlerFunc func(ctx context.Context, data []byte) error
 
 // Handle implements ConfigHandler.
 func (f ConfigHandlerFunc) Handle(ctx context.Context, data []byte) error {
 	return f(ctx, data)
+}
+
+type mockConfigStore struct {
+	keys     []string
+	values   map[string][]byte
+	keysErr  error
+	loadErrs map[string]error
+}
+
+func (m *mockConfigStore) Save(ctx context.Context, key string, value []byte) error {
+	return nil
+}
+
+func (m *mockConfigStore) Load(ctx context.Context, key string) ([]byte, error) {
+	if m.loadErrs != nil {
+		if err, ok := m.loadErrs[key]; ok {
+			return nil, err
+		}
+	}
+	if m.values == nil {
+		return nil, sql.ErrNoRows
+	}
+	value, ok := m.values[key]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return value, nil
+}
+
+func (m *mockConfigStore) Keys(ctx context.Context) ([]string, error) {
+	if m.keysErr != nil {
+		return nil, m.keysErr
+	}
+	return append([]string(nil), m.keys...), nil
 }
