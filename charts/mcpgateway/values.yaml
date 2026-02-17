@@ -77,7 +77,7 @@ config:
 tls:
   enabled: true
   # -- Existing secret that contains tls.crt/tls.key (used when certManager.enabled=false).
-  secretName: ""
+  secretName: "mcpgw-tls"
   certManager:
     enabled: false
     # -- TLS secret name created by cert-manager.
@@ -109,7 +109,7 @@ vault:
 
 secrets:
   # -- Existing Kubernetes Secret name with runtime credentials/settings.
-  existingSecret: ""
+  existingSecret: "mcpgw-runtime"
   # -- Secret key names used for env wiring.
   keys:
     dbURL: MCPGW_DB_URL
