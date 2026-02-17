@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -102,6 +103,31 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// MountRegistrationRoutes mounts registration routes under /v1/registrations with mTLS identity middleware.
+func (s *Server) MountRegistrationRoutes(registrationHandler http.Handler) {
+	if s == nil || registrationHandler == nil {
+		return
+	}
+
+	allowedPrefixes := []string{}
+	if s.cfg != nil {
+		allowedPrefixes = s.cfg.SPIFFEAllowList
+	}
+
+	s.router.Route("/v1/registrations", func(r chi.Router) {
+		r.Use(identity.MTLSMiddleware(allowedPrefixes, s.logger))
+		r.Mount("/", registrationHandler)
+	})
+}
+
+// Handler returns the root HTTP handler for testing and embedding.
+func (s *Server) Handler() http.Handler {
+	if s == nil {
+		return http.NotFoundHandler()
+	}
+	return s.router
 }
 
 func (s *Server) setupRoutes() {

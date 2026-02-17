@@ -91,6 +91,240 @@ func TestServiceRegisterValidationFailure(t *testing.T) {
 	}
 }
 
+func TestServiceRegisterUnauthorizedCaller(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(&mockServerStore{}, &mockAuditStore{}, &config.Config{}, nil)
+
+	_, err := svc.Register(context.Background(), nil, validRegistrationRequest())
+	if err == nil {
+		t.Fatal("expected unauthorized error")
+	}
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestServiceRegisterForbiddenSPIFFE(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(&mockServerStore{}, &mockAuditStore{}, &config.Config{SPIFFEAllowList: []string{"spiffe://other.org"}}, nil)
+
+	_, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest())
+	if err == nil {
+		t.Fatal("expected forbidden error")
+	}
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestServiceRegisterUpdatesExisting(t *testing.T) {
+	t.Parallel()
+
+	updateCalled := false
+	createCalled := false
+	existingCreatedAt := time.Now().Add(-1 * time.Hour).UTC()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return &types.ServerRecord{
+				ID:        "existing-id",
+				SPIFFEID:  spiffeID,
+				CreatedAt: existingCreatedAt,
+			}, nil
+		},
+		updateFn: func(ctx context.Context, record *types.ServerRecord) error {
+			updateCalled = true
+			if record.ID != "existing-id" {
+				t.Fatalf("expected existing id to be reused, got %q", record.ID)
+			}
+			if !record.CreatedAt.Equal(existingCreatedAt) {
+				t.Fatalf("expected existing created_at to be preserved")
+			}
+			return nil
+		},
+		createFn: func(ctx context.Context, record *types.ServerRecord) error {
+			createCalled = true
+			return nil
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{HeartbeatTTL: 500 * time.Millisecond}, nil)
+	resp, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest())
+	if err != nil {
+		t.Fatalf("register update existing: %v", err)
+	}
+	if !updateCalled {
+		t.Fatal("expected update to be called")
+	}
+	if createCalled {
+		t.Fatal("did not expect create to be called")
+	}
+	if resp.HeartbeatInterval != 1 || resp.HeartbeatIntervalSeconds != 1 {
+		t.Fatalf("expected heartbeat interval seconds to clamp to 1, got %+v", resp)
+	}
+}
+
+func TestServiceRegisterCreateWhenLookupReturnsNilRecord(t *testing.T) {
+	t.Parallel()
+
+	createCalled := false
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, nil
+		},
+		createFn: func(ctx context.Context, record *types.ServerRecord) error {
+			createCalled = true
+			return nil
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
+		t.Fatalf("register create from nil lookup record: %v", err)
+	}
+	if !createCalled {
+		t.Fatal("expected create to be called")
+	}
+}
+
+func TestServiceRegisterLookupError(t *testing.T) {
+	t.Parallel()
+
+	lookupErr := errors.New("lookup failure")
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, lookupErr
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	_, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest())
+	if err == nil {
+		t.Fatal("expected lookup error")
+	}
+	if !errors.Is(err, lookupErr) {
+		t.Fatalf("expected wrapped lookup error, got %v", err)
+	}
+}
+
+func TestServiceRegisterCreateError(t *testing.T) {
+	t.Parallel()
+
+	createErr := errors.New("create failure")
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+		createFn: func(ctx context.Context, record *types.ServerRecord) error {
+			return createErr
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	_, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest())
+	if err == nil {
+		t.Fatal("expected create error")
+	}
+	if !errors.Is(err, createErr) {
+		t.Fatalf("expected wrapped create error, got %v", err)
+	}
+}
+
+func TestServiceRegisterUpdateError(t *testing.T) {
+	t.Parallel()
+
+	updateErr := errors.New("update failure")
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return &types.ServerRecord{ID: "existing", SPIFFEID: spiffeID, CreatedAt: time.Now().UTC()}, nil
+		},
+		updateFn: func(ctx context.Context, record *types.ServerRecord) error {
+			return updateErr
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	_, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest())
+	if err == nil {
+		t.Fatal("expected update error")
+	}
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("expected wrapped update error, got %v", err)
+	}
+}
+
+func TestServiceRegisterAuditLogFailureDoesNotFailRequest(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+	auditStore := &mockAuditStore{
+		logFn: func(ctx context.Context, entry *types.AuditEntry) error {
+			return errors.New("audit write failed")
+		},
+	}
+
+	svc := NewService(serverStore, auditStore, &config.Config{}, testRegistrationLogger())
+	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
+		t.Fatalf("register should succeed even if audit logging fails: %v", err)
+	}
+}
+
+func TestServiceRegisterPolicyFromConfig(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+	cfg := &config.Config{
+		RateDefault:  42,
+		RateBurst:    84,
+		HeartbeatTTL: 45 * time.Second,
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, cfg, nil)
+	resp, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest())
+	if err != nil {
+		t.Fatalf("register with custom policy config: %v", err)
+	}
+	if resp.PolicySnapshot == nil {
+		t.Fatal("expected policy snapshot")
+	}
+	if resp.PolicySnapshot.RateLimit != 42 || resp.PolicySnapshot.RateBurst != 84 {
+		t.Fatalf("expected policy values from config, got %+v", resp.PolicySnapshot)
+	}
+	if resp.HeartbeatInterval != 45 || resp.HeartbeatIntervalSeconds != 45 {
+		t.Fatalf("expected heartbeat interval from config, got %+v", resp)
+	}
+}
+
+func TestServiceListFailure(t *testing.T) {
+	t.Parallel()
+
+	listErr := errors.New("list failure")
+	serverStore := &mockServerStore{
+		listFn: func(ctx context.Context, filter types.ServerFilter) ([]types.ServerRecord, error) {
+			return nil, listErr
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	_, err := svc.List(context.Background(), types.ServerFilter{})
+	if err == nil {
+		t.Fatal("expected list error")
+	}
+	if !errors.Is(err, listErr) {
+		t.Fatalf("expected wrapped list error, got %v", err)
+	}
+}
+
 func TestServiceDeregisterByAdmin(t *testing.T) {
 	t.Parallel()
 
@@ -155,6 +389,106 @@ func TestServiceDeregisterUnauthorized(t *testing.T) {
 	}
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+}
+
+func TestServiceDeregisterInvalidID(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(&mockServerStore{}, &mockAuditStore{}, &config.Config{}, nil)
+	err := svc.Deregister(context.Background(), validMTLSIdentity(), " ")
+	if err == nil {
+		t.Fatal("expected invalid request error")
+	}
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	}
+}
+
+func TestServiceDeregisterMissingCaller(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(&mockServerStore{}, &mockAuditStore{}, &config.Config{}, nil)
+	err := svc.Deregister(context.Background(), nil, "server-1")
+	if err == nil {
+		t.Fatal("expected unauthorized error")
+	}
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestServiceDeregisterGetNotFound(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getFn: func(ctx context.Context, id string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	err := svc.Deregister(context.Background(), validMTLSIdentity(), "server-1")
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestServiceDeregisterGetError(t *testing.T) {
+	t.Parallel()
+
+	getErr := errors.New("get failure")
+	serverStore := &mockServerStore{
+		getFn: func(ctx context.Context, id string) (*types.ServerRecord, error) {
+			return nil, getErr
+		},
+	}
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	err := svc.Deregister(context.Background(), validMTLSIdentity(), "server-1")
+	if err == nil {
+		t.Fatal("expected get error")
+	}
+	if !errors.Is(err, getErr) {
+		t.Fatalf("expected wrapped get error, got %v", err)
+	}
+}
+
+func TestServiceDeregisterDeleteError(t *testing.T) {
+	t.Parallel()
+
+	deleteErr := errors.New("delete failure")
+	serverStore := &mockServerStore{
+		getFn: func(ctx context.Context, id string) (*types.ServerRecord, error) {
+			return &types.ServerRecord{ID: id, Name: "svc-alpha", SPIFFEID: validMTLSIdentity().ID}, nil
+		},
+		deleteFn: func(ctx context.Context, id string) error {
+			return deleteErr
+		},
+	}
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	err := svc.Deregister(context.Background(), validMTLSIdentity(), "server-1")
+	if err == nil {
+		t.Fatal("expected delete error")
+	}
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("expected wrapped delete error, got %v", err)
+	}
+}
+
+func validMTLSIdentity() *identitypkg.Identity {
+	return &identitypkg.Identity{Type: identitypkg.IdentityMTLS, ID: "spiffe://example.org/ns/default/sa/server"}
+}
+
+func validRegistrationRequest() RegistrationRequest {
+	return RegistrationRequest{
+		ServiceName: "svc-alpha",
+		Version:     "1.0.0",
+		Listen:      ListenConfig{Host: "svc-alpha.default.svc", Port: 8443, Protocol: "https"},
+		Capabilities: types.Capability{
+			Tools: []string{"tool.alpha"},
+		},
 	}
 }
 

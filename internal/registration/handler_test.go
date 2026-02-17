@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -58,6 +59,23 @@ func TestHandleRegisterInvalidBody(t *testing.T) {
 	}
 }
 
+func TestHandleRegisterMissingIdentity(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockRegistrationService{}, testRegistrationLogger())
+	router := h.Routes()
+
+	body := `{"service_name":"svc-alpha","version":"1.0.0","listen":{"host":"svc-alpha","port":8080,"protocol":"https"},"capabilities":{"tools":["tool.alpha"]}}`
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", rec.Code)
+	}
+}
+
 func TestHandleList(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +106,58 @@ func TestHandleList(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+}
+
+func TestHandleListInvalidFilters(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockRegistrationService{}, testRegistrationLogger())
+	router := h.Routes()
+
+	tests := []string{
+		"/?status=unknown",
+		"/?limit=abc",
+		"/?offset=-1",
+	}
+
+	for _, url := range tests {
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		req = withIdentity(req, &identitypkg.Identity{Type: identitypkg.IdentityMTLS, ID: "spiffe://example.org/ns/default/sa/server", Scopes: []string{identitypkg.ScopeAdmin}})
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for %s, got %d", url, rec.Code)
+		}
+	}
+}
+
+func TestHandleListFilterFields(t *testing.T) {
+	t.Parallel()
+
+	service := &mockRegistrationService{
+		listFn: func(ctx context.Context, filter types.ServerFilter) ([]types.ServerRecord, error) {
+			if filter.Status == nil || *filter.Status != types.StatusPending {
+				t.Fatalf("unexpected status filter: %+v", filter.Status)
+			}
+			if filter.Limit != 5 || filter.Offset != 7 {
+				t.Fatalf("unexpected pagination filter: %+v", filter)
+			}
+			return []types.ServerRecord{}, nil
+		},
+	}
+
+	h := NewHandler(service, testRegistrationLogger())
+	router := h.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=pending&limit=5&offset=7", nil)
+	req = withIdentity(req, &identitypkg.Identity{Type: identitypkg.IdentityMTLS, ID: "spiffe://example.org/ns/default/sa/server", Scopes: []string{identitypkg.ScopeAdmin}})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 }
 
@@ -138,6 +208,39 @@ func TestHandleDeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestHandleDeleteMissingID(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockRegistrationService{}, testRegistrationLogger())
+	router := h.Routes()
+
+	req := httptest.NewRequest(http.MethodDelete, "/%20", nil)
+	req = withIdentity(req, &identitypkg.Identity{Type: identitypkg.IdentityMTLS, ID: "spiffe://example.org/ns/default/sa/server"})
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleDeleteMissingIdentity(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockRegistrationService{}, testRegistrationLogger())
+	router := h.Routes()
+
+	req := httptest.NewRequest(http.MethodDelete, "/server-1", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", rec.Code)
+	}
+}
+
 func TestHandleListRequiresAdminScope(t *testing.T) {
 	t.Parallel()
 
@@ -151,6 +254,56 @@ func TestHandleListRequiresAdminScope(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected status 403, got %d", rec.Code)
+	}
+}
+
+func TestHandlerMapsServiceErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		err        error
+		wantStatus int
+	}{
+		{name: "invalid request", path: "/server-1", err: ErrInvalidRequest, wantStatus: http.StatusBadRequest},
+		{name: "unauthorized", path: "/server-1", err: ErrUnauthorized, wantStatus: http.StatusUnauthorized},
+		{name: "forbidden", path: "/server-1", err: ErrForbidden, wantStatus: http.StatusForbidden},
+		{name: "not found", path: "/server-1", err: ErrNotFound, wantStatus: http.StatusNotFound},
+		{name: "internal", path: "/server-1", err: errors.New("boom"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			service := &mockRegistrationService{
+				deregisterFn: func(ctx context.Context, caller *identitypkg.Identity, id string) error {
+					return tt.err
+				},
+			}
+			h := NewHandler(service, testRegistrationLogger())
+			router := h.Routes()
+
+			req := httptest.NewRequest(http.MethodDelete, tt.path, nil)
+			req = withIdentity(req, &identitypkg.Identity{Type: identitypkg.IdentityMTLS, ID: "spiffe://example.org/ns/default/sa/server"})
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d", tt.wantStatus, rec.Code)
+			}
+		})
+	}
+}
+
+func TestNewHandlerDefaultsLogger(t *testing.T) {
+	t.Parallel()
+
+	h := NewHandler(&mockRegistrationService{}, nil)
+	if h.logger == nil {
+		t.Fatal("expected logger to be initialized")
 	}
 }
 
