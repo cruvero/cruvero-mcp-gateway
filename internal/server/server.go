@@ -29,6 +29,7 @@ type Server struct {
 	logger     *slog.Logger
 	router     chi.Router
 	httpServer *http.Server
+	metricsSrv *http.Server
 	startTime  time.Time
 	ready      atomic.Bool
 
@@ -52,6 +53,7 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 
 	router := chi.NewRouter()
 	router.Use(RequestIDMiddleware)
+	router.Use(MetricsMiddleware)
 	router.Use(LoggingMiddleware(logger))
 	router.Use(RecoveryMiddleware(logger))
 	router.Use(RequestBodyLimitMiddleware(defaultMaxRequestBodyBytes))
@@ -82,11 +84,14 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 			srv.eventsClient = natsClient
 			srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
 			policyEngine.SetViolationEventPublisher(srv.eventPublisher)
+			SetNATSConnected(true)
 
 			subscriber := events.NewSubscriber(natsClient, logger)
 			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimiterStore, logger)
 			serverHandler := events.NewServerConfigHandler(nil, logger)
-			serverSettingsHandler := events.NewServerSettingsConfigHandler(nil, nil, logger)
+			serverSettingsHandler := &metricsServerSettingsHandler{
+				next: events.NewServerSettingsConfigHandler(nil, nil, logger),
+			}
 			authHandler := events.NewAuthConfigHandler(logger)
 			subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
 			if startErr := subscriber.Start(context.Background()); startErr != nil {
@@ -97,9 +102,11 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 
 			degradation := events.NewDegradationManager(natsClient, nil, srv.eventSubscriber, logger)
 			natsClient.SetDisconnectHandler(func() {
+				SetNATSConnected(false)
 				degradation.OnDisconnect()
 			})
 			natsClient.SetReconnectHandler(func() {
+				SetNATSConnected(true)
 				if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
 					logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
 				}
@@ -107,9 +114,19 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 			srv.degradation = degradation
 		}
 	}
+	if srv.eventsClient == nil {
+		SetNATSConnected(false)
+	}
 	if cfg != nil && cfg.CruveroEnabled && srv.degradation == nil {
 		srv.degradation = events.NewDegradationManager(nil, nil, nil, logger)
 	}
+
+	ratelimit.SetRateLimitedObserver(func(clientID string, route string) {
+		ObserveRateLimited(clientID, route)
+	})
+	policy.SetDeniedObserver(func(reason string, tool string) {
+		ObservePolicyDenied(reason, tool)
+	})
 
 	srv.proxyPolicyMW = policy.PolicyMiddleware(policyEngine, logger)
 
@@ -126,6 +143,11 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	metricsAddr := ":9090"
+	if cfg != nil && strings.TrimSpace(cfg.MetricsAddr) != "" {
+		metricsAddr = cfg.MetricsAddr
+	}
+	srv.metricsSrv = StartMetricsServer(metricsAddr)
 
 	return srv
 }
@@ -148,6 +170,14 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	if s.metricsSrv != nil {
+		go func() {
+			if err := s.metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.logger.Error("metrics server failed", slog.String("error", err.Error()))
+			}
+		}()
+	}
+
 	ratelimit.StartCleanup(ctx, s.rateLimiterStore, s.cleanupInterval, s.cleanupMaxIdleTTL)
 
 	shutdownErrCh := make(chan error, 1)
@@ -155,6 +185,11 @@ func (s *Server) Start(ctx context.Context) error {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
+		if s.metricsSrv != nil {
+			if err := s.metricsSrv.Shutdown(shutdownCtx); err != nil {
+				s.logger.Error("metrics shutdown failed", slog.String("error", err.Error()))
+			}
+		}
 		shutdownErrCh <- s.httpServer.Shutdown(shutdownCtx)
 	}()
 
@@ -250,7 +285,6 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) setupRoutes() {
 	s.router.Get("/healthz", s.handleHealth)
 	s.router.Get("/readyz", s.handleReady)
-	s.router.Get("/metrics", s.handleMetrics)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -309,10 +343,6 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "metrics_placeholder"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

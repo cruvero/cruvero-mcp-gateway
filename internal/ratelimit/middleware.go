@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +27,18 @@ const (
 	headerRateLimitReset     = "X-RateLimit-Reset"
 	headerRetryAfter         = "Retry-After"
 )
+
+var (
+	rateLimitObserverMu sync.RWMutex
+	rateLimitObserver   func(clientID string, route string)
+)
+
+// SetRateLimitedObserver sets an optional callback invoked when a request is limited.
+func SetRateLimitedObserver(observer func(clientID string, route string)) {
+	rateLimitObserverMu.Lock()
+	defer rateLimitObserverMu.Unlock()
+	rateLimitObserver = observer
+}
 
 // RateLimitMiddleware enforces per-(client,route) token bucket limits.
 func RateLimitMiddleware(
@@ -80,7 +93,17 @@ func RateLimitMiddleware(
 			if err := json.NewEncoder(w).Encode(payload); err != nil {
 				logger.ErrorContext(r.Context(), "write ratelimit response failed", slog.String("error", err.Error()))
 			}
+			notifyRateLimited(clientID, key.Route)
 		})
+	}
+}
+
+func notifyRateLimited(clientID string, route string) {
+	rateLimitObserverMu.RLock()
+	observer := rateLimitObserver
+	rateLimitObserverMu.RUnlock()
+	if observer != nil {
+		observer(clientID, route)
 	}
 }
 

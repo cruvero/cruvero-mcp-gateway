@@ -9,11 +9,24 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/cruvero/mcp-gateway/internal/identity"
 )
 
 const headerPolicyDecision = "X-Policy-Decision"
+
+var (
+	policyDeniedObserverMu sync.RWMutex
+	policyDeniedObserver   func(reason string, tool string)
+)
+
+// SetDeniedObserver sets an optional callback for denied policy decisions.
+func SetDeniedObserver(observer func(reason string, tool string)) {
+	policyDeniedObserverMu.Lock()
+	defer policyDeniedObserverMu.Unlock()
+	policyDeniedObserver = observer
+}
 
 // PolicyMiddleware evaluates MCP tools/call requests and enforces policy decisions.
 func PolicyMiddleware(engine *Engine, logger *slog.Logger) func(http.Handler) http.Handler {
@@ -55,6 +68,11 @@ func PolicyMiddleware(engine *Engine, logger *slog.Logger) func(http.Handler) ht
 
 			w.Header().Set(headerPolicyDecision, "denied")
 			writePolicyError(w, http.StatusForbidden, "policy denied", decision.Violations)
+			reason := "policy_denied"
+			if len(decision.Violations) > 0 {
+				reason = string(decision.Violations[0].Type)
+			}
+			notifyPolicyDenied(reason, req.ToolName)
 			logger.WarnContext(r.Context(), "policy denied request",
 				slog.String("tool", req.ToolName),
 				slog.String("client_id", req.ClientID),
@@ -64,13 +82,22 @@ func PolicyMiddleware(engine *Engine, logger *slog.Logger) func(http.Handler) ht
 	}
 }
 
+func notifyPolicyDenied(reason string, tool string) {
+	policyDeniedObserverMu.RLock()
+	observer := policyDeniedObserver
+	policyDeniedObserverMu.RUnlock()
+	if observer != nil {
+		observer(reason, tool)
+	}
+}
+
 func parsePolicyRequest(r *http.Request, body []byte) (PolicyRequest, bool) {
 	var envelope struct {
 		Method string `json:"method"`
 		Params struct {
-			Name       string          `json:"name"`
-			Arguments  map[string]any  `json:"arguments"`
-			Schema     json.RawMessage `json:"schema"`
+			Name        string          `json:"name"`
+			Arguments   map[string]any  `json:"arguments"`
+			Schema      json.RawMessage `json:"schema"`
 			InputSchema json.RawMessage `json:"input_schema"`
 		} `json:"params"`
 	}

@@ -8,15 +8,16 @@ import (
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/store"
 )
 
 // Sweeper periodically transitions stale/expired registrations.
 type Sweeper struct {
-	store  store.ServerStore
-	index  *CapabilityIndex
-	config *config.Config
-	logger *slog.Logger
+	store     store.ServerStore
+	index     *CapabilityIndex
+	config    *config.Config
+	logger    *slog.Logger
 	publisher LifecycleEventPublisher
 
 	mu      sync.Mutex
@@ -148,6 +149,8 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				)
 				continue
 			}
+			servermetrics.AddActiveRegistrations(server.Status.String(), -1)
+			servermetrics.AddActiveRegistrations(nextStatus.String(), 1)
 			if s.publisher != nil {
 				if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
 					s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))
@@ -185,6 +188,8 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				)
 				continue
 			}
+			servermetrics.AddActiveRegistrations(server.Status.String(), -1)
+			servermetrics.AddActiveRegistrations(nextStatus.String(), 1)
 			if s.publisher != nil {
 				if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
 					s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))

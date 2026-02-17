@@ -14,6 +14,7 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	identitypkg "github.com/cruvero/mcp-gateway/internal/identity"
+	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
@@ -153,6 +154,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 	}
 
 	existing, err := s.serverStore.GetBySPIFFEID(ctx, caller.ID)
+	created := false
 	switch {
 	case err == nil && existing != nil:
 		record.ID = existing.ID
@@ -164,12 +166,17 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		if createErr := s.serverStore.Create(ctx, record); createErr != nil {
 			return nil, fmt.Errorf("register: create registration: %w", createErr)
 		}
+		created = true
 	case err != nil:
 		return nil, fmt.Errorf("register: lookup by spiffe id: %w", err)
 	default:
 		if createErr := s.serverStore.Create(ctx, record); createErr != nil {
 			return nil, fmt.Errorf("register: create registration: %w", createErr)
 		}
+		created = true
+	}
+	if created {
+		servermetrics.AddActiveRegistrations(record.Status.String(), 1)
 	}
 
 	s.logAudit(ctx, &types.AuditEntry{
@@ -235,6 +242,7 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 	if err := s.serverStore.Delete(ctx, id); err != nil {
 		return fmt.Errorf("deregister: delete registration: %w", err)
 	}
+	servermetrics.AddActiveRegistrations(record.Status.String(), -1)
 
 	s.logAudit(ctx, &types.AuditEntry{
 		EventType:  "server.deregistered",

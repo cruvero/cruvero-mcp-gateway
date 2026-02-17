@@ -204,7 +204,7 @@ func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 	}
 }
 
-func TestMetricsPlaceholderRoute(t *testing.T) {
+func TestMetricsNotExposedOnMainRouter(t *testing.T) {
 	t.Parallel()
 
 	srv := New(baseConfig(), testLogger())
@@ -213,8 +213,8 @@ func TestMetricsPlaceholderRoute(t *testing.T) {
 
 	srv.router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
 	}
 }
 
@@ -396,6 +396,7 @@ func TestWriteJSONEncodeErrorPath(t *testing.T) {
 func baseConfig() *config.Config {
 	return &config.Config{
 		ListenAddr:       ":0",
+		MetricsAddr:      "127.0.0.1:0",
 		DBURL:            "postgres://db",
 		RateDefault:      10,
 		RateBurst:        20,

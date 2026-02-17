@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 )
 
 // ErrCircuitOpen is returned when calls are short-circuited while the breaker is open.
@@ -40,12 +42,14 @@ func NewCircuitBreaker(name string, threshold int, timeout time.Duration) *Circu
 		timeout = time.Second
 	}
 
-	return &CircuitBreaker{
+	breaker := &CircuitBreaker{
 		name:      name,
 		state:     StateClosed,
 		threshold: threshold,
 		timeout:   timeout,
 	}
+	servermetrics.SetCircuitBreakerState(name, string(StateClosed))
+	return breaker
 }
 
 // Execute runs fn according to circuit state rules.
@@ -69,6 +73,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		}
 		// Transition to half-open and allow a single probe call while lock is held.
 		cb.state = StateHalfOpen
+		servermetrics.SetCircuitBreakerState(cb.name, string(cb.state))
 	case StateHalfOpen:
 		// Keep lock held so only one probe request can run.
 	case StateClosed:
@@ -89,6 +94,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 		cb.state = StateOpen
 		cb.failures = cb.threshold
 		cb.lastFailure = time.Now()
+		servermetrics.SetCircuitBreakerState(cb.name, string(cb.state))
 		cb.mu.Unlock()
 		return err
 	}
@@ -96,6 +102,7 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 	cb.state = StateClosed
 	cb.failures = 0
 	cb.lastFailure = time.Time{}
+	servermetrics.SetCircuitBreakerState(cb.name, string(cb.state))
 	cb.mu.Unlock()
 	return nil
 }
@@ -115,6 +122,7 @@ func (cb *CircuitBreaker) executeClosed(ctx context.Context, fn func() error) er
 		if cb.failures >= cb.threshold {
 			cb.state = StateOpen
 			cb.lastFailure = time.Now()
+			servermetrics.SetCircuitBreakerState(cb.name, string(cb.state))
 		}
 		return err
 	}
@@ -146,6 +154,7 @@ func (cb *CircuitBreaker) Reset() {
 	cb.state = StateClosed
 	cb.failures = 0
 	cb.lastFailure = time.Time{}
+	servermetrics.SetCircuitBreakerState(cb.name, string(cb.state))
 }
 
 // Failures returns the current failure count.

@@ -15,6 +15,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/resilience"
+	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
@@ -99,6 +100,9 @@ func NewRouter(
 
 // Route resolves a tool to a backend and forwards tools/call.
 func (r *Router) Route(ctx context.Context, toolName string, args map[string]any) (*ToolResult, error) {
+	start := time.Now()
+	backendLabel := "none"
+
 	if r == nil || r.index == nil {
 		return nil, fmt.Errorf("route tool: router index is not initialized")
 	}
@@ -109,19 +113,32 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 
 	candidates := r.index.LookupTool(name)
 	if len(candidates) == 0 {
+		servermetrics.ObserveToolCall(name, backendLabel, "not_found", time.Since(start))
 		return nil, fmt.Errorf("route tool: %w: %s", ErrToolNotFound, name)
 	}
 
 	selected := r.strategy.Select(candidates)
 	if selected == nil {
+		servermetrics.ObserveToolCall(name, backendLabel, "not_found", time.Since(start))
 		return nil, fmt.Errorf("route tool: %w: %s", ErrToolNotFound, name)
+	}
+	backendLabel = strings.TrimSpace(selected.Name)
+	if backendLabel == "" {
+		backendLabel = strings.TrimSpace(selected.ID)
 	}
 
 	client := r.GetOrCreateClient(*selected)
 	result, err := client.CallTool(ctx, name, args)
 	if err != nil {
+		errorType := "upstream_call"
+		if errors.Is(err, resilience.ErrCircuitOpen) {
+			errorType = "circuit_open"
+		}
+		servermetrics.ObserveUpstreamError(backendLabel, errorType)
+		servermetrics.ObserveToolCall(name, backendLabel, "error", time.Since(start))
 		return nil, fmt.Errorf("route tool: backend %s: %w", selected.ID, err)
 	}
+	servermetrics.ObserveToolCall(name, backendLabel, "success", time.Since(start))
 
 	return result, nil
 }
