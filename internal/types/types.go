@@ -98,3 +98,44 @@ type HealthStatus struct {
 	RegisteredServers int    `json:"registered_servers"`
 	NATSConnected     bool   `json:"nats_connected"`
 }
+
+// APIKey is a persisted API key lookup and verification record.
+type APIKey struct {
+	ID            string     `json:"id"`
+	KeyLookupHash string     `json:"key_lookup_hash"`
+	KeyBcryptHash string     `json:"key_bcrypt_hash"`
+	Name          string     `json:"name"`
+	Scopes        []string   `json:"scopes"`
+	ClientID      string     `json:"client_id"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// AuditEntry is a persisted security and policy audit event.
+type AuditEntry struct {
+	ID         string         `json:"id"`
+	EventType  string         `json:"event_type"`
+	ClientID   string         `json:"client_id"`
+	ServerName string         `json:"server_name"`
+	Details    map[string]any `json:"details"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+// ServerFilter defines optional filtering for server listing queries.
+type ServerFilter struct {
+	Status      *ServerStatus `json:"status"`
+	NamePattern string        `json:"name_pattern"`
+	Limit       int           `json:"limit"`
+	Offset      int           `json:"offset"`
+}
+
+// AuditFilter defines optional filtering for audit log queries.
+type AuditFilter struct {
+	EventType  string     `json:"event_type"`
+	ClientID   string     `json:"client_id"`
+	ServerName string     `json:"server_name"`
+	Since      *time.Time `json:"since"`
+	Until      *time.Time `json:"until"`
+	Limit      int        `json:"limit"`
+	Offset     int        `json:"offset"`
+}

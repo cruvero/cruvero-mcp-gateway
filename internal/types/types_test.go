@@ -108,3 +108,61 @@ func TestPolicyProfileAndHealthStatusJSON(t *testing.T) {
 		t.Fatalf("marshal health status: %v", err)
 	}
 }
+
+func TestAPIKeyAuditAndFilterJSON(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	status := StatusActive
+
+	apiKey := APIKey{
+		ID:            "key-1",
+		KeyLookupHash: "lookup-hash",
+		KeyBcryptHash: "bcrypt-hash",
+		Name:          "integration-key",
+		Scopes:        []string{"read", "write"},
+		ClientID:      "client-1",
+		ExpiresAt:     &now,
+		CreatedAt:     now,
+	}
+	if _, err := json.Marshal(apiKey); err != nil {
+		t.Fatalf("marshal api key: %v", err)
+	}
+
+	auditEntry := AuditEntry{
+		ID:         "audit-1",
+		EventType:  "auth.success",
+		ClientID:   "client-1",
+		ServerName: "alpha",
+		Details: map[string]any{
+			"tool": "safe.tool",
+		},
+		CreatedAt: now,
+	}
+	if _, err := json.Marshal(auditEntry); err != nil {
+		t.Fatalf("marshal audit entry: %v", err)
+	}
+
+	serverFilter := ServerFilter{
+		Status:      &status,
+		NamePattern: "alp%",
+		Limit:       10,
+		Offset:      5,
+	}
+	if _, err := json.Marshal(serverFilter); err != nil {
+		t.Fatalf("marshal server filter: %v", err)
+	}
+
+	auditFilter := AuditFilter{
+		EventType:  "policy.deny",
+		ClientID:   "client-2",
+		ServerName: "beta",
+		Since:      &now,
+		Until:      &now,
+		Limit:      50,
+		Offset:     10,
+	}
+	if _, err := json.Marshal(auditFilter); err != nil {
+		t.Fatalf("marshal audit filter: %v", err)
+	}
+}
