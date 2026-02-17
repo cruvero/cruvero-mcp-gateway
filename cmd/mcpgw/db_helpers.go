@@ -10,12 +10,14 @@ import (
 	"strings"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/events"
 	storepkg "github.com/cruvero/mcp-gateway/internal/store"
 )
 
 var (
 	loadServerStoreFunc           = loadServerStore
 	loadAPIKeyStoreFunc           = loadAPIKeyStore
+	loadConfigStoreFunc           = loadConfigStore
 	stdin               io.Reader = os.Stdin
 )
 
@@ -45,6 +47,20 @@ func loadAPIKeyStore(ctx context.Context) (storepkg.APIKeyStore, func() error, e
 	}
 
 	return storepkg.NewPostgresAPIKeyStore(db), db.Close, nil
+}
+
+func loadConfigStore(ctx context.Context) (events.ConfigStore, func() error, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config store: load config: %w", err)
+	}
+
+	db, err := openDBFunc(ctx, cfg.DBURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load config store: open database: %w", err)
+	}
+
+	return events.NewPostgresConfigStore(db), db.Close, nil
 }
 
 func confirmAction(prompt string, force bool) (bool, error) {
