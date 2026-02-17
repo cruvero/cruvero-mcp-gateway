@@ -74,9 +74,7 @@ func collectStrings(value any, out *[]string) {
 		*out = append(*out, typed)
 		return
 	case []string:
-		for _, item := range typed {
-			*out = append(*out, item)
-		}
+		*out = append(*out, typed...)
 		return
 	case []any:
 		for _, item := range typed {

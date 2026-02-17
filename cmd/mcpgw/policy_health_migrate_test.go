@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -209,5 +210,29 @@ func TestMigrateNoChange(t *testing.T) {
 	}
 	if !strings.Contains(outBuf.String(), "no migrations to apply") {
 		t.Fatalf("expected no-change output, got %q", outBuf.String())
+	}
+}
+
+func TestValidateHealthBaseURL(t *testing.T) {
+	t.Parallel()
+
+	if err := validateHealthBaseURL(nil); err == nil {
+		t.Fatal("expected error for nil URL")
+	}
+
+	invalidScheme, err := url.Parse("ftp://example.com")
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	if err := validateHealthBaseURL(invalidScheme); err == nil {
+		t.Fatal("expected error for unsupported scheme")
+	}
+
+	withUserInfo, err := url.Parse("https://user:pass@example.com")
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	if err := validateHealthBaseURL(withUserInfo); err == nil {
+		t.Fatal("expected error for URL with user info")
 	}
 }

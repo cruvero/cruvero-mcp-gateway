@@ -28,8 +28,9 @@ type CertBundle struct {
 	ServerCert []byte `json:"server_cert"`
 	ServerKey  []byte `json:"server_key"`
 	ClientCert []byte `json:"client_cert"`
-	ClientKey  []byte `json:"client_key"`
-	SPIFFEID   string `json:"spiffe_id"`
+	// #nosec G117 -- test fixture key material for ephemeral certificates.
+	ClientKey []byte `json:"client_key"`
+	SPIFFEID  string `json:"spiffe_id"`
 }
 
 // GenerateTestCerts generates CA, server, and client certificates for mTLS test fixtures.
@@ -92,6 +93,9 @@ func generateLeafCert(t *testing.T, caCert *x509.Certificate, caKey *rsa.Private
 	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	mustNoErr(t, err, "generate leaf key")
 
+	serialBytes := big.NewInt(serial).Bytes()
+	subjectKeyID := append([]byte{1, 2, 3}, serialBytes...)
+
 	tpl := &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
 		Subject: pkix.Name{
@@ -104,7 +108,7 @@ func generateLeafCert(t *testing.T, caCert *x509.Certificate, caKey *rsa.Private
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
 		DNSNames:     []string{"localhost"},
 		URIs:         []*url.URL{},
-		SubjectKeyId: []byte{1, 2, 3, byte(serial)},
+		SubjectKeyId: subjectKeyID,
 	}
 
 	if client {

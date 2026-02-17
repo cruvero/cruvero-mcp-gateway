@@ -7,11 +7,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
+	"database/sql"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/auth"
 	"github.com/cruvero/mcp-gateway/internal/config"
@@ -131,6 +133,10 @@ func TestMalformedJSON(t *testing.T) {
 func TestOversizedBody(t *testing.T) {
 	middleware := server.RequestBodyLimitMiddleware(1024)
 	h := middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 

@@ -9,6 +9,7 @@ import (
 	"github.com/lib/pq"
 )
 
+// #nosec G101 -- column names are not credentials.
 const apiKeyColumns = "id, key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, expires_at, created_at"
 
 // PostgresAPIKeyStore is a Postgres-backed implementation of APIKeyStore.
@@ -76,7 +77,7 @@ func (s *PostgresAPIKeyStore) List(ctx context.Context) ([]types.APIKey, error) 
 	if err != nil {
 		return nil, fmt.Errorf("api key store: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	keys := make([]types.APIKey, 0)
 	for rows.Next() {

@@ -105,38 +105,37 @@ func (s *PostgresServerStore) GetBySPIFFEID(ctx context.Context, spiffeID string
 
 // List returns server records filtered by status and/or name pattern.
 func (s *PostgresServerStore) List(ctx context.Context, filter types.ServerFilter) ([]types.ServerRecord, error) {
-	query := `SELECT ` + serverColumns + ` FROM mcp_servers`
-	args := make([]any, 0, 4)
-	conditions := make([]string, 0, 2)
+	const query = `
+SELECT ` + serverColumns + `
+FROM mcp_servers
+WHERE ($1::text IS NULL OR status = $1)
+  AND ($2::text IS NULL OR name ILIKE $2)
+ORDER BY created_at DESC
+LIMIT $3
+OFFSET $4
+`
 
-	if filter.Status != nil {
-		args = append(args, filter.Status.String())
-		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
-	}
-	if strings.TrimSpace(filter.NamePattern) != "" {
-		args = append(args, filter.NamePattern)
-		conditions = append(conditions, fmt.Sprintf("name ILIKE $%d", len(args)))
-	}
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query += " ORDER BY created_at DESC"
-
+	limit := int64(9223372036854775807)
 	if filter.Limit > 0 {
-		args = append(args, filter.Limit)
-		query += fmt.Sprintf(" LIMIT $%d", len(args))
+		limit = int64(filter.Limit)
 	}
+	offset := int64(0)
 	if filter.Offset > 0 {
-		args = append(args, filter.Offset)
-		query += fmt.Sprintf(" OFFSET $%d", len(args))
+		offset = int64(filter.Offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(
+		ctx,
+		query,
+		optionalServerStatus(filter.Status),
+		optionalServerNamePattern(filter.NamePattern),
+		limit,
+		offset,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("server store: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	records := make([]types.ServerRecord, 0)
 	for rows.Next() {
@@ -151,6 +150,20 @@ func (s *PostgresServerStore) List(ctx context.Context, filter types.ServerFilte
 	}
 
 	return records, nil
+}
+
+func optionalServerStatus(status *types.ServerStatus) any {
+	if status == nil {
+		return nil
+	}
+	return status.String()
+}
+
+func optionalServerNamePattern(namePattern string) any {
+	if strings.TrimSpace(namePattern) == "" {
+		return nil
+	}
+	return namePattern
 }
 
 // Update updates all mutable server fields.
@@ -244,7 +257,7 @@ ORDER BY last_heartbeat ASC
 	if err != nil {
 		return nil, fmt.Errorf("server store: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanServerRows(rows)
 }
@@ -267,7 +280,7 @@ ORDER BY last_heartbeat ASC
 	if err != nil {
 		return nil, fmt.Errorf("server store: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanServerRows(rows)
 }

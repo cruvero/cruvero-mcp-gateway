@@ -19,9 +19,8 @@ type TLSConfig struct {
 
 // BuildServerTLSConfig builds a TLS config for inbound server mTLS.
 func BuildServerTLSConfig(cfg TLSConfig) (*tls.Config, error) {
-	minVersion := cfg.MinVersion
-	if minVersion == 0 {
-		minVersion = tls.VersionTLS13
+	if _, err := normalizeTLSMinVersion(cfg.MinVersion); err != nil {
+		return nil, fmt.Errorf("build server tls config: %w", err)
 	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
@@ -43,7 +42,7 @@ func BuildServerTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 	}
 
 	return &tls.Config{
-		MinVersion:   minVersion,
+		MinVersion:   tls.VersionTLS13,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    clientCAPool,
 		Certificates: []tls.Certificate{cert},
@@ -52,9 +51,8 @@ func BuildServerTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 
 // BuildClientTLSConfig builds a TLS config for outbound client TLS/mTLS.
 func BuildClientTLSConfig(cfg TLSConfig) (*tls.Config, error) {
-	minVersion := cfg.MinVersion
-	if minVersion == 0 {
-		minVersion = tls.VersionTLS13
+	if _, err := normalizeTLSMinVersion(cfg.MinVersion); err != nil {
+		return nil, fmt.Errorf("build client tls config: %w", err)
 	}
 
 	caPath := strings.TrimSpace(cfg.CABundlePath)
@@ -71,7 +69,7 @@ func BuildClientTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 	}
 
 	tlsConfig := &tls.Config{
-		MinVersion: minVersion,
+		MinVersion: tls.VersionTLS13,
 		RootCAs:    rootPool,
 	}
 
@@ -92,6 +90,7 @@ func LoadCertPool(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("load cert pool: path is required")
 	}
 
+	// #nosec G304 -- certificate paths come from trusted process configuration.
 	pemData, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("load cert pool: read %s: %w", path, err)
@@ -103,4 +102,14 @@ func LoadCertPool(path string) (*x509.CertPool, error) {
 	}
 
 	return pool, nil
+}
+
+func normalizeTLSMinVersion(minVersion uint16) (uint16, error) {
+	if minVersion == 0 {
+		return tls.VersionTLS13, nil
+	}
+	if minVersion < tls.VersionTLS13 {
+		return 0, fmt.Errorf("minimum TLS version must be TLS 1.3 or newer")
+	}
+	return minVersion, nil
 }

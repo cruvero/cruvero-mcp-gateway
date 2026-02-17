@@ -59,9 +59,9 @@ func TestPostgresAuditStoreQuery(t *testing.T) {
 	since := now.Add(-1 * time.Hour)
 	until := now.Add(1 * time.Hour)
 
-	expectedQuery := "SELECT " + auditColumns + " FROM audit_log WHERE event_type = $1 AND client_id = $2 AND server_name = $3 AND created_at >= $4 AND created_at <= $5 ORDER BY created_at DESC LIMIT $6 OFFSET $7"
+	expectedQuery := "SELECT " + auditColumns + " FROM audit_log WHERE ($1::text IS NULL OR event_type = $1) AND ($2::text IS NULL OR client_id = $2) AND ($3::text IS NULL OR server_name = $3) AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz) AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz) ORDER BY created_at DESC LIMIT $6 OFFSET $7"
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
-		WithArgs("policy.deny", "client-1", "alpha", since, until, 25, 10).
+		WithArgs("policy.deny", "client-1", "alpha", since, until, int64(25), int64(10)).
 		WillReturnRows(sqlmock.NewRows(auditColumnNames).AddRow(
 			"audit-1",
 			"policy.deny",
@@ -96,8 +96,9 @@ func TestPostgresAuditStoreQueryNoFilterAndErrors(t *testing.T) {
 	s := NewPostgresAuditStore(db)
 	now := fixedTime()
 
-	expectedNoFilterQuery := "SELECT " + auditColumns + " FROM audit_log ORDER BY created_at DESC"
+	expectedNoFilterQuery := "SELECT " + auditColumns + " FROM audit_log WHERE ($1::text IS NULL OR event_type = $1) AND ($2::text IS NULL OR client_id = $2) AND ($3::text IS NULL OR server_name = $3) AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz) AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz) ORDER BY created_at DESC LIMIT $6 OFFSET $7"
 	mock.ExpectQuery(regexp.QuoteMeta(expectedNoFilterQuery)).
+		WithArgs(nil, nil, nil, nil, nil, int64(9223372036854775807), int64(0)).
 		WillReturnRows(sqlmock.NewRows(auditColumnNames).AddRow(
 			"audit-1",
 			"auth.success",
@@ -116,6 +117,7 @@ func TestPostgresAuditStoreQueryNoFilterAndErrors(t *testing.T) {
 	}
 
 	mock.ExpectQuery(regexp.QuoteMeta(expectedNoFilterQuery)).
+		WithArgs(nil, nil, nil, nil, nil, int64(9223372036854775807), int64(0)).
 		WillReturnError(errors.New("query failed"))
 
 	_, err = s.Query(context.Background(), types.AuditFilter{})

@@ -10,19 +10,27 @@ import (
 type ViolationType string
 
 const (
-	ViolationDenylist         ViolationType = "denylist"
+	// ViolationDenylist indicates the requested tool matched a denylist entry.
+	ViolationDenylist ViolationType = "denylist"
+	// ViolationDangerousPattern indicates nested string arguments matched a dangerous pattern.
 	ViolationDangerousPattern ViolationType = "dangerous_pattern"
-	ViolationSchemaViolation  ViolationType = "schema_violation"
-	ViolationAllowlist        ViolationType = "allowlist"
+	// ViolationSchemaViolation indicates request arguments failed schema validation.
+	ViolationSchemaViolation ViolationType = "schema_violation"
+	// ViolationAllowlist indicates the requested tool was not present in the allowlist.
+	ViolationAllowlist ViolationType = "allowlist"
 )
 
 // ViolationSeverity ranks policy violation impact.
 type ViolationSeverity string
 
 const (
-	SeverityLow      ViolationSeverity = "low"
-	SeverityMedium   ViolationSeverity = "medium"
-	SeverityHigh     ViolationSeverity = "high"
+	// SeverityLow indicates informational or low-impact violations.
+	SeverityLow ViolationSeverity = "low"
+	// SeverityMedium indicates violations that should be reviewed.
+	SeverityMedium ViolationSeverity = "medium"
+	// SeverityHigh indicates high-risk violations.
+	SeverityHigh ViolationSeverity = "high"
+	// SeverityCritical indicates immediately dangerous violations.
 	SeverityCritical ViolationSeverity = "critical"
 )
 

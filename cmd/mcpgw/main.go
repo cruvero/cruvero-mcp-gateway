@@ -30,7 +30,7 @@ var (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		_, _ = fmt.Fprintln(stderr, err.Error())
+		_, _ = fmt.Fprintln(stderr, err)
 		os.Exit(1)
 	}
 }

@@ -308,7 +308,7 @@ func TestStartErrors(t *testing.T) {
 	}
 
 	srv := New(baseConfig(), testLogger())
-	if err := srv.Start(nil); err == nil {
+	if err := srv.Start(nilContext()); err == nil {
 		t.Fatal("expected error when context is nil")
 	}
 
@@ -437,7 +437,7 @@ func freeNATSPort(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("listen free port: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
@@ -456,4 +456,8 @@ func (s *serverTestConfigStore) Load(ctx context.Context, key string) ([]byte, e
 
 func (s *serverTestConfigStore) Keys(ctx context.Context) ([]string, error) {
 	return append([]string(nil), s.keys...), nil
+}
+
+func nilContext() context.Context {
+	return nil
 }

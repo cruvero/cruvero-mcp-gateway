@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
@@ -48,51 +49,43 @@ VALUES ($1, $2, $3, $4)
 
 // Query returns audit entries matching filter criteria.
 func (s *PostgresAuditStore) Query(ctx context.Context, filter types.AuditFilter) ([]types.AuditEntry, error) {
-	query := `SELECT ` + auditColumns + ` FROM audit_log`
-	args := make([]any, 0, 8)
-	conditions := make([]string, 0, 5)
+	const query = `
+SELECT ` + auditColumns + `
+FROM audit_log
+WHERE ($1::text IS NULL OR event_type = $1)
+  AND ($2::text IS NULL OR client_id = $2)
+  AND ($3::text IS NULL OR server_name = $3)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+ORDER BY created_at DESC
+LIMIT $6
+OFFSET $7
+`
 
-	if strings.TrimSpace(filter.EventType) != "" {
-		args = append(args, filter.EventType)
-		conditions = append(conditions, fmt.Sprintf("event_type = $%d", len(args)))
-	}
-	if strings.TrimSpace(filter.ClientID) != "" {
-		args = append(args, filter.ClientID)
-		conditions = append(conditions, fmt.Sprintf("client_id = $%d", len(args)))
-	}
-	if strings.TrimSpace(filter.ServerName) != "" {
-		args = append(args, filter.ServerName)
-		conditions = append(conditions, fmt.Sprintf("server_name = $%d", len(args)))
-	}
-	if filter.Since != nil {
-		args = append(args, *filter.Since)
-		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", len(args)))
-	}
-	if filter.Until != nil {
-		args = append(args, *filter.Until)
-		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", len(args)))
-	}
-
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	query += " ORDER BY created_at DESC"
-
+	limit := int64(9223372036854775807)
 	if filter.Limit > 0 {
-		args = append(args, filter.Limit)
-		query += fmt.Sprintf(" LIMIT $%d", len(args))
+		limit = int64(filter.Limit)
 	}
+	offset := int64(0)
 	if filter.Offset > 0 {
-		args = append(args, filter.Offset)
-		query += fmt.Sprintf(" OFFSET $%d", len(args))
+		offset = int64(filter.Offset)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(
+		ctx,
+		query,
+		optionalString(filter.EventType),
+		optionalString(filter.ClientID),
+		optionalString(filter.ServerName),
+		optionalTime(filter.Since),
+		optionalTime(filter.Until),
+		limit,
+		offset,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("audit store: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	entries := make([]types.AuditEntry, 0)
 	for rows.Next() {
@@ -107,6 +100,21 @@ func (s *PostgresAuditStore) Query(ctx context.Context, filter types.AuditFilter
 	}
 
 	return entries, nil
+}
+
+func optionalString(value string) any {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
+}
+
+func optionalTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 type auditScanner interface {

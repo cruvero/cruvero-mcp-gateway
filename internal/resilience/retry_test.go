@@ -20,8 +20,8 @@ type statusErr struct {
 	code int
 }
 
-func (e statusErr) Error() string    { return fmt.Sprintf("status %d", e.code) }
-func (e statusErr) StatusCode() int  { return e.code }
+func (e statusErr) Error() string   { return fmt.Sprintf("status %d", e.code) }
+func (e statusErr) StatusCode() int { return e.code }
 
 func TestRetryImmediateSuccess(t *testing.T) {
 	t.Parallel()
@@ -190,7 +190,7 @@ func TestCalculateBackoffIncreases(t *testing.T) {
 	b4 := calculateBackoff(cfg, 4)
 	b5 := calculateBackoff(cfg, 5)
 
-	if !(b1 < b2 && b2 < b3 && b3 < b4) {
+	if b1 >= b2 || b2 >= b3 || b3 >= b4 {
 		t.Fatalf("expected increasing backoff, got %v %v %v %v", b1, b2, b3, b4)
 	}
 	if b5 != cfg.MaxBackoff {

@@ -81,9 +81,7 @@ func (m *DegradationManager) OnReconnect(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	_ = ctx
 
 	gatewayID := ""
 	if m.client != nil {

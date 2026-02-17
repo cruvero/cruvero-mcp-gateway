@@ -17,8 +17,11 @@ var ErrCircuitOpen = errors.New("circuit breaker open")
 type CircuitState string
 
 const (
-	StateClosed   CircuitState = "closed"
-	StateOpen     CircuitState = "open"
+	// StateClosed allows normal request flow.
+	StateClosed CircuitState = "closed"
+	// StateOpen rejects requests until timeout expires.
+	StateOpen CircuitState = "open"
+	// StateHalfOpen allows a probe request after open timeout.
 	StateHalfOpen CircuitState = "half_open"
 )
 

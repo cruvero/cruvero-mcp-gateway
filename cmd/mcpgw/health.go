@@ -16,7 +16,7 @@ import (
 var httpClientForHealth = &http.Client{
 	Timeout: 5 * time.Second,
 	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13},
 	},
 }
 
@@ -81,6 +81,9 @@ func fetchHealth(ctx context.Context, baseURL string) (*healthStatusResult, erro
 	if parsedBase.Scheme == "" {
 		parsedBase.Scheme = "https"
 	}
+	if err := validateHealthBaseURL(parsedBase); err != nil {
+		return nil, fmt.Errorf("validate health URL: %w", err)
+	}
 
 	healthURL := parsedBase.ResolveReference(&url.URL{Path: "/healthz"}).String()
 	readyURL := parsedBase.ResolveReference(&url.URL{Path: "/readyz"}).String()
@@ -127,11 +130,12 @@ func getJSON(ctx context.Context, endpoint string) (int, map[string]any, error) 
 		return 0, nil, fmt.Errorf("build request: %w", err)
 	}
 
+	// #nosec G704 -- endpoint is explicit operator-provided CLI input.
 	resp, err := httpClientForHealth.Do(req)
 	if err != nil {
 		return 0, nil, fmt.Errorf("execute request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body := map[string]any{}
 	decoder := json.NewDecoder(resp.Body)
@@ -140,4 +144,21 @@ func getJSON(ctx context.Context, endpoint string) (int, map[string]any, error) 
 	}
 
 	return resp.StatusCode, body, nil
+}
+
+func validateHealthBaseURL(baseURL *url.URL) error {
+	if baseURL == nil {
+		return fmt.Errorf("URL is required")
+	}
+	scheme := strings.ToLower(strings.TrimSpace(baseURL.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q", baseURL.Scheme)
+	}
+	if strings.TrimSpace(baseURL.Host) == "" {
+		return fmt.Errorf("host is required")
+	}
+	if baseURL.User != nil {
+		return fmt.Errorf("user info is not allowed")
+	}
+	return nil
 }

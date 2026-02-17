@@ -62,7 +62,7 @@ func TestStartMetricsServerExposesMetricsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get metrics endpoint: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -122,7 +122,7 @@ func TestMetricsHistogramBucketsArePresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get metrics endpoint: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

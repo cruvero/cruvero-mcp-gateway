@@ -67,7 +67,7 @@ func (s *PostgresConfigStore) Keys(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config store keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	keys := make([]string, 0)
 	for rows.Next() {

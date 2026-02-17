@@ -40,9 +40,10 @@ func TestConcurrentRateLimiting(t *testing.T) {
 				req = req.WithContext(identity.WithIdentity(req.Context(), &identity.Identity{Type: identity.IdentityAPIKey, ID: "client-shared", Metadata: map[string]string{"policy_profile": "default"}}))
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, req)
-				if rec.Code == http.StatusOK {
+				switch rec.Code {
+				case http.StatusOK:
 					atomic.AddInt64(&success, 1)
-				} else if rec.Code == http.StatusTooManyRequests {
+				case http.StatusTooManyRequests:
 					atomic.AddInt64(&limited, 1)
 				}
 			}

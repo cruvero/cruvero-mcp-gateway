@@ -159,7 +159,7 @@ func TestSubscriberStartErrors(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	subscriber = NewSubscriber(client, nil)
-	if err := subscriber.Start(nil); err == nil {
+	if err := subscriber.Start(nilContext()); err == nil {
 		t.Fatal("expected error for nil context")
 	}
 }
@@ -231,7 +231,7 @@ func TestSubscriberLoadCachedConfigErrors(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	subscriber = NewSubscriber(client, nil)
-	if err := subscriber.LoadCachedConfig(nil, &mockConfigStore{}); err == nil {
+	if err := subscriber.LoadCachedConfig(nilContext(), &mockConfigStore{}); err == nil {
 		t.Fatal("expected error for nil context")
 	}
 
@@ -285,8 +285,13 @@ func (m *mockConfigStore) Load(ctx context.Context, key string) ([]byte, error) 
 }
 
 func (m *mockConfigStore) Keys(ctx context.Context) ([]string, error) {
+	_ = ctx
 	if m.keysErr != nil {
 		return nil, m.keysErr
 	}
 	return append([]string(nil), m.keys...), nil
+}
+
+func nilContext() context.Context {
+	return nil
 }

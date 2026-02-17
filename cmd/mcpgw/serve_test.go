@@ -27,7 +27,9 @@ func TestServeWithContextInitializesAndShutsDown(t *testing.T) {
 			return nil, err
 		}
 		rows := sqlmock.NewRows([]string{"id", "name", "spiffe_id", "version", "host", "port", "capabilities", "status", "policy_profile", "last_heartbeat", "created_at", "updated_at"})
-		mock.ExpectQuery("SELECT (.+) FROM mcp_servers WHERE status = \\$1 ORDER BY created_at DESC").WithArgs("active").WillReturnRows(rows)
+		mock.ExpectQuery("SELECT (.+) FROM mcp_servers WHERE \\(\\$1::text IS NULL OR status = \\$1\\) AND \\(\\$2::text IS NULL OR name ILIKE \\$2\\) ORDER BY created_at DESC LIMIT \\$3 OFFSET \\$4").
+			WithArgs("active", nil, int64(9223372036854775807), int64(0)).
+			WillReturnRows(rows)
 		mock.ExpectClose()
 		return db, nil
 	}

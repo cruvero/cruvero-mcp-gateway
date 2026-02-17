@@ -11,6 +11,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// Metrics collectors exposed for gateway observability and alerting.
 var (
 	HTTPRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -135,31 +136,38 @@ func StartMetricsServer(addr string) *http.Server {
 	}
 }
 
+// ObserveHTTPRequest records HTTP request count and latency.
 func ObserveHTTPRequest(method string, path string, statusCode int, duration time.Duration) {
 	HTTPRequestsTotal.WithLabelValues(strings.ToUpper(strings.TrimSpace(method)), normalizePath(path), strconv.Itoa(statusCode)).Inc()
 	HTTPRequestDuration.WithLabelValues(strings.ToUpper(strings.TrimSpace(method)), normalizePath(path)).Observe(duration.Seconds())
 }
 
+// ObserveRateLimited increments rate-limit rejection counters.
 func ObserveRateLimited(clientID string, route string) {
 	RateLimitedTotal.WithLabelValues(normalizeLabel(clientID, "anonymous"), normalizeLabel(route, "unknown")).Inc()
 }
 
+// ObservePolicyDenied increments policy denial counters.
 func ObservePolicyDenied(reason string, tool string) {
 	PolicyDeniedTotal.WithLabelValues(normalizeLabel(reason, "policy_denied"), normalizeLabel(tool, "unknown")).Inc()
 }
 
+// AddActiveRegistrations adds a delta to active registration gauges by status.
 func AddActiveRegistrations(status string, delta float64) {
 	ActiveRegistrations.WithLabelValues(normalizeLabel(status, "unknown")).Add(delta)
 }
 
+// SetActiveRegistrations sets active registration gauges by status.
 func SetActiveRegistrations(status string, value float64) {
 	ActiveRegistrations.WithLabelValues(normalizeLabel(status, "unknown")).Set(value)
 }
 
+// ObserveUpstreamError increments upstream error counters by backend and type.
 func ObserveUpstreamError(backend string, errorType string) {
 	UpstreamErrorsTotal.WithLabelValues(normalizeLabel(backend, "unknown"), normalizeLabel(errorType, "unknown")).Inc()
 }
 
+// SetCircuitBreakerState updates breaker-state gauges for all possible states.
 func SetCircuitBreakerState(backend string, state string) {
 	b := normalizeLabel(backend, "unknown")
 	for _, candidate := range []string{"closed", "open", "half_open"} {
@@ -171,6 +179,7 @@ func SetCircuitBreakerState(backend string, state string) {
 	}
 }
 
+// SetNATSConnected sets NATS connectivity gauge.
 func SetNATSConnected(connected bool) {
 	if connected {
 		NATSConnected.Set(1)
@@ -179,18 +188,22 @@ func SetNATSConnected(connected bool) {
 	NATSConnected.Set(0)
 }
 
+// ObserveServerSettingsApplied increments successful server-settings apply counters.
 func ObserveServerSettingsApplied(serverName string) {
 	ServerSettingsAppliedTotal.WithLabelValues(normalizeLabel(serverName, "unknown")).Inc()
 }
 
+// ObserveServerSettingsRejected increments rejected server-settings counters.
 func ObserveServerSettingsRejected(serverName string, reason string) {
 	ServerSettingsRejectedTotal.WithLabelValues(normalizeLabel(serverName, "unknown"), normalizeLabel(reason, "unknown")).Inc()
 }
 
+// SetServerSettingsVersion sets the latest observed settings version per server.
 func SetServerSettingsVersion(serverName string, version int64) {
 	ServerSettingsVersion.WithLabelValues(normalizeLabel(serverName, "unknown")).Set(float64(version))
 }
 
+// ObserveToolCall records routed tool call count and latency by labels.
 func ObserveToolCall(tool string, backend string, status string, duration time.Duration) {
 	normalizedTool := normalizeLabel(tool, "unknown")
 	normalizedBackend := normalizeLabel(backend, "unknown")

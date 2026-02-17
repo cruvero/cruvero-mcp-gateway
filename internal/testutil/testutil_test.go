@@ -26,7 +26,7 @@ func TestNewTestServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request test server: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("expected status %d, got %d", http.StatusNoContent, resp.StatusCode)

@@ -42,7 +42,7 @@ func (s *RoundRobinStrategy) Select(candidates []types.ServerRecord) *types.Serv
 		return nil
 	}
 	next := s.counter.Add(1) - 1
-	selected := candidates[int(next%uint64(len(candidates)))]
+	selected := candidates[next%uint64(len(candidates))]
 	return &selected
 }
 

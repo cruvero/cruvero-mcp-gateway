@@ -356,7 +356,7 @@ func TestMigrateAndServeHelpers(t *testing.T) {
 	if err := serveCommand([]string{"extra"}); err == nil {
 		t.Fatal("expected serve positional argument validation error")
 	}
-	if err := serveWithContext(nil); err == nil {
+	if err := serveWithContext(nilContext()); err == nil {
 		t.Fatal("expected serveWithContext nil context error")
 	}
 
@@ -400,6 +400,10 @@ func TestNewMigrateRunnerOpenDatabaseError(t *testing.T) {
 	if _, err := newMigrateRunner("postgres://db"); err == nil {
 		t.Fatal("expected newMigrateRunner error when open db fails")
 	}
+}
+
+func nilContext() context.Context {
+	return nil
 }
 
 func TestNewMigrateRunnerDriverErrorWithNonPostgresConnection(t *testing.T) {
@@ -521,11 +525,13 @@ func TestMigrateErrNilVersionPath(t *testing.T) {
 
 type mockMigratorErrNilVersion struct{}
 
-func (m *mockMigratorErrNilVersion) Up() error                      { return nil }
-func (m *mockMigratorErrNilVersion) Down() error                    { return nil }
-func (m *mockMigratorErrNilVersion) Steps(n int) error              { _ = n; return nil }
-func (m *mockMigratorErrNilVersion) Version() (uint, bool, error)   { return 0, false, migrate.ErrNilVersion }
-func (m *mockMigratorErrNilVersion) Close() (error, error)          { return nil, nil }
+func (m *mockMigratorErrNilVersion) Up() error         { return nil }
+func (m *mockMigratorErrNilVersion) Down() error       { return nil }
+func (m *mockMigratorErrNilVersion) Steps(n int) error { _ = n; return nil }
+func (m *mockMigratorErrNilVersion) Version() (uint, bool, error) {
+	return 0, false, migrate.ErrNilVersion
+}
+func (m *mockMigratorErrNilVersion) Close() (error, error) { return nil, nil }
 
 func TestMainFunctionVersionPath(t *testing.T) {
 	if os.Getenv("MCPGW_TEST_MAIN_SUBPROCESS") == "1" {

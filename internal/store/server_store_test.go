@@ -161,9 +161,9 @@ func TestPostgresServerStoreList(t *testing.T) {
 	now := fixedTime()
 	status := types.StatusActive
 
-	expectedQuery := "SELECT " + serverColumns + " FROM mcp_servers WHERE status = $1 AND name ILIKE $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+	expectedQuery := "SELECT " + serverColumns + " FROM mcp_servers WHERE ($1::text IS NULL OR status = $1) AND ($2::text IS NULL OR name ILIKE $2) ORDER BY created_at DESC LIMIT $3 OFFSET $4"
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
-		WithArgs(status.String(), "alpha%", 10, 2).
+		WithArgs(status.String(), "alpha%", int64(10), int64(2)).
 		WillReturnRows(serverRows().
 			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now).
 			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now))

@@ -1,4 +1,4 @@
-.PHONY: build test lint vet coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-run clean
+.PHONY: build test lint vet staticcheck govulncheck gosec dupl godoc-check quality coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-run clean
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -16,6 +16,23 @@ lint:
 
 vet:
 	go vet ./...
+
+staticcheck:
+	staticcheck ./...
+
+govulncheck:
+	govulncheck ./...
+
+gosec:
+	./scripts/check-gosec.sh
+
+dupl:
+	./scripts/check-dupl.sh
+
+godoc-check:
+	./scripts/check-godoc.sh
+
+quality: vet lint staticcheck govulncheck gosec dupl godoc-check coverage-check
 
 coverage:
 	go tool cover -func=coverage.out

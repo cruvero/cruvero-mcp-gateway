@@ -56,9 +56,7 @@ func ParseSPIFFEID(raw string) (trustDomain, workloadID string, err error) {
 		return "", "", fmt.Errorf("parse spiffe id: invalid workload path %q", workloadPath)
 	}
 
-	if strings.HasPrefix(cleanPath, "/") {
-		cleanPath = strings.TrimPrefix(cleanPath, "/")
-	}
+	cleanPath = strings.TrimPrefix(cleanPath, "/")
 	if cleanPath == "" {
 		return "", "", fmt.Errorf("parse spiffe id: missing workload path")
 	}

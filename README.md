@@ -39,6 +39,25 @@ export MCPGW_TLS_CA=certs/ca.crt
 ./mcpgw serve
 ```
 
+## Development Requirements
+
+- Go `1.25.7` (pinned in `go.mod` and CI)
+- `golangci-lint`, `staticcheck`, `govulncheck`, `gosec`, and `dupl` for local quality checks
+
+Run the full local quality profile before opening a PR:
+
+```bash
+go test -race ./...
+go vet ./...
+golangci-lint run ./...
+staticcheck ./...
+govulncheck ./...
+./scripts/check-gosec.sh
+./scripts/check-dupl.sh
+./scripts/check-godoc.sh
+./scripts/check-coverage.sh
+```
+
 ## Local Devcontainer Workflow
 
 Use a repository `.devcontainer` so development and verification run in a reproducible environment before any Kubernetes deployment.
