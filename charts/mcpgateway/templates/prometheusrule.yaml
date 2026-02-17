@@ -1,0 +1,68 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "mcpgateway.fullname" . }}
+  labels:
+    {{- include "mcpgateway.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: mcpgateway.alerts
+      rules:
+        - alert: MCPGatewayHighErrorRate
+          expr: sum(rate(mcpgw_http_requests_total{status_code=~"5.."}[5m])) / sum(rate(mcpgw_http_requests_total[5m])) > 0.02
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: MCP Gateway 5xx rate is above 2%
+            description: More than 2% of MCP Gateway HTTP requests are returning 5xx over the last 5 minutes.
+
+        - alert: MCPGatewayRegistrationFailures
+          expr: sum(increase(mcpgw_http_requests_total{path="/v1/registrations",status_code=~"4..|5.."}[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP Gateway registration failures detected
+            description: More than 5 registration requests have failed (4xx/5xx) over the last 5 minutes.
+
+        - alert: MCPGatewayPolicyDenialSurge
+          expr: sum(rate(mcpgw_policy_denied_total[5m])) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP Gateway policy denials are surging
+            description: Policy denials are exceeding 10 events per second over a 5-minute window.
+
+        - alert: MCPGatewayCircuitOpen
+          expr: mcpgw_circuit_breaker_state{state="open"} > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: MCP Gateway circuit breaker is open
+            description: One or more backend circuit breakers has remained open for at least 5 minutes.
+
+        - alert: MCPGatewayRateLimitSaturation
+          expr: sum(rate(mcpgw_rate_limited_total[5m])) / sum(rate(mcpgw_http_requests_total[5m])) > 0.2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP Gateway rate limiting is saturated
+            description: More than 20% of MCP Gateway requests are being rate limited over the last 5 minutes.
+
+        - alert: MCPGatewayNATSDisconnected
+          expr: mcpgw_nats_connected == 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP Gateway is disconnected from NATS
+            description: MCP Gateway has reported a disconnected NATS state for more than 2 minutes.
+{{- end }}

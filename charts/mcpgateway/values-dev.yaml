@@ -1,0 +1,13 @@
+commonLabels:
+  environment: dev
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+tls:
+  secretName: mcpgw-dev-tls
+
+secrets:
+  existingSecret: mcpgw-runtime-dev

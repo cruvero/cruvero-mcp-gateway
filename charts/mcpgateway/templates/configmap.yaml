@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mcpgateway.configMapName" . }}
+  labels:
+    {{- include "mcpgateway.labels" . | nindent 4 }}
+data:
+  MCPGW_LISTEN_ADDR: {{ .Values.config.MCPGW_LISTEN_ADDR | quote }}
+  MCPGW_TLS_CERT: {{ .Values.config.MCPGW_TLS_CERT | quote }}
+  MCPGW_TLS_KEY: {{ .Values.config.MCPGW_TLS_KEY | quote }}
+  MCPGW_TLS_CA: {{ .Values.config.MCPGW_TLS_CA | quote }}
+  MCPGW_HEARTBEAT_TTL: {{ .Values.config.MCPGW_HEARTBEAT_TTL | quote }}
+  MCPGW_RATE_DEFAULT: {{ .Values.config.MCPGW_RATE_DEFAULT | quote }}
+  MCPGW_RATE_BURST: {{ .Values.config.MCPGW_RATE_BURST | quote }}
+  MCPGW_CIRCUIT_THRESHOLD: {{ .Values.config.MCPGW_CIRCUIT_THRESHOLD | quote }}
+  MCPGW_CIRCUIT_TIMEOUT: {{ .Values.config.MCPGW_CIRCUIT_TIMEOUT | quote }}
+  MCPGW_RETRY_MAX: {{ .Values.config.MCPGW_RETRY_MAX | quote }}
+  MCPGW_SPIFFE_ALLOW_PREFIX: {{ .Values.config.MCPGW_SPIFFE_ALLOW_PREFIX | quote }}
+  MCPGW_LOG_FORMAT: {{ .Values.config.MCPGW_LOG_FORMAT | quote }}
+  MCPGW_LOG_LEVEL: {{ .Values.config.MCPGW_LOG_LEVEL | quote }}
+  MCPGW_METRICS_ADDR: {{ .Values.config.MCPGW_METRICS_ADDR | quote }}
+  MCPGW_CRUVERO_ENABLED: {{ .Values.config.MCPGW_CRUVERO_ENABLED | quote }}
+  MCPGW_GATEWAY_ID: {{ .Values.config.MCPGW_GATEWAY_ID | quote }}
+  MCPGW_CORS_ENABLED: {{ .Values.config.MCPGW_CORS_ENABLED | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.config.OTEL_SERVICE_NAME | quote }}

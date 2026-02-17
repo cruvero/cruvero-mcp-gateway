@@ -1,0 +1,16 @@
+{
+  "github.com/cruvero/mcp-gateway/cmd/mcpgw": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/auth": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/config": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/events": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/identity": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/policy": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/proxy": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/ratelimit": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/registration": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/resilience": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/server": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/store": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/testutil": 80.0,
+  "github.com/cruvero/mcp-gateway/internal/types": 80.0
+}

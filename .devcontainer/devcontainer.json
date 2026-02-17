@@ -1,0 +1,24 @@
+{
+  "name": "cruvero-mcp-gateway",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.checkForUpdates": "local",
+        "yaml.format.enable": true
+      },
+      "extensions": [
+        "golang.Go",
+        "redhat.vscode-yaml",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "tim-koehler.helm-intellisense"
+      ]
+    }
+  },
+  "postCreateCommand": "bash -lc 'set -euo pipefail; go version; helm version --short; kubectl version --client --output=yaml >/dev/null; argocd version --client --short; golangci-lint version; go list ./... >/dev/null; echo \"devcontainer smoke check complete\"'"
+}

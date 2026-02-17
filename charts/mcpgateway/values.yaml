@@ -1,0 +1,161 @@
+# -- Optional chart name override.
+nameOverride: ""
+# -- Optional full resource name override.
+fullnameOverride: ""
+# -- Additional labels to apply to all chart-managed resources.
+commonLabels: {}
+
+replicaCount: 2
+
+image:
+  # -- Container image repository.
+  repository: ghcr.io/cruvero/mcp-gateway
+  # -- Container image tag. Defaults to Chart appVersion when empty.
+  tag: ""
+  # -- Kubernetes image pull policy.
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  # -- Create a dedicated ServiceAccount for the gateway workload.
+  create: true
+  # -- Optional ServiceAccount name override.
+  name: ""
+  # -- Optional annotations for IRSA/workload identity integrations.
+  annotations: {}
+
+service:
+  # -- Kubernetes Service type.
+  type: ClusterIP
+  ports:
+    https: 8443
+    metrics: 9090
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  # -- Target average CPU utilization percentage.
+  targetCPU: 70
+
+# Runtime configuration exported to MCPGW_* environment variables.
+config:
+  MCPGW_LISTEN_ADDR: ":8443"
+  MCPGW_TLS_CERT: "/tls/tls.crt"
+  MCPGW_TLS_KEY: "/tls/tls.key"
+  MCPGW_TLS_CA: "/tls/ca.crt"
+  MCPGW_NATS_URL: ""
+  MCPGW_OIDC_ISSUER: ""
+  MCPGW_OIDC_AUDIENCE: ""
+  MCPGW_HEARTBEAT_TTL: "30s"
+  MCPGW_RATE_DEFAULT: "10"
+  MCPGW_RATE_BURST: "20"
+  MCPGW_CIRCUIT_THRESHOLD: "5"
+  MCPGW_CIRCUIT_TIMEOUT: "30s"
+  MCPGW_RETRY_MAX: "3"
+  MCPGW_SPIFFE_ALLOW_PREFIX: ""
+  MCPGW_LOG_FORMAT: "json"
+  MCPGW_LOG_LEVEL: "info"
+  MCPGW_METRICS_ADDR: ":9090"
+  MCPGW_CRUVERO_ENABLED: "false"
+  MCPGW_GATEWAY_ID: "auto"
+  MCPGW_CORS_ENABLED: "false"
+  # OTel variables consumed by internal/config.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_SERVICE_NAME: "mcpgw"
+
+# TLS serving certificate configuration.
+tls:
+  enabled: true
+  # -- Existing secret that contains tls.crt/tls.key (used when certManager.enabled=false).
+  secretName: "mcpgw-tls"
+  certManager:
+    enabled: false
+    # -- TLS secret name created by cert-manager.
+    secretName: ""
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+    dnsNames: []
+
+nats:
+  # -- Enable NATS integration mode.
+  enabled: false
+  # -- NATS server URL; use valueFrom secret for production deployments.
+  url: ""
+
+database:
+  # -- Logical reference for DB URL source. Actual value must come from existingSecret.
+  url: "existing-secret-ref"
+
+# Vault Secrets Operator integration contract.
+vault:
+  enabled: false
+  createAuth: false
+  authRef: ""
+  mount: ""
+  path: ""
+  refreshAfter: 1m
+
+secrets:
+  # -- Existing Kubernetes Secret name with runtime credentials/settings.
+  existingSecret: "mcpgw-runtime"
+  # -- Secret key names used for env wiring.
+  keys:
+    dbURL: MCPGW_DB_URL
+    natsURL: MCPGW_NATS_URL
+    oidcIssuer: MCPGW_OIDC_ISSUER
+    oidcAudience: MCPGW_OIDC_AUDIENCE
+    otlpEndpoint: OTEL_EXPORTER_OTLP_ENDPOINT
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+
+networkPolicy:
+  enabled: true
+  ingress:
+    # -- Allowed sources for HTTPS ingress (port 8443).
+    sources:
+      - namespaceSelector: {}
+        podSelector: {}
+    # -- Allowed namespaces for metrics scraping ingress (port 9090).
+    metricsNamespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+  egress:
+    # -- Allowed Postgres destinations (port 5432).
+    postgres:
+      - namespaceSelector: {}
+        podSelector: {}
+    # -- Allowed NATS destinations (port 4222).
+    nats:
+      - namespaceSelector: {}
+        podSelector: {}
+    # -- Allowed backend MCP server destinations (port 8443 by default).
+    backends:
+      - namespaceSelector: {}
+        podSelector: {}
+    # -- DNS egress destinations (UDP/TCP 53).
+    dns:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns

@@ -39,6 +39,25 @@ export MCPGW_TLS_CA=certs/ca.crt
 ./mcpgw serve
 ```
 
+## Development Requirements
+
+- Go `1.25.7` (pinned in `go.mod` and CI)
+- `golangci-lint`, `staticcheck`, `govulncheck`, `gosec`, and `dupl` for local quality checks
+
+Run the full local quality profile before opening a PR:
+
+```bash
+go test -race ./...
+go vet ./...
+golangci-lint run ./...
+staticcheck ./...
+govulncheck ./...
+./scripts/check-gosec.sh
+./scripts/check-dupl.sh
+./scripts/check-godoc.sh
+./scripts/check-coverage.sh
+```
+
 ## Local Devcontainer Workflow
 
 Use a repository `.devcontainer` so development and verification run in a reproducible environment before any Kubernetes deployment.
@@ -49,10 +68,40 @@ Use a repository `.devcontainer` so development and verification run in a reprod
    - `go test ./...`
    - `go vet ./...`
    - `golangci-lint run ./...`
-   - `helm lint charts/mcpgateway`
-   - `helm template charts/mcpgateway -f charts/mcpgateway/values.yaml -f charts/mcpgateway/values-dev.yaml`
+   - `make chart-validate`
 
 Local-first validation in the devcontainer is required before Argo CD sync or deployment PRs.
+
+### Helm Validation Matrix
+
+Use these targets for environment render checks:
+
+- `make chart-lint`
+- `make chart-render-base`
+- `make chart-render-dev`
+- `make chart-render-staging`
+- `make chart-render-prod`
+- `make chart-validate`
+
+## GitOps Operations
+
+For rollout validation and rollback steps, use:
+
+- [docs/GITOPS-ROLLOUT.md](docs/GITOPS-ROLLOUT.md)
+
+## GitHub Actions Standards
+
+Any GitHub Actions workflow in this repository must follow these rules:
+
+- Use `cruvero-org-runners` for `runs-on`.
+- Publish/pull container images from Harbor using org secrets:
+  - `HARBOR_URL`
+  - `HARBOR_TOKEN`
+- Sonar workflows must use org secrets:
+  - `SONAR_HOST_URL`
+  - `SONAR_TOKEN`
+- Sonar workflows must use repo secret:
+  - `SONAR_PROJECT_KEY`
 
 ## MCP Server Fleet Spec
 

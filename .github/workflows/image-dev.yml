@@ -1,0 +1,61 @@
+name: Build And Push Dev Image
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build-push:
+    runs-on: cruvero-org-runners
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve Harbor Registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="${{ secrets.HARBOR_URL }}"
+          registry="${registry#https://}"
+          registry="${registry#http://}"
+          registry="${registry%/}"
+          if [[ -z "${registry}" ]]; then
+            echo "HARBOR_URL secret is required"
+            exit 1
+          fi
+          echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
+
+      - name: Parse Harbor Token Credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="${{ secrets.HARBOR_TOKEN }}"
+          if [[ "${token}" != *:* ]]; then
+            echo "HARBOR_TOKEN must be in username:password format"
+            exit 1
+          fi
+          echo "HARBOR_USERNAME=${token%%:*}" >> "$GITHUB_ENV"
+          echo "HARBOR_PASSWORD=${token#*:}" >> "$GITHUB_ENV"
+
+      - name: Login To Harbor
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.HARBOR_USERNAME }}
+          password: ${{ env.HARBOR_PASSWORD }}
+
+      - name: Build And Push Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev-latest

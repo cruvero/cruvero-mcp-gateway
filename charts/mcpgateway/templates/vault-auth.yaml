@@ -1,0 +1,14 @@
+{{- if and .Values.vault.enabled .Values.vault.createAuth }}
+apiVersion: secrets.hashicorp.com/v1beta1
+kind: VaultAuth
+metadata:
+  name: {{ .Values.vault.authRef }}
+  labels:
+    {{- include "mcpgateway.labels" . | nindent 4 }}
+spec:
+  method: kubernetes
+  mount: {{ .Values.vault.mount | quote }}
+  kubernetes:
+    role: {{ include "mcpgateway.fullname" . | quote }}
+    serviceAccount: {{ include "mcpgateway.serviceAccountName" . | quote }}
+{{- end }}

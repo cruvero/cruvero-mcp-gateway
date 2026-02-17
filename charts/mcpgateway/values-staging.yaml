@@ -1,0 +1,22 @@
+commonLabels:
+  environment: staging
+
+config:
+  MCPGW_CRUVERO_ENABLED: "true"
+
+vault:
+  enabled: true
+  createAuth: true
+  authRef: mcpgw-vault-auth-staging
+  mount: kubernetes
+  path: secret/data/mcpgateway/staging/runtime
+  refreshAfter: 1m
+
+secrets:
+  existingSecret: mcpgw-runtime-staging
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true
