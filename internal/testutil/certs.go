@@ -23,6 +23,13 @@ type CertBundle struct {
 	ClientCertPEM []byte `json:"client_cert_pem"`
 	ClientKeyPEM  []byte `json:"client_key_pem"`
 	ClientSPIFFE  string `json:"client_spiffe"`
+
+	CACert     []byte `json:"ca_cert"`
+	ServerCert []byte `json:"server_cert"`
+	ServerKey  []byte `json:"server_key"`
+	ClientCert []byte `json:"client_cert"`
+	ClientKey  []byte `json:"client_key"`
+	SPIFFEID   string `json:"spiffe_id"`
 }
 
 // GenerateTestCerts generates CA, server, and client certificates for mTLS test fixtures.
@@ -60,6 +67,7 @@ func GenerateTestCerts(t *testing.T) *CertBundle {
 	caKeyPEM, err := encodePEM("RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(caKey))
 	mustNoErr(t, err, "encode ca private key")
 
+	spiffeID := "spiffe://example.org/test-client"
 	return &CertBundle{
 		CACertPEM:     caCertPEM,
 		CAKeyPEM:      caKeyPEM,
@@ -67,7 +75,14 @@ func GenerateTestCerts(t *testing.T) *CertBundle {
 		ServerKeyPEM:  serverKeyPEM,
 		ClientCertPEM: clientCertPEM,
 		ClientKeyPEM:  clientKeyPEM,
-		ClientSPIFFE:  "spiffe://example.org/test-client",
+		ClientSPIFFE:  spiffeID,
+
+		CACert:     caCertPEM,
+		ServerCert: serverCertPEM,
+		ServerKey:  serverKeyPEM,
+		ClientCert: clientCertPEM,
+		ClientKey:  clientKeyPEM,
+		SPIFFEID:   spiffeID,
 	}
 }
 
