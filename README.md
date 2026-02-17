@@ -64,6 +64,12 @@ Use these targets for environment render checks:
 - `make chart-render-prod`
 - `make chart-validate`
 
+## GitOps Operations
+
+For rollout validation and rollback steps, use:
+
+- [docs/GITOPS-ROLLOUT.md](docs/GITOPS-ROLLOUT.md)
+
 ## GitHub Actions Standards
 
 Any GitHub Actions workflow in this repository must follow these rules:
