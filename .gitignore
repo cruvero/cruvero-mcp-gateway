@@ -7,6 +7,8 @@ LLM.md
 
 # Go build artifacts
 bin/
+/mcpgw
+/mcpgw.exe
 *.exe
 *.exe~
 *.dll
@@ -20,6 +22,10 @@ coverage.out
 coverage/
 *.coverprofile
 *.pprof
+
+# Local runtime artifacts
+*.log
+tmp/
 
 # Dependency directories
 vendor/
