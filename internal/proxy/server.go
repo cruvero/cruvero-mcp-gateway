@@ -142,7 +142,7 @@ func (p *ProxyServer) getOrCreateClient(record types.ServerRecord) *BackendClien
 	client, ok := p.clients[record.ID]
 	if ok {
 		if p.router != nil {
-			p.router.clients.Store(record.ID, client)
+			p.router.StoreBackendClient(record, client)
 		}
 		return client
 	}
@@ -151,7 +151,7 @@ func (p *ProxyServer) getOrCreateClient(record types.ServerRecord) *BackendClien
 	client.logger = p.logger
 	p.clients[record.ID] = client
 	if p.router != nil {
-		p.router.clients.Store(record.ID, client)
+		p.router.StoreBackendClient(record, client)
 	}
 	return client
 }

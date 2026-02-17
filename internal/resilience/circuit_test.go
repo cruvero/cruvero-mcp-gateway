@@ -185,3 +185,32 @@ func TestCircuitBreakerContextCancellation(t *testing.T) {
 		t.Fatal("expected function not to be called")
 	}
 }
+
+func TestNewCircuitBreakerDefaultsAndGuards(t *testing.T) {
+	t.Parallel()
+
+	cb := NewCircuitBreaker("svc-a", 0, 0)
+	if cb.threshold != 1 {
+		t.Fatalf("expected threshold default 1, got %d", cb.threshold)
+	}
+	if cb.timeout <= 0 {
+		t.Fatalf("expected positive timeout, got %v", cb.timeout)
+	}
+
+	var nilBreaker *CircuitBreaker
+	err := nilBreaker.Execute(context.Background(), func() error { return nil })
+	if err == nil {
+		t.Fatal("expected nil breaker error")
+	}
+
+	err = cb.Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected nil function error")
+	}
+
+	cb.state = CircuitState("invalid")
+	err = cb.Execute(context.Background(), func() error { return nil })
+	if err == nil {
+		t.Fatal("expected invalid state error")
+	}
+}

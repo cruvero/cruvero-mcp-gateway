@@ -16,12 +16,12 @@ import (
 	clienttransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/cruvero/mcp-gateway/internal/resilience"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
 const (
 	defaultBackendTimeout = 30 * time.Second
-	defaultIdleTimeout    = 90 * time.Second
 )
 
 // BackendClient manages MCP protocol calls to a single backend server.
@@ -42,14 +42,7 @@ func NewBackendClient(record types.ServerRecord, tlsConfig *tls.Config, timeout 
 		timeout = defaultBackendTimeout
 	}
 
-	transport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     defaultIdleTimeout,
-		TLSClientConfig:     tlsConfig,
-		ForceAttemptHTTP2:   true,
-	}
+	transport := resilience.NewTransport(tlsConfig, resilience.DefaultPoolOptions())
 
 	httpClient := &http.Client{
 		Transport: transport,

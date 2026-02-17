@@ -1,6 +1,10 @@
 package proxy
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	coretypes "github.com/cruvero/mcp-gateway/internal/types"
+)
 
 // ToolDefinition describes a tool exposed by a backend MCP server.
 type ToolDefinition struct {
@@ -10,16 +14,10 @@ type ToolDefinition struct {
 }
 
 // ContentBlock is a normalized tool result content entry.
-type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
+type ContentBlock = coretypes.ContentBlock
 
 // ToolResult is a normalized result returned from a tool call.
-type ToolResult struct {
-	Content []ContentBlock `json:"content"`
-	IsError bool           `json:"is_error"`
-}
+type ToolResult = coretypes.ToolResult
 
 // ResourceDefinition describes a resource exposed by a backend MCP server.
 type ResourceDefinition struct {

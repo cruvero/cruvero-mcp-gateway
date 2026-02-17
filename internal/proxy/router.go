@@ -12,7 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/registration"
+	"github.com/cruvero/mcp-gateway/internal/resilience"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
@@ -44,13 +46,17 @@ func (s *RoundRobinStrategy) Select(candidates []types.ServerRecord) *types.Serv
 // Router performs tool-call routing to backend servers.
 type Router struct {
 	index   *registration.CapabilityIndex
-	clients sync.Map // map[string]*BackendClient
+	clients sync.Map // map[string]*resilience.ResilientClient
 
 	strategy RoutingStrategy
 	logger   *slog.Logger
 
 	tlsConfig      *tls.Config
 	backendTimeout time.Duration
+	breakers       *resilience.BreakerRegistry
+	retryCfg       resilience.RetryConfig
+	circuitTimeout time.Duration
+	circuitThresh  int
 }
 
 // NewRouter creates a proxy router with a selection strategy.
@@ -71,12 +77,23 @@ func NewRouter(
 		backendTimeout = defaultBackendTimeout
 	}
 
+	threshold := 5
+	circuitTimeout := 30 * time.Second
+	if cfg, err := config.Load(); err == nil {
+		threshold = cfg.CircuitThreshold
+		circuitTimeout = cfg.CircuitTimeout
+	}
+
 	return &Router{
 		index:          index,
 		strategy:       strategy,
 		logger:         logger,
 		tlsConfig:      tlsConfig,
 		backendTimeout: backendTimeout,
+		breakers:       resilience.NewBreakerRegistry(),
+		retryCfg:       resilience.DefaultRetryConfig(),
+		circuitTimeout: circuitTimeout,
+		circuitThresh:  threshold,
 	}
 }
 
@@ -110,19 +127,51 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 }
 
 // GetOrCreateClient returns an existing client or lazily creates one.
-func (r *Router) GetOrCreateClient(record types.ServerRecord) *BackendClient {
+func (r *Router) GetOrCreateClient(record types.ServerRecord) *resilience.ResilientClient {
 	if existing, ok := r.clients.Load(record.ID); ok {
-		if client, castOK := existing.(*BackendClient); castOK {
+		if client, castOK := existing.(*resilience.ResilientClient); castOK {
 			return client
 		}
 	}
 
-	client := NewBackendClient(record, r.tlsConfig, r.backendTimeout)
-	client.logger = r.logger
-	actual, _ := r.clients.LoadOrStore(record.ID, client)
-	cached, _ := actual.(*BackendClient)
+	backend := NewBackendClient(record, r.tlsConfig, r.backendTimeout)
+	backend.logger = r.logger
+
+	breaker := r.breakers.GetOrCreate(record.ID, r.circuitThresh, r.circuitTimeout)
+	client := resilience.NewResilientClient(
+		backend,
+		breaker,
+		r.retryCfg,
+		r.logger.With(slog.String("backend_id", record.ID)),
+	)
+
+	actual, loaded := r.clients.LoadOrStore(record.ID, client)
+	cached, _ := actual.(*resilience.ResilientClient)
 	if cached != nil {
+		if loaded {
+			_ = backend.Close()
+		}
 		return cached
 	}
+
+	if loaded {
+		_ = backend.Close()
+	}
+
 	return client
+}
+
+// StoreBackendClient wraps an existing backend client with resilience and stores it for routing.
+func (r *Router) StoreBackendClient(record types.ServerRecord, backend *BackendClient) {
+	if r == nil || backend == nil {
+		return
+	}
+	breaker := r.breakers.GetOrCreate(record.ID, r.circuitThresh, r.circuitTimeout)
+	client := resilience.NewResilientClient(
+		backend,
+		breaker,
+		r.retryCfg,
+		r.logger.With(slog.String("backend_id", record.ID)),
+	)
+	r.clients.Store(record.ID, client)
 }

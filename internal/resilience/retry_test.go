@@ -44,6 +44,31 @@ func TestRetryImmediateSuccess(t *testing.T) {
 	}
 }
 
+func TestDefaultRetryConfig(t *testing.T) {
+	t.Run("env values loaded", func(t *testing.T) {
+		t.Setenv("MCPGW_DB_URL", "postgres://test-db")
+		t.Setenv("MCPGW_RETRY_MAX", "7")
+
+		cfg := DefaultRetryConfig()
+		if cfg.MaxAttempts != 7 {
+			t.Fatalf("expected max attempts from env to be 7, got %d", cfg.MaxAttempts)
+		}
+		if cfg.InitialBackoff <= 0 || cfg.MaxBackoff <= 0 {
+			t.Fatalf("expected positive default backoffs, got %#v", cfg)
+		}
+	})
+
+	t.Run("fallback defaults on config load error", func(t *testing.T) {
+		t.Setenv("MCPGW_DB_URL", "")
+		t.Setenv("MCPGW_RETRY_MAX", "")
+
+		cfg := DefaultRetryConfig()
+		if cfg.MaxAttempts != 3 {
+			t.Fatalf("expected fallback max attempts 3, got %d", cfg.MaxAttempts)
+		}
+	})
+}
+
 func TestRetryThenSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -202,5 +227,44 @@ func TestIsRetryable(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestNormalizeRetryConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeRetryConfig(RetryConfig{
+		MaxAttempts:       0,
+		InitialBackoff:    0,
+		MaxBackoff:        0,
+		BackoffMultiplier: 0.5,
+	})
+	if cfg.MaxAttempts != 1 {
+		t.Fatalf("expected MaxAttempts default 1, got %d", cfg.MaxAttempts)
+	}
+	if cfg.InitialBackoff != defaultInitialBackoff {
+		t.Fatalf("expected InitialBackoff default %v, got %v", defaultInitialBackoff, cfg.InitialBackoff)
+	}
+	if cfg.MaxBackoff != defaultMaxBackoff {
+		t.Fatalf("expected MaxBackoff default %v, got %v", defaultMaxBackoff, cfg.MaxBackoff)
+	}
+	if cfg.BackoffMultiplier != defaultBackoffMultiple {
+		t.Fatalf("expected BackoffMultiplier default %v, got %v", defaultBackoffMultiple, cfg.BackoffMultiplier)
+	}
+}
+
+func TestAddJitter(t *testing.T) {
+	t.Parallel()
+
+	if addJitter(0) != 0 {
+		t.Fatal("expected zero jitter for zero base duration")
+	}
+
+	base := 100 * time.Millisecond
+	got := addJitter(base)
+	min := 75 * time.Millisecond
+	max := 125 * time.Millisecond
+	if got < min || got > max {
+		t.Fatalf("expected jitter in [%v, %v], got %v", min, max, got)
 	}
 }

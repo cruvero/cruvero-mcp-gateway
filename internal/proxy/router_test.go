@@ -14,6 +14,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/cruvero/mcp-gateway/internal/registration"
+	"github.com/cruvero/mcp-gateway/internal/resilience"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
@@ -27,7 +28,7 @@ func TestRouterRoutesToCorrectBackend(t *testing.T) {
 	index.Add(record)
 
 	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
-	router.clients.Store(record.ID, client)
+	router.clients.Store(record.ID, newResilientClientForTest(record.ID, client))
 
 	result, err := router.Route(context.Background(), "tool.echo", map[string]any{})
 	if err != nil {
@@ -54,8 +55,8 @@ func TestRouterRoundRobinDistribution(t *testing.T) {
 	index.Add(record2)
 
 	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
-	router.clients.Store(record1.ID, client1)
-	router.clients.Store(record2.ID, client2)
+	router.clients.Store(record1.ID, newResilientClientForTest(record1.ID, client1))
+	router.clients.Store(record2.ID, newResilientClientForTest(record2.ID, client2))
 
 	counts := map[string]int{"one": 0, "two": 0}
 	for i := 0; i < 6; i++ {
@@ -129,4 +130,19 @@ func buildRoutedToolBackend(
 		_ = client.Close()
 		srv.Close()
 	}
+}
+
+func newResilientClientForTest(serverID string, client *BackendClient) *resilience.ResilientClient {
+	return resilience.NewResilientClient(
+		client,
+		resilience.NewCircuitBreaker(serverID, 3, time.Second),
+		resilience.RetryConfig{
+			MaxAttempts:       1,
+			InitialBackoff:    time.Millisecond,
+			MaxBackoff:        time.Millisecond,
+			BackoffMultiplier: 1,
+			Jitter:            false,
+		},
+		nil,
+	)
 }

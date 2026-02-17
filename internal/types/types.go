@@ -55,6 +55,18 @@ type Capability struct {
 	Prompts   []string `json:"prompts"`
 }
 
+// ContentBlock is a normalized tool result content entry.
+type ContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// ToolResult is a normalized result returned from a tool call.
+type ToolResult struct {
+	Content []ContentBlock `json:"content"`
+	IsError bool           `json:"is_error"`
+}
+
 // ServerRecord is the persisted representation of a registered MCP server.
 type ServerRecord struct {
 	ID            string       `json:"id"`
