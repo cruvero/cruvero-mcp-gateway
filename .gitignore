@@ -1,0 +1,36 @@
+# Ignore all phase planning/spec docs
+docs/phases/
+
+# Agent instruction docs
+CLAUDE.md
+LLM.md
+
+# Go build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go coverage and profiling
+coverage.out
+coverage/
+*.coverprofile
+*.pprof
+
+# Dependency directories
+vendor/
+
+# Environment files
+.env
+.env.*
+
+# IDE/editor
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
