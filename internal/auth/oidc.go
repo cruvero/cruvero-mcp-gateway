@@ -11,8 +11,9 @@ import (
 
 // OIDCValidator validates bearer tokens against an OIDC provider.
 type OIDCValidator struct {
-	provider *oidc.Provider
-	verifier *oidc.IDTokenVerifier
+	provider     *oidc.Provider
+	verifier     *oidc.IDTokenVerifier
+	validateFunc func(ctx context.Context, rawToken string) (*identity.Identity, error)
 }
 
 type oidcClaims struct {
@@ -42,6 +43,9 @@ func NewOIDCValidator(ctx context.Context, issuerURL, audience string) (*OIDCVal
 
 // Validate verifies an OIDC token and maps claims to identity.
 func (v *OIDCValidator) Validate(ctx context.Context, rawToken string) (*identity.Identity, error) {
+	if v != nil && v.validateFunc != nil {
+		return v.validateFunc(ctx, rawToken)
+	}
 	if v == nil || v.verifier == nil {
 		return nil, fmt.Errorf("validate oidc token: validator is not configured")
 	}
