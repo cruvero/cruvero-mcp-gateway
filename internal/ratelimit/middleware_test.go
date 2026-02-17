@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/types"
+	"golang.org/x/time/rate"
 )
 
 func TestRateLimitMiddlewareAllowsWithinLimit(t *testing.T) {
@@ -124,6 +126,55 @@ func TestResolveRouteKeyUsesMCPMethodWhenPresent(t *testing.T) {
 	key := resolveRouteKey(req)
 	if key != "mcp/tools/call" {
 		t.Fatalf("expected mcp/tools/call route key, got %q", key)
+	}
+}
+
+func TestResolveRouteKeyFallsBackToPath(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tools", nil)
+	if got := resolveRouteKey(req); got != "/v1/tools" {
+		t.Fatalf("expected path fallback, got %q", got)
+	}
+}
+
+func TestReadMCPMethodNonJSONOrInvalidReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`not-json`))
+	req.Header.Set("Content-Type", "application/json")
+	if got := readMCPMethod(req); got != "" {
+		t.Fatalf("expected empty method for invalid json, got %q", got)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"method":"tools/list"}`))
+	req2.Header.Set("Content-Type", "text/plain")
+	if got := readMCPMethod(req2); got != "" {
+		t.Fatalf("expected empty method for non-json content type, got %q", got)
+	}
+}
+
+func TestRateLimitHelpers(t *testing.T) {
+	t.Parallel()
+
+	limiter := rate.NewLimiter(rate.Limit(2), 1)
+	headers := make(http.Header)
+	setRateLimitHeaders(headers, limiter)
+	if headers.Get(headerRateLimitLimit) != "2" {
+		t.Fatalf("expected limit header 2, got %q", headers.Get(headerRateLimitLimit))
+	}
+	if _, err := strconv.Atoi(headers.Get(headerRateLimitRemaining)); err != nil {
+		t.Fatalf("expected numeric remaining header, got %q", headers.Get(headerRateLimitRemaining))
+	}
+	if _, err := strconv.ParseInt(headers.Get(headerRateLimitReset), 10, 64); err != nil {
+		t.Fatalf("expected unix reset header, got %q", headers.Get(headerRateLimitReset))
+	}
+
+	if retryAfter := retryAfterSeconds(nil); retryAfter != 1 {
+		t.Fatalf("expected nil limiter retry-after 1, got %d", retryAfter)
+	}
+	if retryAfter := retryAfterSeconds(rate.NewLimiter(0, 1)); retryAfter != 1 {
+		t.Fatalf("expected zero-limit retry-after 1, got %d", retryAfter)
 	}
 }
 

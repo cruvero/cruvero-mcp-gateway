@@ -159,3 +159,43 @@ func TestLimiterStoreAppliesDefaultsWhenProfileMissingOrZero(t *testing.T) {
 		t.Fatalf("expected default rate 7, got %v and %v", limiterA.Limit(), limiterB.Limit())
 	}
 }
+
+func TestNewLimiterStoreUsesFallbackDefaults(t *testing.T) {
+	t.Parallel()
+
+	store := NewLimiterStore(0, 0)
+	if float64(store.defaultRate) != defaultRateLimit {
+		t.Fatalf("expected default rate %v, got %v", defaultRateLimit, store.defaultRate)
+	}
+	if store.defaultBurst != defaultRateBurst {
+		t.Fatalf("expected default burst %d, got %d", defaultRateBurst, store.defaultBurst)
+	}
+}
+
+func TestLimiterStoreCleanupNonPositiveMaxIdleRemovesAll(t *testing.T) {
+	t.Parallel()
+
+	store := NewLimiterStore(10, 20)
+	store.GetOrCreate(LimiterKey{ClientID: "a", Route: "/mcp"}, nil)
+	store.GetOrCreate(LimiterKey{ClientID: "b", Route: "/mcp"}, nil)
+
+	removed := store.Cleanup(0)
+	if removed != 2 {
+		t.Fatalf("expected remove-all count 2, got %d", removed)
+	}
+	if store.Count() != 0 {
+		t.Fatalf("expected empty store, got %d", store.Count())
+	}
+}
+
+func TestNormalizeKeyFallbacks(t *testing.T) {
+	t.Parallel()
+
+	normalized := normalizeKey(LimiterKey{ClientID: "   ", Route: " "})
+	if normalized.ClientID != "anonymous" {
+		t.Fatalf("expected anonymous client, got %q", normalized.ClientID)
+	}
+	if normalized.Route != "unknown" {
+		t.Fatalf("expected unknown route, got %q", normalized.Route)
+	}
+}

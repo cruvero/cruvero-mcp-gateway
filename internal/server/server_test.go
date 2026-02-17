@@ -135,6 +135,39 @@ func TestRequestBodyLimitMiddleware(t *testing.T) {
 	}
 }
 
+func TestMountProxyRoutesAppliesRateLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.RateDefault = 1
+	cfg.RateBurst = 1
+
+	srv := New(cfg, testLogger())
+	srv.MountProxyRoutes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	firstRec := httptest.NewRecorder()
+	srv.router.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("expected first status 200, got %d", firstRec.Code)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	secondRec := httptest.NewRecorder()
+	srv.router.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second status 429, got %d", secondRec.Code)
+	}
+	if secondRec.Header().Get("X-RateLimit-Limit") == "" {
+		t.Fatal("expected X-RateLimit-Limit header")
+	}
+	if secondRec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header")
+	}
+}
+
 func TestStartGracefulShutdownOnContextCancellation(t *testing.T) {
 	cfg := baseConfig()
 	cfg.ListenAddr = "127.0.0.1:0"

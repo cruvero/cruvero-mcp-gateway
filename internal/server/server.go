@@ -13,6 +13,8 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/identity"
+	"github.com/cruvero/mcp-gateway/internal/ratelimit"
+	"github.com/cruvero/mcp-gateway/internal/types"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -26,6 +28,13 @@ type Server struct {
 	httpServer *http.Server
 	startTime  time.Time
 	ready      atomic.Bool
+
+	rateLimiterStore  *ratelimit.LimiterStore
+	profileResolver   ratelimit.ProfileResolver
+	proxyAuthMW       func(http.Handler) http.Handler
+	proxyPolicyMW     func(http.Handler) http.Handler
+	cleanupInterval   time.Duration
+	cleanupMaxIdleTTL time.Duration
 }
 
 // New builds a configured HTTP server with middleware and routes.
@@ -48,7 +57,14 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 		logger:    logger,
 		router:    router,
 		startTime: time.Now().UTC(),
+
+		cleanupInterval:   time.Minute,
+		cleanupMaxIdleTTL: 5 * time.Minute,
 	}
+	defaultProfile := defaultPolicyProfile(cfg)
+	srv.rateLimiterStore = ratelimit.NewLimiterStore(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
+	srv.profileResolver = ratelimit.NewDefaultProfileResolver(defaultProfiles(cfg), defaultProfile)
+
 	srv.ready.Store(true)
 	srv.setupRoutes()
 
@@ -74,6 +90,8 @@ func (s *Server) Start(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("start server: context is nil")
 	}
+
+	ratelimit.StartCleanup(ctx, s.rateLimiterStore, s.cleanupInterval, s.cleanupMaxIdleTTL)
 
 	shutdownErrCh := make(chan error, 1)
 	go func() {
@@ -128,7 +146,32 @@ func (s *Server) MountProxyRoutes(proxyHandler http.Handler) {
 		return
 	}
 
-	s.router.Mount("/mcp", proxyHandler)
+	s.router.Route("/mcp", func(r chi.Router) {
+		if s.proxyAuthMW != nil {
+			r.Use(s.proxyAuthMW)
+		}
+		r.Use(ratelimit.RateLimitMiddleware(s.rateLimiterStore, s.profileResolver, s.logger))
+		if s.proxyPolicyMW != nil {
+			r.Use(s.proxyPolicyMW)
+		}
+		r.Mount("/", proxyHandler)
+	})
+}
+
+// SetProxyAuthMiddleware configures auth middleware for the /mcp chain.
+func (s *Server) SetProxyAuthMiddleware(middleware func(http.Handler) http.Handler) {
+	if s == nil {
+		return
+	}
+	s.proxyAuthMW = middleware
+}
+
+// SetProxyPolicyMiddleware configures policy middleware for the /mcp chain.
+func (s *Server) SetProxyPolicyMiddleware(middleware func(http.Handler) http.Handler) {
+	if s == nil {
+		return
+	}
+	s.proxyPolicyMW = middleware
 }
 
 // Handler returns the root HTTP handler for testing and embedding.
@@ -166,5 +209,53 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func defaultPolicyProfile(cfg *config.Config) *types.PolicyProfile {
+	rateDefault := 10
+	rateBurst := 20
+	if cfg != nil {
+		if cfg.RateDefault > 0 {
+			rateDefault = cfg.RateDefault
+		}
+		if cfg.RateBurst > 0 {
+			rateBurst = cfg.RateBurst
+		}
+	}
+
+	return &types.PolicyProfile{
+		Name:            "default",
+		RateLimit:       rateDefault,
+		RateBurst:       rateBurst,
+		ToolAllowlist:   []string{},
+		ToolDenylist:    []string{},
+		EnforcementMode: types.ModeEnforce,
+	}
+}
+
+func defaultProfiles(cfg *config.Config) map[string]*types.PolicyProfile {
+	defaultProfile := defaultPolicyProfile(cfg)
+	premium := &types.PolicyProfile{
+		Name:            "premium",
+		RateLimit:       50,
+		RateBurst:       100,
+		ToolAllowlist:   []string{},
+		ToolDenylist:    []string{},
+		EnforcementMode: types.ModeEnforce,
+	}
+	admin := &types.PolicyProfile{
+		Name:            "admin",
+		RateLimit:       100,
+		RateBurst:       200,
+		ToolAllowlist:   []string{},
+		ToolDenylist:    []string{},
+		EnforcementMode: types.ModeEnforce,
+	}
+
+	return map[string]*types.PolicyProfile{
+		"default": defaultProfile,
+		"premium": premium,
+		"admin":   admin,
 	}
 }
