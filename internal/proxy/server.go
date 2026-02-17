@@ -18,10 +18,11 @@ import (
 
 // ProxyServer hosts the gateway MCP server and backend client registry.
 type ProxyServer struct {
-	index   *registration.CapabilityIndex
-	clients map[string]*BackendClient
-	config  *config.Config
-	logger  *slog.Logger
+	index     *registration.CapabilityIndex
+	clients   map[string]*BackendClient
+	toolCache *ToolCache
+	config    *config.Config
+	logger    *slog.Logger
 
 	tlsConfig      *tls.Config
 	backendTimeout time.Duration
@@ -49,6 +50,7 @@ func NewProxyServer(
 	return &ProxyServer{
 		index:          index,
 		clients:        make(map[string]*BackendClient),
+		toolCache:      NewToolCache(defaultToolCacheTTL),
 		config:         cfg,
 		logger:         logger,
 		tlsConfig:      tlsConfig,
