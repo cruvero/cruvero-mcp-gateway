@@ -1,4 +1,4 @@
-.PHONY: build test lint vet coverage migrate-up migrate-down docker-build docker-run clean
+.PHONY: build test lint vet coverage coverage-check test-integration test-security test-load migrate-up migrate-down docker-build docker-run clean
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -19,6 +19,18 @@ vet:
 
 coverage:
 	go tool cover -func=coverage.out
+
+coverage-check:
+	./scripts/check-coverage.sh
+
+test-integration:
+	go test -tags integration ./internal/testutil
+
+test-security:
+	go test -tags security ./internal/testutil
+
+test-load:
+	go test -tags load ./internal/testutil
 
 migrate-up:
 	@echo "TODO: implement migrations up command"
