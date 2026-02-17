@@ -49,10 +49,20 @@ Use a repository `.devcontainer` so development and verification run in a reprod
    - `go test ./...`
    - `go vet ./...`
    - `golangci-lint run ./...`
-   - `helm lint charts/mcpgateway`
-   - `helm template charts/mcpgateway -f charts/mcpgateway/values.yaml -f charts/mcpgateway/values-dev.yaml`
+   - `make chart-validate`
 
 Local-first validation in the devcontainer is required before Argo CD sync or deployment PRs.
+
+### Helm Validation Matrix
+
+Use these targets for environment render checks:
+
+- `make chart-lint`
+- `make chart-render-base`
+- `make chart-render-dev`
+- `make chart-render-staging`
+- `make chart-render-prod`
+- `make chart-validate`
 
 ## GitHub Actions Standards
 

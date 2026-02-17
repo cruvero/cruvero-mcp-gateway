@@ -1,4 +1,4 @@
-.PHONY: build test lint vet coverage coverage-check test-integration test-security test-load migrate-up migrate-down docker-build docker-run clean
+.PHONY: build test lint vet coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-run clean
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -31,6 +31,23 @@ test-security:
 
 test-load:
 	go test -tags load ./internal/testutil
+
+chart-lint:
+	helm lint charts/mcpgateway
+
+chart-render-base:
+	helm template charts/mcpgateway -f charts/mcpgateway/values.yaml >/tmp/mcpgateway-base.yaml
+
+chart-render-dev:
+	helm template charts/mcpgateway -f charts/mcpgateway/values.yaml -f charts/mcpgateway/values-dev.yaml >/tmp/mcpgateway-dev.yaml
+
+chart-render-staging:
+	helm template charts/mcpgateway -f charts/mcpgateway/values.yaml -f charts/mcpgateway/values-staging.yaml >/tmp/mcpgateway-staging.yaml
+
+chart-render-prod:
+	helm template charts/mcpgateway -f charts/mcpgateway/values.yaml -f charts/mcpgateway/values-prod.yaml >/tmp/mcpgateway-prod.yaml
+
+chart-validate: chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod
 
 migrate-up:
 	@echo "TODO: implement migrations up command"
