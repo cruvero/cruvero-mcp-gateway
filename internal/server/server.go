@@ -13,6 +13,7 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/identity"
+	"github.com/cruvero/mcp-gateway/internal/policy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/types"
 	"github.com/go-chi/chi/v5"
@@ -61,9 +62,11 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 		cleanupInterval:   time.Minute,
 		cleanupMaxIdleTTL: 5 * time.Minute,
 	}
-	defaultProfile := defaultPolicyProfile(cfg)
+	profiles := defaultProfiles(cfg)
+	defaultProfile := profiles["default"]
 	srv.rateLimiterStore = ratelimit.NewLimiterStore(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
-	srv.profileResolver = ratelimit.NewDefaultProfileResolver(defaultProfiles(cfg), defaultProfile)
+	srv.profileResolver = ratelimit.NewDefaultProfileResolver(profiles, defaultProfile)
+	srv.proxyPolicyMW = policy.PolicyMiddleware(policy.NewEngine(profiles, nil, logger), logger)
 
 	srv.ready.Store(true)
 	srv.setupRoutes()

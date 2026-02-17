@@ -122,3 +122,18 @@ func TestCheckDangerousIgnoresNonStringValues(t *testing.T) {
 		t.Fatalf("expected no violations for non-string args, got %#v", violations)
 	}
 }
+
+func TestCollectStringsCoversPointerAndMapBranches(t *testing.T) {
+	t.Parallel()
+
+	command := "sudo whoami"
+	value := map[any]any{
+		"nested": []any{&command},
+	}
+
+	loaded := make([]string, 0)
+	collectStrings(value, &loaded)
+	if len(loaded) == 0 {
+		t.Fatal("expected collectStrings to extract pointer string value")
+	}
+}

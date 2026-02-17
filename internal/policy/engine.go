@@ -109,7 +109,7 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 		EnforcementMode: mode,
 	}
 
-	if err := e.logDecision(ctx, req, decision); err != nil {
+	if err := LogDecision(ctx, e.auditStore, req, decision); err != nil {
 		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
 	}
 
@@ -140,26 +140,4 @@ func contains(values []string, expected string) bool {
 		}
 	}
 	return false
-}
-
-func (e *Engine) logDecision(ctx context.Context, req PolicyRequest, decision *PolicyDecision) error {
-	if e.auditStore == nil || decision == nil {
-		return nil
-	}
-
-	entry := &types.AuditEntry{
-		EventType:  "policy_decision",
-		ClientID:   req.ClientID,
-		ServerName: req.ToolName,
-		Details: map[string]any{
-			"tool":             req.ToolName,
-			"allowed":          decision.Allowed,
-			"enforcement_mode": decision.EnforcementMode,
-			"violations":       decision.Violations,
-		},
-	}
-	if err := e.auditStore.Log(ctx, entry); err != nil {
-		return fmt.Errorf("log policy decision: %w", err)
-	}
-	return nil
 }

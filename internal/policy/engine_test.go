@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -171,6 +172,51 @@ func TestEngineEvaluateCombinedChecks(t *testing.T) {
 	}
 }
 
+func TestEngineEvaluateNilEngineError(t *testing.T) {
+	t.Parallel()
+
+	var engine *Engine
+	_, err := engine.Evaluate(context.Background(), PolicyRequest{})
+	if err == nil {
+		t.Fatal("expected error for nil engine")
+	}
+}
+
+func TestNewEngineAddsDefaultProfile(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{}, nil, nil)
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName:    "safe.tool",
+		ProfileName: "missing",
+	})
+	if err != nil {
+		t.Fatalf("evaluate policy: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("expected default profile allow, got %#v", decision)
+	}
+}
+
+func TestEngineAuditLoggingFailureDoesNotFailEvaluate(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {Name: "default", EnforcementMode: types.ModeEnforce},
+	}, &failingAuditStore{}, testPolicyLogger())
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "safe.tool",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate policy should not fail when audit log fails: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("expected allowed decision, got %#v", decision)
+	}
+}
+
 func hasViolationType(violations []Violation, expected ViolationType) bool {
 	for _, violation := range violations {
 		if violation.Type == expected {
@@ -197,5 +243,15 @@ func (m *mockAuditStore) Log(_ context.Context, entry *types.AuditEntry) error {
 }
 
 func (m *mockAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
+	return nil, nil
+}
+
+type failingAuditStore struct{}
+
+func (f *failingAuditStore) Log(_ context.Context, _ *types.AuditEntry) error {
+	return errors.New("boom")
+}
+
+func (f *failingAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
 	return nil, nil
 }
