@@ -309,6 +309,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 
 type mockRegistrationService struct {
 	registerFn   func(ctx context.Context, caller *identitypkg.Identity, req RegistrationRequest) (*RegistrationResponse, error)
+	heartbeatFn  func(ctx context.Context, caller *identitypkg.Identity, id string, req HeartbeatRequest) (*HeartbeatResponse, error)
 	listFn       func(ctx context.Context, filter types.ServerFilter) ([]types.ServerRecord, error)
 	deregisterFn func(ctx context.Context, caller *identitypkg.Identity, id string) error
 }
@@ -316,6 +317,13 @@ type mockRegistrationService struct {
 func (m *mockRegistrationService) Register(ctx context.Context, caller *identitypkg.Identity, req RegistrationRequest) (*RegistrationResponse, error) {
 	if m.registerFn != nil {
 		return m.registerFn(ctx, caller, req)
+	}
+	return nil, ErrInvalidRequest
+}
+
+func (m *mockRegistrationService) Heartbeat(ctx context.Context, caller *identitypkg.Identity, id string, req HeartbeatRequest) (*HeartbeatResponse, error) {
+	if m.heartbeatFn != nil {
+		return m.heartbeatFn(ctx, caller, id, req)
 	}
 	return nil, ErrInvalidRequest
 }

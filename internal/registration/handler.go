@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 // RegistrationService defines service methods used by registration HTTP handlers.
 type RegistrationService interface {
 	Register(ctx context.Context, caller *identitypkg.Identity, req RegistrationRequest) (*RegistrationResponse, error)
+	Heartbeat(ctx context.Context, caller *identitypkg.Identity, id string, req HeartbeatRequest) (*HeartbeatResponse, error)
 	List(ctx context.Context, filter types.ServerFilter) ([]types.ServerRecord, error)
 	Deregister(ctx context.Context, caller *identitypkg.Identity, id string) error
 }
@@ -42,6 +44,7 @@ func NewHandler(service RegistrationService, logger *slog.Logger) *Handler {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.handleRegister)
+	r.Post("/{id}/heartbeat", h.handleHeartbeat)
 	r.With(auth.RequireScope(identitypkg.ScopeAdmin)).Get("/", h.handleList)
 	r.Delete("/{id}", h.handleDeregister)
 	return r
@@ -83,6 +86,38 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeRegistrationJSON(w, http.StatusOK, records)
+}
+
+func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		writeRegistrationError(w, http.StatusBadRequest, "missing registration id")
+		return
+	}
+
+	caller, ok := identitypkg.FromContext(r.Context())
+	if !ok {
+		writeRegistrationError(w, http.StatusUnauthorized, "missing identity")
+		return
+	}
+
+	var req HeartbeatRequest
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeRegistrationError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+
+	resp, err := h.service.Heartbeat(r.Context(), caller, id, req)
+	if err != nil {
+		h.writeServiceError(w, err)
+		return
+	}
+
+	writeRegistrationJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) handleDeregister(w http.ResponseWriter, r *http.Request) {
