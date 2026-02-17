@@ -128,3 +128,55 @@ func TestHandleHeartbeatUnknownRegistration(t *testing.T) {
 		t.Fatalf("expected status 404, got %d", rec.Code)
 	}
 }
+
+func TestHandleHeartbeatPublishesHealthChangedEvent(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getFn: func(ctx context.Context, id string) (*types.ServerRecord, error) {
+			return &types.ServerRecord{
+				ID:       id,
+				Name:     "svc-alpha",
+				SPIFFEID: "spiffe://example.org/ns/default/sa/server",
+				Status:   types.StatusApproved,
+			}, nil
+		},
+		updateStatusFn: func(ctx context.Context, id string, status types.ServerStatus) error {
+			return nil
+		},
+		updateHeartbeatFn: func(ctx context.Context, id string) error {
+			return nil
+		},
+	}
+
+	published := false
+	publisher := &mockLifecyclePublisher{
+		publishServerHealthFn: func(ctx context.Context, serverID string, name string, oldStatus, newStatus types.ServerStatus) error {
+			published = true
+			if oldStatus != types.StatusApproved || newStatus != types.StatusActive {
+				t.Fatalf("unexpected status transition: %s -> %s", oldStatus, newStatus)
+			}
+			return nil
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{HeartbeatTTL: 30 * time.Second}, nil)
+	svc.SetLifecycleEventPublisher(publisher)
+	h := NewHandler(svc, testRegistrationLogger())
+	router := h.Routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/server-1/heartbeat", bytes.NewBufferString(`{"status":"healthy"}`))
+	req = withIdentity(req, &identitypkg.Identity{
+		Type: identitypkg.IdentityMTLS,
+		ID:   "spiffe://example.org/ns/default/sa/server",
+	})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if !published {
+		t.Fatal("expected server health changed event to be published")
+	}
+}

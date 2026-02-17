@@ -217,6 +217,43 @@ func TestEngineAuditLoggingFailureDoesNotFailEvaluate(t *testing.T) {
 	}
 }
 
+func TestEnginePublishesPolicyViolationEvent(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {
+			Name:            "default",
+			ToolDenylist:    []string{"danger.tool"},
+			EnforcementMode: types.ModeEnforce,
+		},
+	}, nil, testPolicyLogger())
+
+	published := false
+	engine.SetViolationEventPublisher(&mockViolationPublisher{
+		publishFn: func(ctx context.Context, clientID string, toolName string, violations []string, decision string) error {
+			published = true
+			if clientID != "client-1" || toolName != "danger.tool" || decision != "denied" {
+				t.Fatalf("unexpected publish payload: client=%q tool=%q decision=%q", clientID, toolName, decision)
+			}
+			if len(violations) == 0 {
+				t.Fatal("expected non-empty violation details")
+			}
+			return nil
+		},
+	})
+
+	_, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "danger.tool",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate policy: %v", err)
+	}
+	if !published {
+		t.Fatal("expected policy violation event to be published")
+	}
+}
+
 func hasViolationType(violations []Violation, expected ViolationType) bool {
 	for _, violation := range violations {
 		if violation.Type == expected {
@@ -254,4 +291,21 @@ func (f *failingAuditStore) Log(_ context.Context, _ *types.AuditEntry) error {
 
 func (f *failingAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
 	return nil, nil
+}
+
+type mockViolationPublisher struct {
+	publishFn func(ctx context.Context, clientID string, toolName string, violations []string, decision string) error
+}
+
+func (m *mockViolationPublisher) PublishPolicyViolated(
+	ctx context.Context,
+	clientID string,
+	toolName string,
+	violations []string,
+	decision string,
+) error {
+	if m.publishFn != nil {
+		return m.publishFn(ctx, clientID, toolName, violations, decision)
+	}
+	return nil
 }

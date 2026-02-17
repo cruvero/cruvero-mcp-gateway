@@ -175,6 +175,42 @@ func TestSweeperHandlesStoreErrors(t *testing.T) {
 	}
 }
 
+func TestSweeperPublishesHealthChangedEvents(t *testing.T) {
+	t.Parallel()
+
+	var published atomic.Int32
+	serverStore := &mockServerStore{
+		listStaleFn: func(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error) {
+			return []types.ServerRecord{
+				{ID: "server-stale", Name: "svc-stale", Status: types.StatusActive},
+			}, nil
+		},
+		listExpiredFn: func(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error) {
+			return []types.ServerRecord{
+				{ID: "server-expired", Name: "svc-expired", Status: types.StatusStale},
+			}, nil
+		},
+		updateStatusFn: func(ctx context.Context, id string, status types.ServerStatus) error {
+			return nil
+		},
+	}
+
+	publisher := &mockLifecyclePublisher{
+		publishServerHealthFn: func(ctx context.Context, serverID string, name string, oldStatus, newStatus types.ServerStatus) error {
+			published.Add(1)
+			return nil
+		},
+	}
+
+	sweeper := NewSweeper(serverStore, NewCapabilityIndex(), &config.Config{HeartbeatTTL: 20 * time.Second}, testSweeperLogger())
+	sweeper.SetLifecycleEventPublisher(publisher)
+	sweeper.sweep(context.Background())
+
+	if published.Load() != 2 {
+		t.Fatalf("expected 2 health changed events, got %d", published.Load())
+	}
+}
+
 func testSweeperLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }

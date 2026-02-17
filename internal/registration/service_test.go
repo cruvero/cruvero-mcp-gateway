@@ -305,6 +305,73 @@ func TestServiceRegisterPolicyFromConfig(t *testing.T) {
 	}
 }
 
+func TestServiceRegisterPublishesServerRegisteredEvent(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+
+	publisherCalled := false
+	publisher := &mockLifecyclePublisher{
+		publishServerRegisteredFn: func(ctx context.Context, server types.ServerRecord) error {
+			publisherCalled = true
+			if server.Name != "svc-alpha" {
+				t.Fatalf("expected server name svc-alpha, got %q", server.Name)
+			}
+			return nil
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	svc.SetLifecycleEventPublisher(publisher)
+
+	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if !publisherCalled {
+		t.Fatal("expected publish server registered to be called")
+	}
+}
+
+func TestServiceDeregisterPublishesServerDeregisteredEvent(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getFn: func(ctx context.Context, id string) (*types.ServerRecord, error) {
+			return &types.ServerRecord{ID: id, Name: "svc-alpha", SPIFFEID: "spiffe://example.org/ns/default/sa/server"}, nil
+		},
+	}
+
+	publisherCalled := false
+	publisher := &mockLifecyclePublisher{
+		publishServerDeregisteredFn: func(ctx context.Context, serverID string, name string, reason string) error {
+			publisherCalled = true
+			if serverID != "server-1" || name != "svc-alpha" {
+				t.Fatalf("unexpected deregistered payload: id=%q name=%q", serverID, name)
+			}
+			return nil
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	svc.SetLifecycleEventPublisher(publisher)
+
+	err := svc.Deregister(context.Background(), &identitypkg.Identity{
+		Type:   identitypkg.IdentityAPIKey,
+		ID:     "admin-client",
+		Scopes: []string{identitypkg.ScopeAdmin},
+	}, "server-1")
+	if err != nil {
+		t.Fatalf("deregister: %v", err)
+	}
+	if !publisherCalled {
+		t.Fatal("expected publish server deregistered to be called")
+	}
+}
+
 func TestServiceListFailure(t *testing.T) {
 	t.Parallel()
 
@@ -586,6 +653,39 @@ func (m *mockServerStore) ListExpired(ctx context.Context, threshold time.Durati
 type mockAuditStore struct {
 	logFn   func(ctx context.Context, entry *types.AuditEntry) error
 	queryFn func(ctx context.Context, filter types.AuditFilter) ([]types.AuditEntry, error)
+}
+
+type mockLifecyclePublisher struct {
+	publishServerRegisteredFn   func(ctx context.Context, server types.ServerRecord) error
+	publishServerDeregisteredFn func(ctx context.Context, serverID string, name string, reason string) error
+	publishServerHealthFn       func(ctx context.Context, serverID string, name string, oldStatus, newStatus types.ServerStatus) error
+}
+
+func (m *mockLifecyclePublisher) PublishServerRegistered(ctx context.Context, server types.ServerRecord) error {
+	if m.publishServerRegisteredFn != nil {
+		return m.publishServerRegisteredFn(ctx, server)
+	}
+	return nil
+}
+
+func (m *mockLifecyclePublisher) PublishServerDeregistered(ctx context.Context, serverID string, name string, reason string) error {
+	if m.publishServerDeregisteredFn != nil {
+		return m.publishServerDeregisteredFn(ctx, serverID, name, reason)
+	}
+	return nil
+}
+
+func (m *mockLifecyclePublisher) PublishServerHealthChanged(
+	ctx context.Context,
+	serverID string,
+	name string,
+	oldStatus types.ServerStatus,
+	newStatus types.ServerStatus,
+) error {
+	if m.publishServerHealthFn != nil {
+		return m.publishServerHealthFn(ctx, serverID, name, oldStatus, newStatus)
+	}
+	return nil
 }
 
 func (m *mockAuditStore) Log(ctx context.Context, entry *types.AuditEntry) error {

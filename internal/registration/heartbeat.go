@@ -55,6 +55,11 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 		if err := s.serverStore.UpdateStatus(ctx, id, nextStatus); err != nil {
 			return nil, fmt.Errorf("heartbeat: update status: %w", err)
 		}
+		if s.publisher != nil {
+			if err := s.publisher.PublishServerHealthChanged(ctx, record.ID, record.Name, record.Status, nextStatus); err != nil {
+				s.logger.ErrorContext(ctx, "publish server health changed event failed", "error", err.Error())
+			}
+		}
 	}
 
 	if err := s.serverStore.UpdateHeartbeat(ctx, id); err != nil {

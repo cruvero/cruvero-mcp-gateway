@@ -34,6 +34,20 @@ type Service struct {
 	auditStore  store.AuditStore
 	config      *config.Config
 	logger      *slog.Logger
+	publisher   LifecycleEventPublisher
+}
+
+// LifecycleEventPublisher publishes registration lifecycle events.
+type LifecycleEventPublisher interface {
+	PublishServerRegistered(ctx context.Context, server types.ServerRecord) error
+	PublishServerDeregistered(ctx context.Context, serverID string, name string, reason string) error
+	PublishServerHealthChanged(
+		ctx context.Context,
+		serverID string,
+		name string,
+		oldStatus types.ServerStatus,
+		newStatus types.ServerStatus,
+	) error
 }
 
 // NewService creates a registration service.
@@ -47,6 +61,14 @@ func NewService(serverStore store.ServerStore, auditStore store.AuditStore, cfg 
 		config:      cfg,
 		logger:      logger,
 	}
+}
+
+// SetLifecycleEventPublisher sets an optional lifecycle events publisher.
+func (s *Service) SetLifecycleEventPublisher(publisher LifecycleEventPublisher) {
+	if s == nil {
+		return
+	}
+	s.publisher = publisher
 }
 
 // Register creates or updates a server registration from an mTLS identity.
@@ -108,6 +130,11 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 			"spiffe_id": record.SPIFFEID,
 		},
 	})
+	if s.publisher != nil {
+		if err := s.publisher.PublishServerRegistered(ctx, *record); err != nil {
+			s.logger.ErrorContext(ctx, "publish server registered event failed", slog.String("error", err.Error()))
+		}
+	}
 
 	heartbeatIntervalSeconds := heartbeatIntervalSeconds(s.config)
 	return &RegistrationResponse{
@@ -166,6 +193,11 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 			"spiffe_id": record.SPIFFEID,
 		},
 	})
+	if s.publisher != nil {
+		if err := s.publisher.PublishServerDeregistered(ctx, record.ID, record.Name, "deregistered"); err != nil {
+			s.logger.ErrorContext(ctx, "publish server deregistered event failed", slog.String("error", err.Error()))
+		}
+	}
 
 	return nil
 }

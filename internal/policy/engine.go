@@ -18,6 +18,12 @@ type Engine struct {
 	dangerousPatterns []*regexp.Regexp
 	auditStore        store.AuditStore
 	logger            *slog.Logger
+	publisher         ViolationEventPublisher
+}
+
+// ViolationEventPublisher publishes policy violation events.
+type ViolationEventPublisher interface {
+	PublishPolicyViolated(ctx context.Context, clientID string, toolName string, violations []string, decision string) error
 }
 
 // NewEngine creates a policy engine with compiled dangerous command patterns.
@@ -53,6 +59,14 @@ func NewEngine(
 		auditStore:        auditStore,
 		logger:            logger,
 	}
+}
+
+// SetViolationEventPublisher sets an optional policy-violation event publisher.
+func (e *Engine) SetViolationEventPublisher(publisher ViolationEventPublisher) {
+	if e == nil {
+		return
+	}
+	e.publisher = publisher
 }
 
 // Evaluate applies allowlist, denylist, dangerous-pattern, and schema checks.
@@ -111,6 +125,19 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 
 	if err := LogDecision(ctx, e.auditStore, req, decision); err != nil {
 		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
+	}
+	if len(violations) > 0 && e.publisher != nil {
+		violationTexts := make([]string, 0, len(violations))
+		for _, violation := range violations {
+			violationTexts = append(violationTexts, violation.Detail)
+		}
+		decisionLabel := "denied"
+		if decision.Allowed {
+			decisionLabel = "allowed"
+		}
+		if err := e.publisher.PublishPolicyViolated(ctx, req.ClientID, toolName, violationTexts, decisionLabel); err != nil {
+			e.logger.ErrorContext(ctx, "publish policy violated event failed", slog.String("error", err.Error()))
+		}
 	}
 
 	return decision, nil

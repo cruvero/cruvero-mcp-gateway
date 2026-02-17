@@ -17,6 +17,7 @@ type Sweeper struct {
 	index  *CapabilityIndex
 	config *config.Config
 	logger *slog.Logger
+	publisher LifecycleEventPublisher
 
 	mu      sync.Mutex
 	ticker  *time.Ticker
@@ -37,6 +38,14 @@ func NewSweeper(serverStore store.ServerStore, index *CapabilityIndex, cfg *conf
 		config: cfg,
 		logger: logger,
 	}
+}
+
+// SetLifecycleEventPublisher sets an optional event publisher for status transitions.
+func (s *Sweeper) SetLifecycleEventPublisher(publisher LifecycleEventPublisher) {
+	if s == nil {
+		return
+	}
+	s.publisher = publisher
 }
 
 // Start launches the background sweeper loop.
@@ -139,6 +148,11 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				)
 				continue
 			}
+			if s.publisher != nil {
+				if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
+					s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))
+				}
+			}
 
 			staleCount++
 			s.logger.InfoContext(ctx, "server marked stale", slog.String("server_id", server.ID))
@@ -170,6 +184,11 @@ func (s *Sweeper) sweep(ctx context.Context) {
 					slog.String("error", err.Error()),
 				)
 				continue
+			}
+			if s.publisher != nil {
+				if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
+					s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))
+				}
 			}
 
 			if s.index != nil {

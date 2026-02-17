@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
 func TestHealthzReturns200(t *testing.T) {
@@ -243,6 +246,37 @@ func TestRequestIDFromContextMissing(t *testing.T) {
 	}
 }
 
+func TestEventPublisherDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = false
+	cfg.NATSURL = "nats://127.0.0.1:4222"
+
+	srv := New(cfg, testLogger())
+	if srv.EventPublisher() != nil {
+		t.Fatal("expected nil event publisher when cruvero integration disabled")
+	}
+}
+
+func TestEventPublisherInitializedWhenCruveroEnabled(t *testing.T) {
+	t.Parallel()
+
+	port := freeNATSPort(t)
+	natsSrv := runNATSServerForServerTests(t, port)
+	defer natsSrv.Shutdown()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+	cfg.NATSURL = fmt.Sprintf("nats://127.0.0.1:%d", port)
+	cfg.GatewayID = "gw-server-test"
+
+	srv := New(cfg, testLogger())
+	if srv.EventPublisher() == nil {
+		t.Fatal("expected event publisher when cruvero enabled and nats configured")
+	}
+}
+
 func TestWriteJSONEncodeErrorPath(t *testing.T) {
 	t.Parallel()
 
@@ -269,4 +303,36 @@ func baseConfig() *config.Config {
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+func runNATSServerForServerTests(t *testing.T, port int) *natsserver.Server {
+	t.Helper()
+
+	opts := &natsserver.Options{
+		Host:   "127.0.0.1",
+		Port:   port,
+		NoLog:  true,
+		NoSigs: true,
+	}
+	srv, err := natsserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("new nats server: %v", err)
+	}
+	go srv.Start()
+	if !srv.ReadyForConnections(3 * time.Second) {
+		srv.Shutdown()
+		t.Fatal("nats server not ready")
+	}
+	return srv
+}
+
+func freeNATSPort(t *testing.T) int {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen free port: %v", err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
 }

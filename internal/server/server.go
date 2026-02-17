@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/events"
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/policy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
@@ -36,6 +38,8 @@ type Server struct {
 	proxyPolicyMW     func(http.Handler) http.Handler
 	cleanupInterval   time.Duration
 	cleanupMaxIdleTTL time.Duration
+	eventsClient      *events.Client
+	eventPublisher    *events.Publisher
 }
 
 // New builds a configured HTTP server with middleware and routes.
@@ -66,7 +70,20 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 	defaultProfile := profiles["default"]
 	srv.rateLimiterStore = ratelimit.NewLimiterStore(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
 	srv.profileResolver = ratelimit.NewDefaultProfileResolver(profiles, defaultProfile)
-	srv.proxyPolicyMW = policy.PolicyMiddleware(policy.NewEngine(profiles, nil, logger), logger)
+	policyEngine := policy.NewEngine(profiles, nil, logger)
+
+	if cfg != nil && cfg.CruveroEnabled && strings.TrimSpace(cfg.NATSURL) != "" {
+		natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID)
+		if err != nil {
+			logger.Warn("events client init failed", slog.String("error", err.Error()))
+		} else {
+			srv.eventsClient = natsClient
+			srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
+			policyEngine.SetViolationEventPublisher(srv.eventPublisher)
+		}
+	}
+
+	srv.proxyPolicyMW = policy.PolicyMiddleware(policyEngine, logger)
 
 	srv.ready.Store(true)
 	srv.setupRoutes()
@@ -93,6 +110,12 @@ func (s *Server) Start(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("start server: context is nil")
 	}
+
+	defer func() {
+		if s.eventsClient != nil {
+			_ = s.eventsClient.Close()
+		}
+	}()
 
 	ratelimit.StartCleanup(ctx, s.rateLimiterStore, s.cleanupInterval, s.cleanupMaxIdleTTL)
 
@@ -175,6 +198,14 @@ func (s *Server) SetProxyPolicyMiddleware(middleware func(http.Handler) http.Han
 		return
 	}
 	s.proxyPolicyMW = middleware
+}
+
+// EventPublisher returns the configured events publisher, if NATS is enabled.
+func (s *Server) EventPublisher() *events.Publisher {
+	if s == nil {
+		return nil
+	}
+	return s.eventPublisher
 }
 
 // Handler returns the root HTTP handler for testing and embedding.
