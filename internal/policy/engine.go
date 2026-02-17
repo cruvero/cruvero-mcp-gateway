@@ -1,0 +1,165 @@
+package policy
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"regexp"
+	"strings"
+
+	"github.com/cruvero/mcp-gateway/internal/store"
+	"github.com/cruvero/mcp-gateway/internal/types"
+)
+
+// Engine evaluates tool requests against configured policy profiles.
+type Engine struct {
+	profiles          map[string]*types.PolicyProfile
+	dangerousPatterns []*regexp.Regexp
+	auditStore        store.AuditStore
+	logger            *slog.Logger
+}
+
+// NewEngine creates a policy engine with compiled dangerous command patterns.
+func NewEngine(
+	profiles map[string]*types.PolicyProfile,
+	auditStore store.AuditStore,
+	logger *slog.Logger,
+) *Engine {
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+
+	copiedProfiles := make(map[string]*types.PolicyProfile, len(profiles))
+	for name, profile := range profiles {
+		copiedProfiles[strings.TrimSpace(name)] = profile
+	}
+	if _, ok := copiedProfiles["default"]; !ok {
+		copiedProfiles["default"] = &types.PolicyProfile{
+			Name:            "default",
+			EnforcementMode: types.ModeEnforce,
+		}
+	}
+
+	patterns, err := CompilePatterns(DefaultDangerousPatterns)
+	if err != nil {
+		logger.Error("compile dangerous patterns failed", slog.String("error", err.Error()))
+		patterns = nil
+	}
+
+	return &Engine{
+		profiles:          copiedProfiles,
+		dangerousPatterns: patterns,
+		auditStore:        auditStore,
+		logger:            logger,
+	}
+}
+
+// Evaluate applies allowlist, denylist, dangerous-pattern, and schema checks.
+func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecision, error) {
+	if e == nil {
+		return nil, fmt.Errorf("evaluate policy: engine is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	profile := e.resolveProfile(req.ProfileName)
+	mode := profile.EnforcementMode
+	if mode == "" {
+		mode = types.ModeEnforce
+	}
+
+	toolName := strings.TrimSpace(req.ToolName)
+	violations := make([]Violation, 0)
+
+	if len(profile.ToolAllowlist) > 0 && !contains(profile.ToolAllowlist, toolName) {
+		violations = append(violations, Violation{
+			Type:     ViolationAllowlist,
+			Detail:   fmt.Sprintf("tool %q is not in allowlist", toolName),
+			Severity: SeverityHigh,
+		})
+	}
+
+	if contains(profile.ToolDenylist, toolName) {
+		violations = append(violations, Violation{
+			Type:     ViolationDenylist,
+			Detail:   fmt.Sprintf("tool %q is in denylist", toolName),
+			Severity: SeverityHigh,
+		})
+	}
+
+	violations = append(violations, CheckDangerous(req.Arguments, e.dangerousPatterns)...)
+	violations = append(violations, ValidateArguments(req.Arguments, req.Schema)...)
+
+	allowed := len(violations) == 0
+	reason := "allowed"
+	if len(violations) > 0 {
+		reason = "policy violations detected"
+	}
+	if mode == types.ModeAudit && len(violations) > 0 {
+		allowed = true
+		reason = "policy violations detected (audit mode)"
+	}
+
+	decision := &PolicyDecision{
+		Allowed:         allowed,
+		Reason:          reason,
+		Violations:      violations,
+		EnforcementMode: mode,
+	}
+
+	if err := e.logDecision(ctx, req, decision); err != nil {
+		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
+	}
+
+	return decision, nil
+}
+
+func (e *Engine) resolveProfile(name string) *types.PolicyProfile {
+	profileName := strings.TrimSpace(name)
+	if profileName != "" {
+		if profile, ok := e.profiles[profileName]; ok && profile != nil {
+			return profile
+		}
+	}
+	if profile, ok := e.profiles["default"]; ok && profile != nil {
+		return profile
+	}
+	return &types.PolicyProfile{
+		Name:            "default",
+		EnforcementMode: types.ModeEnforce,
+	}
+}
+
+func contains(values []string, expected string) bool {
+	target := strings.TrimSpace(expected)
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) logDecision(ctx context.Context, req PolicyRequest, decision *PolicyDecision) error {
+	if e.auditStore == nil || decision == nil {
+		return nil
+	}
+
+	entry := &types.AuditEntry{
+		EventType:  "policy_decision",
+		ClientID:   req.ClientID,
+		ServerName: req.ToolName,
+		Details: map[string]any{
+			"tool":             req.ToolName,
+			"allowed":          decision.Allowed,
+			"enforcement_mode": decision.EnforcementMode,
+			"violations":       decision.Violations,
+		},
+	}
+	if err := e.auditStore.Log(ctx, entry); err != nil {
+		return fmt.Errorf("log policy decision: %w", err)
+	}
+	return nil
+}
