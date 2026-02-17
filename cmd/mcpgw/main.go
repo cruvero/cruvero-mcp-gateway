@@ -1,15 +1,11 @@
 package main
 
 import (
-	"context"
+	"flag"
 	"fmt"
-	"log/slog"
+	"io"
 	"os"
-	"os/signal"
-	"syscall"
-
-	"github.com/cruvero/mcp-gateway/internal/config"
-	"github.com/cruvero/mcp-gateway/internal/server"
+	"strings"
 )
 
 var (
@@ -18,76 +14,130 @@ var (
 	buildDate = "unknown"
 )
 
+var (
+	stdout io.Writer = os.Stdout
+	stderr io.Writer = os.Stderr
+)
+
+var (
+	serveHandler   = serveCommand
+	serverHandler  = serverCommand
+	apikeyHandler  = apikeyCommand
+	policyHandler  = policyCommand
+	healthHandler  = healthCommand
+	migrateHandler = migrateCommand
+)
+
 func main() {
-	if err := run(os.Args); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err.Error())
+	if err := run(os.Args[1:]); err != nil {
+		_, _ = fmt.Fprintln(stderr, err.Error())
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	if len(args) >= 2 {
-		switch args[1] {
-		case "serve":
-			return runServe()
-		case "version":
-			_, _ = fmt.Fprintf(os.Stdout, "version=%s commit=%s build_date=%s\n", version, commit, buildDate)
+	if len(args) > 0 {
+		switch strings.TrimSpace(args[0]) {
+		case "--version", "version":
+			printVersion(stdout)
 			return nil
-		default:
-			return fmt.Errorf("unknown command %q", args[1])
+		case "--help", "-h", "help":
+			printUsage(stdout)
+			return nil
 		}
 	}
 
-	return runServe()
+	opts, remaining, err := parseGlobalFlags(args)
+	if err != nil {
+		printUsage(stderr)
+		return fmt.Errorf("parse flags: %w", err)
+	}
+
+	if err := applyGlobalOptions(opts); err != nil {
+		return err
+	}
+
+	if len(remaining) == 0 {
+		return serveHandler(nil)
+	}
+
+	command := strings.TrimSpace(remaining[0])
+	commandArgs := remaining[1:]
+
+	switch command {
+	case "serve":
+		return serveHandler(commandArgs)
+	case "server":
+		return serverHandler(commandArgs)
+	case "apikey":
+		return apikeyHandler(commandArgs)
+	case "policy":
+		return policyHandler(commandArgs)
+	case "health":
+		return healthHandler(commandArgs)
+	case "migrate":
+		return migrateHandler(commandArgs)
+	default:
+		printUsage(stderr)
+		return fmt.Errorf("unknown command %q", command)
+	}
 }
 
-func runServe() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+type globalOptions struct {
+	configPath string
+	logLevel   string
+	logFormat  string
+}
+
+func parseGlobalFlags(args []string) (globalOptions, []string, error) {
+	fs := flag.NewFlagSet("mcpgw", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var opts globalOptions
+	fs.StringVar(&opts.configPath, "config", "", "reserved for future config file support")
+	fs.StringVar(&opts.logLevel, "log-level", "", "override log level")
+	fs.StringVar(&opts.logFormat, "log-format", "", "override log format")
+
+	if err := fs.Parse(args); err != nil {
+		return globalOptions{}, nil, err
 	}
 
-	logger := newLogger(cfg.LogFormat, cfg.LogLevel)
-	server.SetTracingVersion(version)
-	server.SetTracingEndpoint(cfg.OTLPExporterEndpoint)
-	shutdownTracing, err := server.InitTracer(context.Background(), cfg.OTELServiceName)
-	if err != nil {
-		return fmt.Errorf("initialize tracer: %w", err)
+	return opts, fs.Args(), nil
+}
+
+func applyGlobalOptions(opts globalOptions) error {
+	if strings.TrimSpace(opts.logLevel) != "" {
+		if err := os.Setenv("MCPGW_LOG_LEVEL", strings.TrimSpace(opts.logLevel)); err != nil {
+			return fmt.Errorf("apply global log-level: %w", err)
+		}
 	}
-	defer shutdownTracing()
-
-	srv := server.New(cfg, logger)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	logger.Info("starting mcp gateway",
-		slog.String("version", version),
-		slog.String("commit", commit),
-		slog.String("build_date", buildDate),
-		slog.String("listen_addr", cfg.ListenAddr),
-	)
-
-	if err := srv.Start(ctx); err != nil {
-		return fmt.Errorf("start gateway: %w", err)
+	if strings.TrimSpace(opts.logFormat) != "" {
+		if err := os.Setenv("MCPGW_LOG_FORMAT", strings.TrimSpace(opts.logFormat)); err != nil {
+			return fmt.Errorf("apply global log-format: %w", err)
+		}
 	}
+	_ = opts.configPath
 	return nil
 }
 
-func newLogger(format string, level string) *slog.Logger {
-	logLevel := slog.LevelInfo
-	switch level {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	}
+func printVersion(w io.Writer) {
+	_, _ = fmt.Fprintf(w, "version=%s commit=%s build_date=%s\n", version, commit, buildDate)
+}
 
-	opts := &slog.HandlerOptions{Level: logLevel}
-	if format == "text" {
-		return slog.New(slog.NewTextHandler(os.Stdout, opts))
-	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+func printUsage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "Usage: mcpgw [global flags] <command> [args]")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Commands:")
+	_, _ = fmt.Fprintln(w, "  serve       Start gateway server")
+	_, _ = fmt.Fprintln(w, "  server      Manage registered servers")
+	_, _ = fmt.Fprintln(w, "  apikey      Manage API keys")
+	_, _ = fmt.Fprintln(w, "  policy      Manage policy profiles")
+	_, _ = fmt.Fprintln(w, "  health      Check gateway health")
+	_, _ = fmt.Fprintln(w, "  migrate     Run database migrations")
+	_, _ = fmt.Fprintln(w, "  version     Print build version information")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Global flags:")
+	_, _ = fmt.Fprintln(w, "  --config      Reserved for future config file support")
+	_, _ = fmt.Fprintln(w, "  --log-level   Override MCPGW_LOG_LEVEL")
+	_, _ = fmt.Fprintln(w, "  --log-format  Override MCPGW_LOG_FORMAT")
 }
