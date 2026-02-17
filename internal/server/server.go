@@ -122,6 +122,15 @@ func (s *Server) MountRegistrationRoutes(registrationHandler http.Handler) {
 	})
 }
 
+// MountProxyRoutes mounts the client-facing MCP proxy endpoint at /mcp.
+func (s *Server) MountProxyRoutes(proxyHandler http.Handler) {
+	if s == nil || proxyHandler == nil {
+		return
+	}
+
+	s.router.Mount("/mcp", proxyHandler)
+}
+
 // Handler returns the root HTTP handler for testing and embedding.
 func (s *Server) Handler() http.Handler {
 	if s == nil {

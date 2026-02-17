@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
@@ -28,6 +31,7 @@ type ProxyServer struct {
 	backendTimeout time.Duration
 
 	mu                sync.Mutex
+	router            *Router
 	mcpServer         *server.MCPServer
 	streamableHandler *server.StreamableHTTPServer
 }
@@ -55,6 +59,7 @@ func NewProxyServer(
 		logger:         logger,
 		tlsConfig:      tlsConfig,
 		backendTimeout: backendTimeout,
+		router:         NewRouter(index, &RoundRobinStrategy{}, tlsConfig, backendTimeout, logger),
 	}
 }
 
@@ -71,9 +76,33 @@ func (p *ProxyServer) SetupMCP() error {
 		return nil
 	}
 
+	hooks := &server.Hooks{}
+	hooks.AddOnRequestInitialization(func(ctx context.Context, id any, message any) error {
+		raw, ok := message.(json.RawMessage)
+		if !ok {
+			return nil
+		}
+
+		var envelope struct {
+			Method mcp.MCPMethod `json:"method"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return fmt.Errorf("decode mcp method: %w", err)
+		}
+
+		switch envelope.Method {
+		case mcp.MethodToolsList, mcp.MethodToolsCall, mcp.MethodResourcesList, mcp.MethodResourcesRead:
+			if err := p.syncMCPRegistry(ctx); err != nil {
+				return fmt.Errorf("sync mcp registry: %w", err)
+			}
+		}
+		return nil
+	})
+
 	mcpServer := server.NewMCPServer(
 		"Cruvero MCP Gateway",
 		"0.1.0",
+		server.WithHooks(hooks),
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
@@ -112,11 +141,136 @@ func (p *ProxyServer) getOrCreateClient(record types.ServerRecord) *BackendClien
 
 	client, ok := p.clients[record.ID]
 	if ok {
+		if p.router != nil {
+			p.router.clients.Store(record.ID, client)
+		}
 		return client
 	}
 
 	client = NewBackendClient(record, p.tlsConfig, p.backendTimeout)
 	client.logger = p.logger
 	p.clients[record.ID] = client
+	if p.router != nil {
+		p.router.clients.Store(record.ID, client)
+	}
 	return client
+}
+
+func (p *ProxyServer) syncMCPRegistry(ctx context.Context) error {
+	if err := p.syncMCPTools(ctx); err != nil {
+		return fmt.Errorf("sync tools: %w", err)
+	}
+	if err := p.syncMCPResources(ctx); err != nil {
+		return fmt.Errorf("sync resources: %w", err)
+	}
+	return nil
+}
+
+func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
+	if p.mcpServer == nil {
+		return fmt.Errorf("mcp server is not initialized")
+	}
+
+	tools, err := p.handleListTools(ctx)
+	if err != nil {
+		return fmt.Errorf("aggregate tool definitions: %w", err)
+	}
+
+	serverTools := make([]server.ServerTool, 0, len(tools))
+	for _, tool := range tools {
+		tool := tool
+		mcpTool := mcp.Tool{
+			Name:           tool.Name,
+			Description:    tool.Description,
+			RawInputSchema: tool.InputSchema,
+		}
+
+		serverTools = append(serverTools, server.ServerTool{
+			Tool: mcpTool,
+			Handler: func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				args := req.GetArguments()
+				result, routeErr := p.router.Route(ctx, tool.Name, args)
+				if routeErr != nil {
+					return nil, fmt.Errorf("route tool %s: %w", tool.Name, routeErr)
+				}
+
+				mcpContent := make([]mcp.Content, 0, len(result.Content))
+				for _, block := range result.Content {
+					contentType := block.Type
+					if contentType == "" {
+						contentType = "text"
+					}
+					mcpContent = append(mcpContent, mcp.TextContent{
+						Type: contentType,
+						Text: block.Text,
+					})
+				}
+				return &mcp.CallToolResult{
+					Content: mcpContent,
+					IsError: result.IsError,
+				}, nil
+			},
+		})
+	}
+
+	p.mcpServer.SetTools(serverTools...)
+	return nil
+}
+
+func (p *ProxyServer) syncMCPResources(ctx context.Context) error {
+	if p.mcpServer == nil {
+		return fmt.Errorf("mcp server is not initialized")
+	}
+
+	resources, err := p.handleListResources(ctx)
+	if err != nil {
+		return fmt.Errorf("aggregate resources: %w", err)
+	}
+
+	serverResources := make([]server.ServerResource, 0, len(resources))
+	for _, resourceDef := range resources {
+		resourceDef := resourceDef
+		resource := mcp.NewResource(
+			resourceDef.URI,
+			resourceDef.Name,
+			mcp.WithResourceDescription(resourceDef.Description),
+			mcp.WithMIMEType(resourceDef.MimeType),
+		)
+
+		serverResources = append(serverResources, server.ServerResource{
+			Resource: resource,
+			Handler: func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				content, readErr := p.handleReadResource(ctx, req.Params.URI)
+				if readErr != nil {
+					return nil, readErr
+				}
+				return []mcp.ResourceContents{
+					mcp.TextResourceContents{
+						URI:      content.URI,
+						MIMEType: content.MimeType,
+						Text:     content.Text,
+					},
+				}, nil
+			},
+		})
+	}
+	p.mcpServer.SetResources(serverResources...)
+	p.mcpServer.SetResourceTemplates(server.ServerResourceTemplate{
+		Template: mcp.NewResourceTemplate("{+uri}", "proxy-resource-template", mcp.WithTemplateDescription("Proxy routed resources")),
+		Handler: func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			content, readErr := p.handleReadResource(ctx, req.Params.URI)
+			if readErr != nil {
+				return nil, readErr
+			}
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{
+					URI:      content.URI,
+					MIMEType: content.MimeType,
+					Text:     content.Text,
+				},
+			}, nil
+		},
+	})
+
+	return nil
 }
