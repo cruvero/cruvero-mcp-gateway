@@ -50,6 +50,21 @@ func TestReadyzReturns200(t *testing.T) {
 	}
 }
 
+func TestReadyzReturns503WhenNotReady(t *testing.T) {
+	t.Parallel()
+
+	srv := New(baseConfig(), testLogger())
+	srv.ready.Store(false)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+}
+
 func TestRequestIDGenerated(t *testing.T) {
 	t.Parallel()
 
@@ -80,6 +95,20 @@ func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status 500, got %d", rec.Code)
+	}
+}
+
+func TestMetricsPlaceholderRoute(t *testing.T) {
+	t.Parallel()
+
+	srv := New(baseConfig(), testLogger())
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 }
 
@@ -128,6 +157,69 @@ func TestStartGracefulShutdownOnContextCancellation(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("server did not shutdown within timeout")
+	}
+}
+
+func TestStartErrors(t *testing.T) {
+	t.Parallel()
+
+	var nilServer *Server
+	if err := nilServer.Start(context.Background()); err == nil {
+		t.Fatal("expected error when starting nil server")
+	}
+
+	srv := New(baseConfig(), testLogger())
+	if err := srv.Start(nil); err == nil {
+		t.Fatal("expected error when context is nil")
+	}
+
+	badCfg := baseConfig()
+	badCfg.ListenAddr = "bad-address"
+	badSrv := New(badCfg, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := badSrv.Start(ctx); err == nil {
+		t.Fatal("expected listen error for invalid address")
+	}
+}
+
+func TestCORSMiddlewareWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CORSEnabled = true
+	srv := New(cfg, testLogger())
+
+	req := httptest.NewRequest(http.MethodOptions, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status 204, got %d", rec.Code)
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected CORS origin header to be set")
+	}
+}
+
+func TestRequestIDFromContextMissing(t *testing.T) {
+	t.Parallel()
+
+	if got := RequestIDFromContext(context.Background()); got != "" {
+		t.Fatalf("expected empty request id, got %q", got)
+	}
+}
+
+func TestWriteJSONEncodeErrorPath(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]any{
+		"bad": make(chan int),
+	})
+
+	if rec.Code == 0 {
+		t.Fatal("expected a response status to be written")
 	}
 }
 

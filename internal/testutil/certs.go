@@ -30,9 +30,7 @@ func GenerateTestCerts(t *testing.T) *CertBundle {
 	t.Helper()
 
 	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate ca key: %v", err)
-	}
+	mustNoErr(t, err, "generate ca key")
 
 	caTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -48,27 +46,19 @@ func GenerateTestCerts(t *testing.T) *CertBundle {
 	}
 
 	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("create ca certificate: %v", err)
-	}
+	mustNoErr(t, err, "create ca certificate")
 
 	caCert, err := x509.ParseCertificate(caDER)
-	if err != nil {
-		t.Fatalf("parse ca certificate: %v", err)
-	}
+	mustNoErr(t, err, "parse ca certificate")
 
 	serverCertPEM, serverKeyPEM := generateLeafCert(t, caCert, caKey, 2, false)
 	clientCertPEM, clientKeyPEM := generateLeafCert(t, caCert, caKey, 3, true)
 
 	caCertPEM, err := encodePEM("CERTIFICATE", caDER)
-	if err != nil {
-		t.Fatalf("encode ca certificate: %v", err)
-	}
+	mustNoErr(t, err, "encode ca certificate")
 
 	caKeyPEM, err := encodePEM("RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(caKey))
-	if err != nil {
-		t.Fatalf("encode ca private key: %v", err)
-	}
+	mustNoErr(t, err, "encode ca private key")
 
 	return &CertBundle{
 		CACertPEM:     caCertPEM,
@@ -85,9 +75,7 @@ func generateLeafCert(t *testing.T, caCert *x509.Certificate, caKey *rsa.Private
 	t.Helper()
 
 	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate leaf key: %v", err)
-	}
+	mustNoErr(t, err, "generate leaf key")
 
 	tpl := &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
@@ -107,28 +95,20 @@ func generateLeafCert(t *testing.T, caCert *x509.Certificate, caKey *rsa.Private
 	if client {
 		tpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 		spiffeURI, parseErr := url.Parse("spiffe://example.org/test-client")
-		if parseErr != nil {
-			t.Fatalf("parse spiffe uri: %v", parseErr)
-		}
+		mustNoErr(t, parseErr, "parse spiffe uri")
 		tpl.URIs = []*url.URL{spiffeURI}
 		tpl.DNSNames = nil
 		tpl.IPAddresses = nil
 	}
 
 	leafDER, err := x509.CreateCertificate(rand.Reader, tpl, caCert, &leafKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatalf("create leaf certificate: %v", err)
-	}
+	mustNoErr(t, err, "create leaf certificate")
 
 	leafCertPEM, err := encodePEM("CERTIFICATE", leafDER)
-	if err != nil {
-		t.Fatalf("encode leaf certificate: %v", err)
-	}
+	mustNoErr(t, err, "encode leaf certificate")
 
 	leafKeyPEM, err := encodePEM("RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(leafKey))
-	if err != nil {
-		t.Fatalf("encode leaf private key: %v", err)
-	}
+	mustNoErr(t, err, "encode leaf private key")
 
 	return leafCertPEM, leafKeyPEM
 }
@@ -140,4 +120,11 @@ func encodePEM(blockType string, der []byte) ([]byte, error) {
 		return nil, fmt.Errorf("empty PEM encoding for block type %s", blockType)
 	}
 	return encoded, nil
+}
+
+func mustNoErr(t *testing.T, err error, message string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: %v", message, err)
+	}
 }
