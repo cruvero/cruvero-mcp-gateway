@@ -19,6 +19,8 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const (
@@ -52,6 +54,10 @@ func RateLimitMiddleware(
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, span := otel.Tracer("mcpgw/ratelimit").Start(r.Context(), "ratelimit.check")
+			defer span.End()
+			r = r.WithContext(ctx)
+
 			if store == nil {
 				next.ServeHTTP(w, r)
 				return
@@ -72,6 +78,10 @@ func RateLimitMiddleware(
 				ClientID: clientID,
 				Route:    resolveRouteKey(r),
 			}
+			span.SetAttributes(
+				attribute.String("client.id", clientID),
+				attribute.String("route", key.Route),
+			)
 
 			limiter := store.GetOrCreate(key, profile)
 			allowed := limiter.Allow()
@@ -81,6 +91,7 @@ func RateLimitMiddleware(
 				next.ServeHTTP(w, r)
 				return
 			}
+			span.SetAttributes(attribute.Bool("rate_limited", true))
 
 			retryAfter := retryAfterSeconds(limiter)
 			w.Header().Set(headerRetryAfter, strconv.Itoa(retryAfter))

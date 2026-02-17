@@ -18,6 +18,10 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/resilience"
 	"github.com/cruvero/mcp-gateway/internal/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -42,7 +46,9 @@ func NewBackendClient(record types.ServerRecord, tlsConfig *tls.Config, timeout 
 		timeout = defaultBackendTimeout
 	}
 
-	transport := resilience.NewTransport(tlsConfig, resilience.DefaultPoolOptions())
+	baseTransport := resilience.NewTransport(tlsConfig, resilience.DefaultPoolOptions())
+	var transport http.RoundTripper = baseTransport
+	transport = tracingRoundTripper{base: transport}
 
 	httpClient := &http.Client{
 		Transport: transport,
@@ -60,8 +66,18 @@ func NewBackendClient(record types.ServerRecord, tlsConfig *tls.Config, timeout 
 
 // CallTool invokes tools/call on the backend and normalizes the result.
 func (c *BackendClient) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResult, error) {
+	ctx, span := otel.Tracer("mcpgw/proxy").Start(ctx, "upstream.call",
+		traceWithBackendAttributes(c.record, c.baseURL, name)...,
+	)
+	defer span.End()
+
+	backendSpanName := fmt.Sprintf("backend.%s.%s", sanitizeSpanSegment(c.record.Name), sanitizeSpanSegment(name))
+	ctx, backendSpan := otel.Tracer("mcpgw/proxy").Start(ctx, backendSpanName)
+	defer backendSpan.End()
+
 	client, err := c.ensureInitialized(ctx)
 	if err != nil {
+		span.SetAttributes(attribute.Bool("upstream.success", false))
 		return nil, fmt.Errorf("call tool: %w", err)
 	}
 
@@ -72,6 +88,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 		},
 	})
 	if err != nil {
+		span.SetAttributes(attribute.Bool("upstream.success", false))
 		return nil, fmt.Errorf("call tool: backend call: %w", err)
 	}
 
@@ -89,6 +106,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 		default:
 			bytes, marshalErr := json.Marshal(content)
 			if marshalErr != nil {
+				span.SetAttributes(attribute.Bool("upstream.success", false))
 				return nil, fmt.Errorf("call tool: marshal content block: %w", marshalErr)
 			}
 			out.Content = append(out.Content, ContentBlock{
@@ -97,6 +115,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 			})
 		}
 	}
+	span.SetAttributes(attribute.Bool("upstream.success", true))
 
 	return out, nil
 }
@@ -266,4 +285,38 @@ func toolInputSchemaJSON(tool mcp.Tool) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	}
 	return json.RawMessage(bytes), nil
+}
+
+type tracingRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (t tracingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	propagator := otel.GetTextMapPropagator()
+	propagator.Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+	return base.RoundTrip(req)
+}
+
+func sanitizeSpanSegment(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "unknown"
+	}
+	replacer := strings.NewReplacer(" ", "_", "/", "_", "\\", "_", ":", "_")
+	return replacer.Replace(trimmed)
+}
+
+func traceWithBackendAttributes(record types.ServerRecord, endpoint string, tool string) []trace.SpanStartOption {
+	return []trace.SpanStartOption{
+		trace.WithAttributes(
+			attribute.String("backend.id", strings.TrimSpace(record.ID)),
+			attribute.String("backend.name", strings.TrimSpace(record.Name)),
+			attribute.String("backend.endpoint", strings.TrimSpace(endpoint)),
+			attribute.String("tool.name", strings.TrimSpace(tool)),
+		),
+	}
 }

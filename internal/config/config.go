@@ -23,31 +23,34 @@ const (
 	defaultCruveroEnabled   = false
 	defaultGatewayID        = "auto"
 	defaultCORSEnabled      = false
+	defaultOTELServiceName  = "mcpgw"
 )
 
 // Config contains all gateway runtime settings loaded from MCPGW_* env vars.
 type Config struct {
-	ListenAddr       string        `json:"listen_addr"`
-	TLSCertPath      string        `json:"tls_cert_path"`
-	TLSKeyPath       string        `json:"tls_key_path"`
-	TLSCAPath        string        `json:"tls_ca_path"`
-	DBURL            string        `json:"db_url"`
-	NATSURL          string        `json:"nats_url"`
-	OIDCIssuer       string        `json:"oidc_issuer"`
-	OIDCAudience     string        `json:"oidc_audience"`
-	HeartbeatTTL     time.Duration `json:"heartbeat_ttl"`
-	RateDefault      int           `json:"rate_default"`
-	RateBurst        int           `json:"rate_burst"`
-	CircuitThreshold int           `json:"circuit_threshold"`
-	CircuitTimeout   time.Duration `json:"circuit_timeout"`
-	RetryMax         int           `json:"retry_max"`
-	SPIFFEAllowList  []string      `json:"spiffe_allow_list"`
-	LogFormat        string        `json:"log_format"`
-	LogLevel         string        `json:"log_level"`
-	MetricsAddr      string        `json:"metrics_addr"`
-	CruveroEnabled   bool          `json:"cruvero_enabled"`
-	GatewayID        string        `json:"gateway_id"`
-	CORSEnabled      bool          `json:"cors_enabled"`
+	ListenAddr           string        `json:"listen_addr"`
+	TLSCertPath          string        `json:"tls_cert_path"`
+	TLSKeyPath           string        `json:"tls_key_path"`
+	TLSCAPath            string        `json:"tls_ca_path"`
+	DBURL                string        `json:"db_url"`
+	NATSURL              string        `json:"nats_url"`
+	OIDCIssuer           string        `json:"oidc_issuer"`
+	OIDCAudience         string        `json:"oidc_audience"`
+	HeartbeatTTL         time.Duration `json:"heartbeat_ttl"`
+	RateDefault          int           `json:"rate_default"`
+	RateBurst            int           `json:"rate_burst"`
+	CircuitThreshold     int           `json:"circuit_threshold"`
+	CircuitTimeout       time.Duration `json:"circuit_timeout"`
+	RetryMax             int           `json:"retry_max"`
+	SPIFFEAllowList      []string      `json:"spiffe_allow_list"`
+	LogFormat            string        `json:"log_format"`
+	LogLevel             string        `json:"log_level"`
+	MetricsAddr          string        `json:"metrics_addr"`
+	CruveroEnabled       bool          `json:"cruvero_enabled"`
+	GatewayID            string        `json:"gateway_id"`
+	CORSEnabled          bool          `json:"cors_enabled"`
+	OTLPExporterEndpoint string        `json:"otlp_exporter_endpoint"`
+	OTELServiceName      string        `json:"otel_service_name"`
 }
 
 // Load reads all MCPGW_* environment variables into Config and validates them.
@@ -101,27 +104,29 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		ListenAddr:       getEnv("MCPGW_LISTEN_ADDR", defaultListenAddr),
-		TLSCertPath:      os.Getenv("MCPGW_TLS_CERT"),
-		TLSKeyPath:       os.Getenv("MCPGW_TLS_KEY"),
-		TLSCAPath:        os.Getenv("MCPGW_TLS_CA"),
-		DBURL:            os.Getenv("MCPGW_DB_URL"),
-		NATSURL:          os.Getenv("MCPGW_NATS_URL"),
-		OIDCIssuer:       os.Getenv("MCPGW_OIDC_ISSUER"),
-		OIDCAudience:     os.Getenv("MCPGW_OIDC_AUDIENCE"),
-		HeartbeatTTL:     heartbeatTTL,
-		RateDefault:      rateDefault,
-		RateBurst:        rateBurst,
-		CircuitThreshold: circuitThreshold,
-		CircuitTimeout:   circuitTimeout,
-		RetryMax:         retryMax,
-		SPIFFEAllowList:  parseCSV("MCPGW_SPIFFE_ALLOW_PREFIX"),
-		LogFormat:        getEnv("MCPGW_LOG_FORMAT", defaultLogFormat),
-		LogLevel:         getEnv("MCPGW_LOG_LEVEL", defaultLogLevel),
-		MetricsAddr:      getEnv("MCPGW_METRICS_ADDR", defaultMetricsAddr),
-		CruveroEnabled:   cruveroEnabled,
-		GatewayID:        gatewayID,
-		CORSEnabled:      corsEnabled,
+		ListenAddr:           getEnv("MCPGW_LISTEN_ADDR", defaultListenAddr),
+		TLSCertPath:          os.Getenv("MCPGW_TLS_CERT"),
+		TLSKeyPath:           os.Getenv("MCPGW_TLS_KEY"),
+		TLSCAPath:            os.Getenv("MCPGW_TLS_CA"),
+		DBURL:                os.Getenv("MCPGW_DB_URL"),
+		NATSURL:              os.Getenv("MCPGW_NATS_URL"),
+		OIDCIssuer:           os.Getenv("MCPGW_OIDC_ISSUER"),
+		OIDCAudience:         os.Getenv("MCPGW_OIDC_AUDIENCE"),
+		HeartbeatTTL:         heartbeatTTL,
+		RateDefault:          rateDefault,
+		RateBurst:            rateBurst,
+		CircuitThreshold:     circuitThreshold,
+		CircuitTimeout:       circuitTimeout,
+		RetryMax:             retryMax,
+		SPIFFEAllowList:      parseCSV("MCPGW_SPIFFE_ALLOW_PREFIX"),
+		LogFormat:            getEnv("MCPGW_LOG_FORMAT", defaultLogFormat),
+		LogLevel:             getEnv("MCPGW_LOG_LEVEL", defaultLogLevel),
+		MetricsAddr:          getEnv("MCPGW_METRICS_ADDR", defaultMetricsAddr),
+		CruveroEnabled:       cruveroEnabled,
+		GatewayID:            gatewayID,
+		CORSEnabled:          corsEnabled,
+		OTLPExporterEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OTELServiceName:      getEnv("OTEL_SERVICE_NAME", defaultOTELServiceName),
 	}
 
 	if err := cfg.Validate(); err != nil {

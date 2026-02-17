@@ -19,6 +19,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/types"
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -53,6 +54,7 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 
 	router := chi.NewRouter()
 	router.Use(RequestIDMiddleware)
+	router.Use(TracingMiddleware(otel.Tracer("mcpgw/server")))
 	router.Use(MetricsMiddleware)
 	router.Use(LoggingMiddleware(logger))
 	router.Use(RecoveryMiddleware(logger))

@@ -48,6 +48,14 @@ func runServe() error {
 	}
 
 	logger := newLogger(cfg.LogFormat, cfg.LogLevel)
+	server.SetTracingVersion(version)
+	server.SetTracingEndpoint(cfg.OTLPExporterEndpoint)
+	shutdownTracing, err := server.InitTracer(context.Background(), cfg.OTELServiceName)
+	if err != nil {
+		return fmt.Errorf("initialize tracer: %w", err)
+	}
+	defer shutdownTracing()
+
 	srv := server.New(cfg, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

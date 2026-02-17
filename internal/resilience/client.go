@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/cruvero/mcp-gateway/internal/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // BackendCaller defines the backend call needed for resilient tool routing.
@@ -51,6 +53,9 @@ func (c *ResilientClient) CallTool(ctx context.Context, name string, args map[st
 	if c.breaker == nil {
 		return nil, fmt.Errorf("resilient call tool: circuit breaker is nil")
 	}
+	ctx, span := otel.Tracer("mcpgw/resilience").Start(ctx, "resilience.upstream_call")
+	defer span.End()
+	span.SetAttributes(attribute.String("tool.name", name))
 
 	attempt := 0
 	var out *types.ToolResult
@@ -90,7 +95,9 @@ func (c *ResilientClient) CallTool(ctx context.Context, name string, args map[st
 		return callErr
 	})
 	if err != nil {
+		span.SetAttributes(attribute.Bool("resilience.success", false))
 		return nil, fmt.Errorf("resilient call tool %s: %w", name, err)
 	}
+	span.SetAttributes(attribute.Bool("resilience.success", true))
 	return out, nil
 }

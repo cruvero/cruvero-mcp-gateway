@@ -11,6 +11,8 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Engine evaluates tool requests against configured policy profiles.
@@ -101,6 +103,9 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, span := otel.Tracer("mcpgw/policy").Start(ctx, "policy.evaluate")
+	defer span.End()
+	span.SetAttributes(attribute.String("tool.name", strings.TrimSpace(req.ToolName)))
 
 	profile := e.resolveProfile(req.ProfileName)
 	mode := profile.EnforcementMode
@@ -146,6 +151,10 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 		Violations:      violations,
 		EnforcementMode: mode,
 	}
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.String("policy.reason", decision.Reason),
+	)
 
 	if err := LogDecision(ctx, e.auditStore, req, decision); err != nil {
 		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))

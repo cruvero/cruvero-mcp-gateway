@@ -17,6 +17,8 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/resilience"
 	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/types"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -102,11 +104,14 @@ func NewRouter(
 func (r *Router) Route(ctx context.Context, toolName string, args map[string]any) (*ToolResult, error) {
 	start := time.Now()
 	backendLabel := "none"
+	ctx, span := otel.Tracer("mcpgw/proxy").Start(ctx, "proxy.route")
+	defer span.End()
 
 	if r == nil || r.index == nil {
 		return nil, fmt.Errorf("route tool: router index is not initialized")
 	}
 	name := strings.TrimSpace(toolName)
+	span.SetAttributes(attribute.String("tool.name", name))
 	if name == "" {
 		return nil, fmt.Errorf("route tool: missing tool name")
 	}
@@ -126,6 +131,7 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 	if backendLabel == "" {
 		backendLabel = strings.TrimSpace(selected.ID)
 	}
+	span.SetAttributes(attribute.String("backend.name", backendLabel))
 
 	client := r.GetOrCreateClient(*selected)
 	result, err := client.CallTool(ctx, name, args)
@@ -136,9 +142,11 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 		}
 		servermetrics.ObserveUpstreamError(backendLabel, errorType)
 		servermetrics.ObserveToolCall(name, backendLabel, "error", time.Since(start))
+		span.SetAttributes(attribute.Bool("route.success", false))
 		return nil, fmt.Errorf("route tool: backend %s: %w", selected.ID, err)
 	}
 	servermetrics.ObserveToolCall(name, backendLabel, "success", time.Since(start))
+	span.SetAttributes(attribute.Bool("route.success", true))
 
 	return result, nil
 }
