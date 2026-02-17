@@ -18,6 +18,15 @@ const (
 	EventServerHealthChanged = "server.health_changed"
 	// EventPolicyViolated is emitted when a policy violation occurs.
 	EventPolicyViolated = "policy.violated"
+
+	// ConfigScopePolicy is the policy configuration subject suffix.
+	ConfigScopePolicy = "policy"
+	// ConfigScopeServers is the server configuration subject suffix.
+	ConfigScopeServers = "servers"
+	// ConfigScopeServerSettings is the server settings configuration subject suffix.
+	ConfigScopeServerSettings = "server_settings"
+	// ConfigScopeAuth is the auth configuration subject suffix.
+	ConfigScopeAuth = "auth"
 )
 
 // EventEnvelope wraps all outbound/inbound NATS events.
@@ -46,8 +55,8 @@ type ServerDeregisteredPayload struct {
 
 // ServerHealthChangedPayload is the payload for EventServerHealthChanged.
 type ServerHealthChangedPayload struct {
-	ServerID  string           `json:"server_id"`
-	Name      string           `json:"name"`
+	ServerID  string             `json:"server_id"`
+	Name      string             `json:"name"`
 	OldStatus types.ServerStatus `json:"old_status"`
 	NewStatus types.ServerStatus `json:"new_status"`
 }
@@ -70,3 +79,12 @@ func SubjectForEvent(gatewayID string, eventType string) string {
 	return fmt.Sprintf("mcpgw.%s.events.%s", gateway, evt)
 }
 
+// SubjectForConfig returns the subscribe subject for a gateway-scoped config scope.
+func SubjectForConfig(gatewayID string, scope string) string {
+	gateway := strings.TrimSpace(gatewayID)
+	if gateway == "" {
+		gateway = "unknown"
+	}
+	cfgScope := strings.TrimSpace(scope)
+	return fmt.Sprintf("mcpgw.%s.config.%s", gateway, cfgScope)
+}

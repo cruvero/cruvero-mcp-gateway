@@ -20,8 +20,10 @@ type HeartbeatRequest struct {
 
 // HeartbeatResponse is returned after processing a heartbeat.
 type HeartbeatResponse struct {
-	ServerStatus types.ServerStatus `json:"server_status"`
-	NextDeadline time.Time          `json:"next_deadline"`
+	ServerStatus      types.ServerStatus `json:"server_status"`
+	NextDeadline      time.Time          `json:"next_deadline"`
+	ConfigVersion     int64              `json:"config_version"`
+	EffectiveSettings map[string]any     `json:"effective_settings"`
 }
 
 // Heartbeat records liveness and updates lifecycle status.
@@ -68,8 +70,11 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 
 	intervalSeconds := heartbeatIntervalSeconds(s.config)
 	nextDeadline := time.Now().UTC().Add(time.Duration(intervalSeconds) * time.Second)
+	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
 	return &HeartbeatResponse{
-		ServerStatus: nextStatus,
-		NextDeadline: nextDeadline,
+		ServerStatus:      nextStatus,
+		NextDeadline:      nextDeadline,
+		ConfigVersion:     configVersion,
+		EffectiveSettings: effectiveSettings,
 	}, nil
 }

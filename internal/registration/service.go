@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
@@ -35,6 +36,11 @@ type Service struct {
 	config      *config.Config
 	logger      *slog.Logger
 	publisher   LifecycleEventPublisher
+
+	mu                sync.RWMutex
+	spiffeAllowList   []string
+	settingsVersion   int64
+	effectiveSettings map[string]map[string]any
 }
 
 // LifecycleEventPublisher publishes registration lifecycle events.
@@ -55,11 +61,18 @@ func NewService(serverStore store.ServerStore, auditStore store.AuditStore, cfg 
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
+	allowList := []string(nil)
+	if cfg != nil {
+		allowList = cfg.SPIFFEAllowList
+	}
+
 	return &Service{
-		serverStore: serverStore,
-		auditStore:  auditStore,
-		config:      cfg,
-		logger:      logger,
+		serverStore:       serverStore,
+		auditStore:        auditStore,
+		config:            cfg,
+		logger:            logger,
+		spiffeAllowList:   copyStringSlice(allowList),
+		effectiveSettings: make(map[string]map[string]any),
 	}
 }
 
@@ -71,6 +84,46 @@ func (s *Service) SetLifecycleEventPublisher(publisher LifecycleEventPublisher) 
 	s.publisher = publisher
 }
 
+// UpdateSPIFFEAllowList replaces the registration SPIFFE prefix allowlist.
+func (s *Service) UpdateSPIFFEAllowList(prefixes []string) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spiffeAllowList = copyStringSlice(prefixes)
+}
+
+// UpdateEffectiveSettings replaces versioned effective settings for registered backends.
+func (s *Service) UpdateEffectiveSettings(configVersion int64, settingsByServer map[string]map[string]any) error {
+	if s == nil {
+		return fmt.Errorf("update effective settings: service is nil")
+	}
+	if configVersion <= 0 {
+		return fmt.Errorf("update effective settings: config version must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if configVersion < s.settingsVersion {
+		return fmt.Errorf("update effective settings: stale config version %d < %d", configVersion, s.settingsVersion)
+	}
+
+	next := make(map[string]map[string]any, len(settingsByServer))
+	for serverName, settings := range settingsByServer {
+		name := strings.TrimSpace(serverName)
+		if name == "" {
+			continue
+		}
+		next[name] = cloneSettings(settings)
+	}
+
+	s.settingsVersion = configVersion
+	s.effectiveSettings = next
+	return nil
+}
+
 // Register creates or updates a server registration from an mTLS identity.
 func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, req RegistrationRequest) (*RegistrationResponse, error) {
 	if caller == nil || caller.Type != identitypkg.IdentityMTLS {
@@ -79,10 +132,8 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("register: %w: %v", ErrInvalidRequest, err)
 	}
-	if s.config != nil {
-		if err := identitypkg.ValidateSPIFFEID(caller.ID, s.config.SPIFFEAllowList); err != nil {
-			return nil, fmt.Errorf("register: %w: %v", ErrForbidden, err)
-		}
+	if err := identitypkg.ValidateSPIFFEID(caller.ID, s.currentSPIFFEAllowList()); err != nil {
+		return nil, fmt.Errorf("register: %w: %v", ErrForbidden, err)
 	}
 
 	now := time.Now().UTC()
@@ -137,13 +188,14 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 	}
 
 	heartbeatIntervalSeconds := heartbeatIntervalSeconds(s.config)
+	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
 	return &RegistrationResponse{
 		InstanceID:               record.ID,
 		PolicySnapshot:           policySnapshot,
 		HeartbeatInterval:        heartbeatIntervalSeconds,
 		HeartbeatIntervalSeconds: heartbeatIntervalSeconds,
-		ConfigVersion:            0,
-		EffectiveSettings:        map[string]any{},
+		ConfigVersion:            configVersion,
+		EffectiveSettings:        effectiveSettings,
 		Status:                   record.Status,
 	}, nil
 }
@@ -261,4 +313,81 @@ func newUUID() string {
 		bytes[8:10],
 		bytes[10:16],
 	)
+}
+
+func (s *Service) currentSPIFFEAllowList() []string {
+	if s == nil {
+		return nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return copyStringSlice(s.spiffeAllowList)
+}
+
+func (s *Service) effectiveSettingsForServer(serverName string) (int64, map[string]any) {
+	if s == nil {
+		return 0, map[string]any{}
+	}
+
+	key := strings.TrimSpace(serverName)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if settings, ok := s.effectiveSettings[key]; ok {
+		return s.settingsVersion, cloneSettings(settings)
+	}
+	return s.settingsVersion, map[string]any{}
+}
+
+func copyStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneSettings(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return map[string]any{}
+	}
+
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+
+		switch typed := value.(type) {
+		case map[string]any:
+			out[trimmed] = cloneSettings(typed)
+		case []any:
+			cloned := make([]any, 0, len(typed))
+			for _, item := range typed {
+				switch nested := item.(type) {
+				case map[string]any:
+					cloned = append(cloned, cloneSettings(nested))
+				default:
+					cloned = append(cloned, nested)
+				}
+			}
+			out[trimmed] = cloned
+		default:
+			out[trimmed] = typed
+		}
+	}
+	return out
 }

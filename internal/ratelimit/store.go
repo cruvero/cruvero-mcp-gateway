@@ -28,9 +28,9 @@ type entry struct {
 
 // LimiterStore keeps per-(client,route) token buckets.
 type LimiterStore struct {
-	mu          sync.RWMutex
-	limiters    map[LimiterKey]*entry
-	defaultRate rate.Limit
+	mu           sync.RWMutex
+	limiters     map[LimiterKey]*entry
+	defaultRate  rate.Limit
 	defaultBurst int
 }
 
@@ -44,8 +44,8 @@ func NewLimiterStore(defaultRate float64, defaultBurst int) *LimiterStore {
 	}
 
 	return &LimiterStore{
-		limiters:    make(map[LimiterKey]*entry),
-		defaultRate: rate.Limit(defaultRate),
+		limiters:     make(map[LimiterKey]*entry),
+		defaultRate:  rate.Limit(defaultRate),
 		defaultBurst: defaultBurst,
 	}
 }
@@ -156,6 +156,27 @@ func (s *LimiterStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.limiters)
+}
+
+// SetDefaults updates default limiter values used for newly created keys.
+func (s *LimiterStore) SetDefaults(defaultRate float64, defaultBurst int) {
+	if s == nil {
+		return
+	}
+
+	rateLimit := defaultRate
+	if rateLimit <= 0 {
+		rateLimit = defaultRateLimit
+	}
+	burst := defaultBurst
+	if burst <= 0 {
+		burst = defaultRateBurst
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.defaultRate = rate.Limit(rateLimit)
+	s.defaultBurst = burst
 }
 
 func normalizeKey(key LimiterKey) LimiterKey {

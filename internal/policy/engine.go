@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
@@ -14,6 +15,7 @@ import (
 
 // Engine evaluates tool requests against configured policy profiles.
 type Engine struct {
+	mu                sync.RWMutex
 	profiles          map[string]*types.PolicyProfile
 	dangerousPatterns []*regexp.Regexp
 	auditStore        store.AuditStore
@@ -67,6 +69,28 @@ func (e *Engine) SetViolationEventPublisher(publisher ViolationEventPublisher) {
 		return
 	}
 	e.publisher = publisher
+}
+
+// ReplaceProfiles replaces all in-memory policy profiles with validated values.
+func (e *Engine) ReplaceProfiles(profiles map[string]*types.PolicyProfile) {
+	if e == nil {
+		return
+	}
+
+	copied := make(map[string]*types.PolicyProfile, len(profiles))
+	for name, profile := range profiles {
+		copied[strings.TrimSpace(name)] = profile
+	}
+	if _, ok := copied["default"]; !ok {
+		copied["default"] = &types.PolicyProfile{
+			Name:            "default",
+			EnforcementMode: types.ModeEnforce,
+		}
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.profiles = copied
 }
 
 // Evaluate applies allowlist, denylist, dangerous-pattern, and schema checks.
@@ -144,6 +168,9 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 }
 
 func (e *Engine) resolveProfile(name string) *types.PolicyProfile {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	profileName := strings.TrimSpace(name)
 	if profileName != "" {
 		if profile, ok := e.profiles[profileName]; ok && profile != nil {
