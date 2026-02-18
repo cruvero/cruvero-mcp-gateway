@@ -44,11 +44,32 @@ spec:
     warn: true
     ignore:
       - group: ""
+        kind: ConfigMap
+        name: kube-root-ca.crt
+      - group: ""
+        kind: ServiceAccount
+        name: default
+      - group: ""
         kind: Secret
         name: mcpgateway-dev*
       - group: ""
         kind: ServiceAccount
         name: vault-secrets-operator
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: cruvero-dev-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: data-cruvero-dev-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: qdrant-storage-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: redis-data-cruvero-dev-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: storage-cruvero-dev-*
       - group: secrets.hashicorp.com
         kind: VaultAuth
         name: default
