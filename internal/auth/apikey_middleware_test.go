@@ -65,6 +65,42 @@ func TestAPIKeyMiddlewareValidKey(t *testing.T) {
 	}
 }
 
+func TestAPIKeyMiddlewareValidKeyFromXAPIKeyHeader(t *testing.T) {
+	t.Parallel()
+
+	plaintext, lookupHash, bcryptHash, err := GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("generate api key: %v", err)
+	}
+
+	store := &mockAPIKeyStore{
+		getByLookupHashFunc: func(ctx context.Context, lookup string) (*types.APIKey, error) {
+			if lookup != lookupHash {
+				t.Fatalf("expected lookup hash %q, got %q", lookupHash, lookup)
+			}
+			return &types.APIKey{
+				KeyLookupHash: lookupHash,
+				KeyBcryptHash: bcryptHash,
+				ClientID:      "client-1",
+				Scopes:        []string{identity.ScopeRead},
+			}, nil
+		},
+	}
+
+	handler := APIKeyMiddleware(store, testAuthLogger())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/protected", nil)
+	req.Header.Set("X-API-Key", plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+}
+
 func TestAPIKeyMiddlewareLookupHashMismatch(t *testing.T) {
 	t.Parallel()
 

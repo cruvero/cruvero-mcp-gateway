@@ -22,7 +22,7 @@ func APIKeyMiddleware(store store.APIKeyStore, logger *slog.Logger) func(http.Ha
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key, ok := extractBearerAPIKey(r.Header.Get("Authorization"))
+			key, ok := extractAPIKey(r.Header.Get("Authorization"), r.Header.Get("X-API-Key"))
 			if !ok {
 				writeAuthJSONError(w, http.StatusUnauthorized, "missing or invalid api key")
 				return
@@ -70,15 +70,18 @@ func APIKeyMiddleware(store store.APIKeyStore, logger *slog.Logger) func(http.Ha
 	}
 }
 
-func extractBearerAPIKey(header string) (string, bool) {
-	if !strings.HasPrefix(header, "Bearer ") {
+func extractAPIKey(authHeader, xAPIKey string) (string, bool) {
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if token != "" && strings.HasPrefix(token, APIKeyPrefix) {
+			return token, true
+		}
+	}
+	xAPIKey = strings.TrimSpace(xAPIKey)
+	if xAPIKey == "" || !strings.HasPrefix(xAPIKey, APIKeyPrefix) {
 		return "", false
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-	if token == "" || !strings.HasPrefix(token, APIKeyPrefix) {
-		return "", false
-	}
-	return token, true
+	return xAPIKey, true
 }
 
 func writeAuthJSONError(w http.ResponseWriter, statusCode int, message string) {
