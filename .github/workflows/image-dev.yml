@@ -8,76 +8,37 @@ on:
 permissions:
   contents: read
 
+env:
+  REGISTRY: ${{ secrets.HARBOR_URL || vars.HARBOR_URL || 'harbor.dev.gchinfo.com' }}
+  HARBOR_PROJECT: cruvero
+  DOCKER_PROXY: docker-cache.dev.gchinfo.com
+  GCR_PROXY: gcr-cache.dev.gchinfo.com
+  GOPROXY: https://nexus.dev.gchinfo.com/repository/go-proxy/,direct
+  # Self-hosted runner uses an older Docker Engine API (max ~1.41). Force the client to match.
+  DOCKER_API_VERSION: "1.41"
+
 jobs:
   docker-build-push:
-    runs-on:
-      group: cruvero-org-runners
+    runs-on: [self-hosted, cruvero]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve Harbor Registry
+      - name: Normalize Harbor Registry
         shell: bash
-        env:
-          HARBOR_URL_SECRET: ${{ secrets.HARBOR_URL }}
-          HARBOR_URL_VAR: ${{ vars.HARBOR_URL }}
         run: |
           set -euo pipefail
-          registry="${HARBOR_URL_SECRET:-}"
-          if [[ -z "${registry}" ]]; then
-            registry="${HARBOR_URL_VAR:-}"
-          fi
-          if [[ -z "${registry}" ]]; then
-            registry="harbor.dev.gchinfo.com"
-          fi
+          registry="${REGISTRY:-harbor.dev.gchinfo.com}"
           registry="${registry#https://}"
           registry="${registry#http://}"
           registry="${registry%/}"
-          echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
-
-      - name: Parse Harbor Token Credentials
-        shell: bash
-        env:
-          HARBOR_TOKEN_SECRET: ${{ secrets.HARBOR_TOKEN }}
-          HARBOR_TOKEN_VAR: ${{ vars.HARBOR_TOKEN }}
-          HARBOR_USERNAME_SECRET: ${{ secrets.HARBOR_USERNAME }}
-          HARBOR_PASSWORD_SECRET: ${{ secrets.HARBOR_PASSWORD }}
-          HARBOR_USERNAME_VAR: ${{ vars.HARBOR_USERNAME }}
-          HARBOR_PASSWORD_VAR: ${{ vars.HARBOR_PASSWORD }}
-        run: |
-          set -euo pipefail
-          token="${HARBOR_TOKEN_SECRET:-}"
-          if [[ -z "${token}" ]]; then
-            token="${HARBOR_TOKEN_VAR:-}"
-          fi
-
-          if [[ "${token}" == *:* ]]; then
-            username="${token%%:*}"
-            password="${token#*:}"
-          else
-            username="${HARBOR_USERNAME_SECRET:-}"
-            password="${HARBOR_PASSWORD_SECRET:-}"
-            if [[ -z "${username}" ]]; then
-              username="${HARBOR_USERNAME_VAR:-}"
-            fi
-            if [[ -z "${password}" ]]; then
-              password="${HARBOR_PASSWORD_VAR:-}"
-            fi
-          fi
-
-          if [[ -z "${username:-}" || -z "${password:-}" ]]; then
-            echo "Harbor credentials are required via HARBOR_TOKEN (username:password) or HARBOR_USERNAME/HARBOR_PASSWORD"
-            exit 1
-          fi
-
-          echo "HARBOR_USERNAME=${username}" >> "$GITHUB_ENV"
-          echo "HARBOR_PASSWORD=${password}" >> "$GITHUB_ENV"
+          echo "REGISTRY_NORM=${registry}" >> "$GITHUB_ENV"
 
       - name: Login To Harbor
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ env.HARBOR_USERNAME }}
-          password: ${{ env.HARBOR_PASSWORD }}
+          registry: ${{ env.REGISTRY_NORM }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD || secrets.HARBOR_TOKEN }}
 
       - name: Build Image
         shell: bash
@@ -85,13 +46,16 @@ jobs:
           set -euo pipefail
           docker build \
             -f ./Dockerfile \
-            -t "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev-${GITHUB_SHA}" \
-            -t "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev" \
+            --build-arg DOCKER_PROXY="${DOCKER_PROXY}" \
+            --build-arg GCR_PROXY="${GCR_PROXY}" \
+            --build-arg GOPROXY="${GOPROXY}" \
+            -t "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:dev-${GITHUB_SHA}" \
+            -t "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:dev" \
             .
 
       - name: Push Image
         shell: bash
         run: |
           set -euo pipefail
-          docker push "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev-${GITHUB_SHA}"
-          docker push "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev"
+          docker push "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:dev-${GITHUB_SHA}"
+          docker push "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:dev"
