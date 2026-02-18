@@ -303,7 +303,7 @@ func (h *AuthConfigHandler) Handle(ctx context.Context, data []byte) error {
 
 func decodeConfigMessage(data []byte, dst any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
+	// Allow additive fields so newer publishers remain compatible with older gateways.
 	if err := decoder.Decode(dst); err != nil {
 		return fmt.Errorf("invalid config payload: %w", err)
 	}
