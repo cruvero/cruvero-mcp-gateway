@@ -31,6 +31,7 @@ type transitionKey struct {
 func Transition(current types.ServerStatus, event Event) (types.ServerStatus, error) {
 	transitions := map[transitionKey]types.ServerStatus{
 		{current: types.StatusPending, event: EventApproved}:        types.StatusApproved,
+		{current: types.StatusPending, event: EventHeartbeat}:       types.StatusActive,
 		{current: types.StatusPending, event: EventExpired}:         types.StatusExpired,
 		{current: types.StatusApproved, event: EventHeartbeat}:      types.StatusActive,
 		{current: types.StatusApproved, event: EventExpired}:        types.StatusExpired,

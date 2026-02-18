@@ -16,6 +16,7 @@ func TestTransitionValid(t *testing.T) {
 		next    types.ServerStatus
 	}{
 		{name: "pending approved", current: types.StatusPending, event: EventApproved, next: types.StatusApproved},
+		{name: "pending heartbeat", current: types.StatusPending, event: EventHeartbeat, next: types.StatusActive},
 		{name: "pending expired", current: types.StatusPending, event: EventExpired, next: types.StatusExpired},
 		{name: "approved heartbeat", current: types.StatusApproved, event: EventHeartbeat, next: types.StatusActive},
 		{name: "approved expired", current: types.StatusApproved, event: EventExpired, next: types.StatusExpired},
@@ -56,7 +57,6 @@ func TestTransitionInvalid(t *testing.T) {
 		current types.ServerStatus
 		event   Event
 	}{
-		{name: "pending heartbeat", current: types.StatusPending, event: EventHeartbeat},
 		{name: "approved approve again", current: types.StatusApproved, event: EventApproved},
 		{name: "expired heartbeat", current: types.StatusExpired, event: EventHeartbeat},
 	}
