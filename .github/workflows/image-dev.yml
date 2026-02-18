@@ -11,9 +11,6 @@ permissions:
 env:
   REGISTRY: ${{ secrets.HARBOR_URL || vars.HARBOR_URL || 'harbor.dev.gchinfo.com' }}
   HARBOR_PROJECT: cruvero
-  DOCKER_PROXY: docker-cache.dev.gchinfo.com
-  GCR_PROXY: gcr-cache.dev.gchinfo.com
-  GOPROXY: https://nexus.dev.gchinfo.com/repository/go-proxy/,direct
   # Self-hosted runner uses an older Docker Engine API (max ~1.41). Force the client to match.
   DOCKER_API_VERSION: "1.41"
 
@@ -46,9 +43,6 @@ jobs:
           set -euo pipefail
           docker build \
             -f ./Dockerfile \
-            --build-arg DOCKER_PROXY="${DOCKER_PROXY}" \
-            --build-arg GCR_PROXY="${GCR_PROXY}" \
-            --build-arg GOPROXY="${GOPROXY}" \
             -t "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:dev-${GITHUB_SHA}" \
             -t "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:dev" \
             .
