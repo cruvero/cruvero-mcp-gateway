@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   docker-build-push:
-    runs-on: cruvero-org-runners
+    runs-on:
+      group: cruvero-org-runners
     steps:
       - uses: actions/checkout@v4
 
