@@ -22,4 +22,5 @@ data:
   MCPGW_CRUVERO_ENABLED: {{ .Values.config.MCPGW_CRUVERO_ENABLED | quote }}
   MCPGW_GATEWAY_ID: {{ .Values.config.MCPGW_GATEWAY_ID | quote }}
   MCPGW_CORS_ENABLED: {{ .Values.config.MCPGW_CORS_ENABLED | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.OTEL_SERVICE_NAME | quote }}

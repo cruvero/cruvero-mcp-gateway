@@ -114,6 +114,9 @@ vault:
 secrets:
   # -- Existing Kubernetes Secret name with runtime credentials/settings.
   existingSecret: "mcpgw-runtime"
+  # -- When true, OTEL_EXPORTER_OTLP_ENDPOINT is sourced from runtime secret.
+  # Set false to source it from config.OTEL_EXPORTER_OTLP_ENDPOINT instead.
+  otlpEndpointFromSecret: true
   # -- Secret key names used for env wiring.
   keys:
     dbURL: MCPGW_DB_URL
@@ -130,6 +133,44 @@ monitoring:
   prometheusRule:
     enabled: false
     labels: {}
+
+tracing:
+  # -- Deploy in-cluster tracing stack (OTEL collector + Tempo monolithic).
+  enabled: false
+  collector:
+    image:
+      repository: otel/opentelemetry-collector-contrib
+      tag: "0.146.1"
+      pullPolicy: IfNotPresent
+    service:
+      otlpHttpPort: 4318
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+  tempo:
+    image:
+      repository: grafana/tempo
+      tag: "2.10.1"
+      pullPolicy: IfNotPresent
+    service:
+      httpPort: 3200
+      otlpHttpPort: 4318
+    retention: "48h"
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClassName: ""
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
 
 networkPolicy:
   enabled: true
@@ -155,6 +196,8 @@ networkPolicy:
     backends:
       - namespaceSelector: {}
         podSelector: {}
+    # -- Allowed OTLP collector destinations (port 4318).
+    otel: []
     # -- DNS egress destinations (UDP/TCP 53).
     dns:
       - namespaceSelector:

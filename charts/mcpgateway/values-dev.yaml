@@ -26,6 +26,7 @@ config:
   MCPGW_TLS_CA: ""
   MCPGW_CRUVERO_ENABLED: "true"
   MCPGW_GATEWAY_ID: "mcpgateway-dev"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://mcpgateway-dev-otel-collector:4318"
 
 vault:
   enabled: true
@@ -37,3 +38,18 @@ vault:
 
 secrets:
   existingSecret: mcpgateway-dev-vault-secrets
+  otlpEndpointFromSecret: false
+
+tracing:
+  enabled: true
+
+networkPolicy:
+  egress:
+    otel:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: cruvero-dev
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/instance: mcpgateway-dev
+            app.kubernetes.io/component: otel-collector
