@@ -17,8 +17,15 @@ imagePullSecrets:
 tls:
   secretName: cruvero-dev-tls
 
+probes:
+  scheme: HTTP
+
 config:
-  MCPGW_TLS_CA: /etc/ssl/certs/ca-certificates.crt
+  MCPGW_TLS_CERT: ""
+  MCPGW_TLS_KEY: ""
+  MCPGW_TLS_CA: ""
+  MCPGW_CRUVERO_ENABLED: "true"
+  MCPGW_GATEWAY_ID: "mcpgateway-dev"
 
 vault:
   enabled: true

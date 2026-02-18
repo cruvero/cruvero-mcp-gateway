@@ -32,6 +32,10 @@ service:
     https: 8443
     metrics: 9090
 
+probes:
+  # -- Probe scheme used for /healthz and /readyz checks.
+  scheme: HTTPS
+
 resources:
   requests:
     cpu: 100m

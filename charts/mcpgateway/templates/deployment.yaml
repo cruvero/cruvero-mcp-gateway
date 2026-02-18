@@ -47,7 +47,7 @@ spec:
             httpGet:
               path: /healthz
               port: https
-              scheme: HTTPS
+              scheme: {{ .Values.probes.scheme | default "HTTPS" }}
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
@@ -55,7 +55,7 @@ spec:
             httpGet:
               path: /readyz
               port: https
-              scheme: HTTPS
+              scheme: {{ .Values.probes.scheme | default "HTTPS" }}
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
