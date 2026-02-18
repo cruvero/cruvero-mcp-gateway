@@ -15,15 +15,27 @@ imagePullSecrets:
   - name: harbor-pull-secret
 
 tls:
-  secretName: cruvero-dev-tls
+  certManager:
+    enabled: true
+    secretName: mcpgateway-dev-tls
+    issuerRef:
+      name: vault-mcp-gateway-server
+      kind: ClusterIssuer
+      group: cert-manager.io
+    dnsNames:
+      - mcpgateway-dev
+      - mcpgateway-dev.cruvero-dev
+      - mcpgateway-dev.cruvero-dev.svc
+      - mcpgateway-dev.cruvero-dev.svc.cluster.local
 
 probes:
-  scheme: HTTP
+  scheme: HTTPS
 
 config:
-  MCPGW_TLS_CERT: ""
-  MCPGW_TLS_KEY: ""
-  MCPGW_TLS_CA: ""
+  MCPGW_TLS_CERT: "/tls/tls.crt"
+  MCPGW_TLS_KEY: "/tls/tls.key"
+  MCPGW_TLS_CA: "/tls/ca.crt"
+  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://cruvero.dev/ns/cruvero-dev/sa/"
   MCPGW_CRUVERO_ENABLED: "true"
   MCPGW_GATEWAY_ID: "mcpgateway-dev"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://mcpgateway-dev-otel-collector:4318"

@@ -1,0 +1,33 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: vault-mcp-gateway-server
+  labels:
+    app.kubernetes.io/part-of: cruvero-mcp-gateway
+spec:
+  vault:
+    server: https://vault.dev.gchinfo.com
+    path: pki_mcp/sign/mcpgateway-dev-server
+    auth:
+      kubernetes:
+        mountPath: /v1/auth/kubernetes
+        role: cert-manager-pki
+        serviceAccountRef:
+          name: cert-manager
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: vault-mcp-backend-client
+  labels:
+    app.kubernetes.io/part-of: cruvero-mcp-gateway
+spec:
+  vault:
+    server: https://vault.dev.gchinfo.com
+    path: pki_mcp/sign/mcp-backend-client
+    auth:
+      kubernetes:
+        mountPath: /v1/auth/kubernetes
+        role: cert-manager-pki
+        serviceAccountRef:
+          name: cert-manager
