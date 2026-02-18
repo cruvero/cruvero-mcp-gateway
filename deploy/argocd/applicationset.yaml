@@ -7,37 +7,23 @@ spec:
   goTemplate: true
   goTemplateOptions:
     - missingkey=error
+  ignoreApplicationDifferences:
+    - jsonPointers:
+        - /spec/source/helm/parameters
   generators:
     - list:
         elements:
           - env: dev
-            namespace: mcpgateway-dev
+            namespace: cruvero-dev
             valuesFile: values-dev.yaml
             targetRevision: dev
-            autoSync: true
-            prune: true
-            selfHeal: true
-          - env: staging
-            namespace: mcpgateway-staging
-            valuesFile: values-staging.yaml
-            targetRevision: main
-            autoSync: false
-            prune: false
-            selfHeal: false
-          - env: prod
-            namespace: mcpgateway-prod
-            valuesFile: values-prod.yaml
-            targetRevision: main
-            autoSync: false
-            prune: false
-            selfHeal: false
   template:
     metadata:
       name: 'mcpgateway-{{ .env }}'
       labels:
         app.kubernetes.io/name: mcpgateway
         app.kubernetes.io/part-of: cruvero-mcp-gateway
-        env: '{{ .env }}'
+        environment: '{{ .env }}'
     spec:
       project: mcpgateway
       source:
@@ -55,11 +41,10 @@ spec:
         syncOptions:
           - CreateNamespace=true
           - ServerSideApply=true
-        {{- if .autoSync }}
+          - RespectIgnoreDifferences=true
         automated:
-          prune: {{ .prune }}
-          selfHeal: {{ .selfHeal }}
-        {{- end }}
+          prune: true
+          selfHeal: true
       ignoreDifferences:
         - group: apps
           kind: Deployment
@@ -71,3 +56,14 @@ spec:
           jsonPointers:
             - /spec/clusterIP
             - /spec/clusterIPs
+  templatePatch: |
+    {{- if eq .env "dev" }}
+    metadata:
+      labels:
+        image-updater: mcpgateway
+      annotations:
+        argocd-image-updater.argoproj.io/image-list: "mcpgateway=harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway:dev"
+        argocd-image-updater.argoproj.io/mcpgateway.update-strategy: digest
+        argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
+        argocd-image-updater.argoproj.io/mcpgateway.helm.image-tag: image.tag
+    {{- end }}

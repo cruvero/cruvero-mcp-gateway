@@ -57,5 +57,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ github.event.repository.name }}:dev-latest
+            ${{ env.REGISTRY }}/cruvero/cruvero-mcp-gateway:dev-${{ github.sha }}
+            ${{ env.REGISTRY }}/cruvero/cruvero-mcp-gateway:dev

@@ -6,8 +6,24 @@ replicaCount: 1
 autoscaling:
   enabled: false
 
+image:
+  repository: harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway
+  tag: dev
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: harbor-pull-secret
+
 tls:
-  secretName: mcpgw-dev-tls
+  secretName: cruvero-dev-tls
+
+vault:
+  enabled: true
+  createAuth: false
+  authRef: default
+  mount: secret
+  path: cruvero
+  refreshAfter: 30s
 
 secrets:
-  existingSecret: mcpgw-runtime-dev
+  existingSecret: mcpgateway-dev-vault-secrets

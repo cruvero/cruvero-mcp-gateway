@@ -1,0 +1,15 @@
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: mcpgateway-dev
+  namespace: argocd
+spec:
+  namespace: argocd
+  applicationRefs:
+    - namePattern: "mcpgateway-dev"
+      labelSelectors:
+        matchLabels:
+          image-updater: mcpgateway
+          environment: dev
+      # Image settings are configured through Application annotations.
+      useAnnotations: true

@@ -4,17 +4,12 @@ metadata:
   name: mcpgateway
   namespace: argocd
 spec:
-  description: GitOps boundaries and rollout gates for cruvero-mcp-gateway.
+  description: GitOps boundaries for dev deployment of cruvero-mcp-gateway.
   sourceRepos:
-    - git@github.com:cruvero/cruvero-mcp-gateway.git
     - https://github.com/cruvero/cruvero-mcp-gateway.git
   destinations:
     - server: https://kubernetes.default.svc
-      namespace: mcpgateway-dev
-    - server: https://kubernetes.default.svc
-      namespace: mcpgateway-staging
-    - server: https://kubernetes.default.svc
-      namespace: mcpgateway-prod
+      namespace: cruvero-dev
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
@@ -48,17 +43,4 @@ spec:
     ignore:
       - group: ""
         kind: Secret
-        name: mcpgw-runtime*
-  syncWindows:
-    - kind: deny
-      schedule: "* * * * *"
-      duration: 24h
-      applications:
-        - mcpgateway-staging
-      manualSync: false
-    - kind: deny
-      schedule: "* * * * *"
-      duration: 24h
-      applications:
-        - mcpgateway-prod
-      manualSync: false
+        name: mcpgateway-dev*
