@@ -114,6 +114,54 @@ func TestAuthMiddlewareRoutesNonJWTToAPIKey(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareRoutesXAPIKeyToAPIKey(t *testing.T) {
+	t.Parallel()
+
+	plaintext, lookupHash, bcryptHash, err := GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("generate api key: %v", err)
+	}
+
+	storeCalled := false
+	store := &mockAPIKeyStore{
+		getByLookupHashFunc: func(ctx context.Context, lookup string) (*types.APIKey, error) {
+			storeCalled = true
+			if lookup != lookupHash {
+				t.Fatalf("expected lookup hash %q, got %q", lookupHash, lookup)
+			}
+			return &types.APIKey{
+				KeyLookupHash: lookupHash,
+				KeyBcryptHash: bcryptHash,
+				ClientID:      "client-1",
+				Scopes:        []string{identity.ScopeRead},
+			}, nil
+		},
+	}
+
+	handler := AuthMiddleware(AuthOptions{
+		APIKeyStore: store,
+		Logger:      testAuthLogger(),
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := identity.FromContext(r.Context())
+		if !ok || id.Type != identity.IdentityAPIKey {
+			t.Fatal("expected api key identity in context")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	req.Header.Set("X-API-Key", plaintext)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if !storeCalled {
+		t.Fatal("expected API key store lookup to be called")
+	}
+}
+
 func TestAuthMiddlewareNoAuthHeader(t *testing.T) {
 	t.Parallel()
 

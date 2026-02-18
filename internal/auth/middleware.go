@@ -43,6 +43,19 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 
 			token, ok := extractBearerToken(r.Header.Get("Authorization"))
 			if !ok {
+				// Support API keys passed via X-API-Key by normalizing to bearer form.
+				if xAPIKey := strings.TrimSpace(r.Header.Get("X-API-Key")); xAPIKey != "" {
+					span.SetAttributes(attribute.String("auth.type", "api_key"))
+					if opts.APIKeyStore == nil {
+						writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
+						return
+					}
+					cloned := r.Clone(r.Context())
+					cloned.Header = r.Header.Clone()
+					cloned.Header.Set("Authorization", "Bearer "+xAPIKey)
+					apiKeyHandler.ServeHTTP(w, cloned)
+					return
+				}
 				span.SetAttributes(attribute.String("auth.type", "missing"))
 				writeAuthJSONError(w, http.StatusUnauthorized, "missing authorization header")
 				return
