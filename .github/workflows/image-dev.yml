@@ -17,29 +17,60 @@ jobs:
 
       - name: Resolve Harbor Registry
         shell: bash
+        env:
+          HARBOR_URL_SECRET: ${{ secrets.HARBOR_URL }}
+          HARBOR_URL_VAR: ${{ vars.HARBOR_URL }}
         run: |
           set -euo pipefail
-          registry="${{ secrets.HARBOR_URL }}"
+          registry="${HARBOR_URL_SECRET:-}"
+          if [[ -z "${registry}" ]]; then
+            registry="${HARBOR_URL_VAR:-}"
+          fi
+          if [[ -z "${registry}" ]]; then
+            registry="harbor.dev.gchinfo.com"
+          fi
           registry="${registry#https://}"
           registry="${registry#http://}"
           registry="${registry%/}"
-          if [[ -z "${registry}" ]]; then
-            echo "HARBOR_URL secret is required"
-            exit 1
-          fi
           echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
 
       - name: Parse Harbor Token Credentials
         shell: bash
+        env:
+          HARBOR_TOKEN_SECRET: ${{ secrets.HARBOR_TOKEN }}
+          HARBOR_TOKEN_VAR: ${{ vars.HARBOR_TOKEN }}
+          HARBOR_USERNAME_SECRET: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD_SECRET: ${{ secrets.HARBOR_PASSWORD }}
+          HARBOR_USERNAME_VAR: ${{ vars.HARBOR_USERNAME }}
+          HARBOR_PASSWORD_VAR: ${{ vars.HARBOR_PASSWORD }}
         run: |
           set -euo pipefail
-          token="${{ secrets.HARBOR_TOKEN }}"
-          if [[ "${token}" != *:* ]]; then
-            echo "HARBOR_TOKEN must be in username:password format"
+          token="${HARBOR_TOKEN_SECRET:-}"
+          if [[ -z "${token}" ]]; then
+            token="${HARBOR_TOKEN_VAR:-}"
+          fi
+
+          if [[ "${token}" == *:* ]]; then
+            username="${token%%:*}"
+            password="${token#*:}"
+          else
+            username="${HARBOR_USERNAME_SECRET:-}"
+            password="${HARBOR_PASSWORD_SECRET:-}"
+            if [[ -z "${username}" ]]; then
+              username="${HARBOR_USERNAME_VAR:-}"
+            fi
+            if [[ -z "${password}" ]]; then
+              password="${HARBOR_PASSWORD_VAR:-}"
+            fi
+          fi
+
+          if [[ -z "${username:-}" || -z "${password:-}" ]]; then
+            echo "Harbor credentials are required via HARBOR_TOKEN (username:password) or HARBOR_USERNAME/HARBOR_PASSWORD"
             exit 1
           fi
-          echo "HARBOR_USERNAME=${token%%:*}" >> "$GITHUB_ENV"
-          echo "HARBOR_PASSWORD=${token#*:}" >> "$GITHUB_ENV"
+
+          echo "HARBOR_USERNAME=${username}" >> "$GITHUB_ENV"
+          echo "HARBOR_PASSWORD=${password}" >> "$GITHUB_ENV"
 
       - name: Login To Harbor
         uses: docker/login-action@v3
