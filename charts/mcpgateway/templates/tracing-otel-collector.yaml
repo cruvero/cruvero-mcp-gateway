@@ -18,7 +18,7 @@ data:
       batch: {}
 
     exporters:
-      otlphttp/tempo:
+      otlp_http/tempo:
         endpoint: http://{{ include "mcpgateway.fullname" . }}-tempo:{{ .Values.tracing.tempo.service.otlpHttpPort }}
 
     extensions:
@@ -31,7 +31,7 @@ data:
         traces:
           receivers: [otlp]
           processors: [batch]
-          exporters: [otlphttp/tempo]
+          exporters: [otlp_http/tempo]
 ---
 apiVersion: v1
 kind: Service
