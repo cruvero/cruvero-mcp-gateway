@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,11 +11,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/events"
+	"github.com/cruvero/mcp-gateway/internal/testutil"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
@@ -320,6 +324,64 @@ func TestStartErrors(t *testing.T) {
 	if err := badSrv.Start(ctx); err == nil {
 		t.Fatal("expected listen error for invalid address")
 	}
+}
+
+func TestBuildInboundTLSConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("requires ca when tls enabled", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := baseConfig()
+		cfg.TLSCertPath = "/tmp/server.crt"
+		cfg.TLSKeyPath = "/tmp/server.key"
+		cfg.TLSCAPath = ""
+
+		if _, err := buildInboundTLSConfig(cfg); err == nil {
+			t.Fatal("expected error when MCPGW_TLS_CA is empty")
+		}
+	})
+
+	t.Run("builds verify-if-given tls config", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		certPath := filepath.Join(tmpDir, "server.crt")
+		keyPath := filepath.Join(tmpDir, "server.key")
+		caPath := filepath.Join(tmpDir, "ca.crt")
+		if err := os.WriteFile(certPath, certs.ServerCertPEM, 0o600); err != nil {
+			t.Fatalf("write server cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write server key: %v", err)
+		}
+		if err := os.WriteFile(caPath, certs.CACertPEM, 0o600); err != nil {
+			t.Fatalf("write ca cert: %v", err)
+		}
+
+		cfg := baseConfig()
+		cfg.TLSCertPath = certPath
+		cfg.TLSKeyPath = keyPath
+		cfg.TLSCAPath = caPath
+
+		tlsCfg, err := buildInboundTLSConfig(cfg)
+		if err != nil {
+			t.Fatalf("build inbound tls config: %v", err)
+		}
+		if tlsCfg == nil {
+			t.Fatal("expected tls config")
+		}
+		if tlsCfg.ClientAuth != tls.VerifyClientCertIfGiven {
+			t.Fatalf("expected ClientAuth=%v, got %v", tls.VerifyClientCertIfGiven, tlsCfg.ClientAuth)
+		}
+		if len(tlsCfg.Certificates) != 1 {
+			t.Fatalf("expected exactly one certificate, got %d", len(tlsCfg.Certificates))
+		}
+		if tlsCfg.ClientCAs == nil {
+			t.Fatal("expected ClientCAs to be configured")
+		}
+	})
 }
 
 func TestCORSMiddlewareWhenEnabled(t *testing.T) {

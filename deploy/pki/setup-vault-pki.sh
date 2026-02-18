@@ -63,7 +63,8 @@ vault write "${PKI_PATH}/roles/mcpgateway-dev-server" \
   allow_subdomains=true \
   enforce_hostnames=true \
   allow_localhost=false \
-  allowed_domains="cruvero-dev,cruvero-dev.svc,cruvero-dev.svc.cluster.local" \
+  allowed_domains="mcpgateway-dev,mcpgateway-dev.cruvero-dev,mcpgateway-dev.cruvero-dev.svc,mcpgateway-dev.cruvero-dev.svc.cluster.local" \
+  require_cn=false \
   server_flag=true \
   client_flag=false \
   key_type="rsa" \
@@ -75,6 +76,7 @@ vault write "${PKI_PATH}/roles/mcp-backend-client" \
   allow_any_name=true \
   enforce_hostnames=false \
   allowed_uri_sans="${SPIFFE_PREFIX}*" \
+  require_cn=false \
   server_flag=false \
   client_flag=true \
   key_type="rsa" \

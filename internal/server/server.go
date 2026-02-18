@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,7 +198,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	var serveErr error
 	if s.cfg != nil && s.cfg.IsTLSConfigured() {
-		serveErr = s.httpServer.ListenAndServeTLS(s.cfg.TLSCertPath, s.cfg.TLSKeyPath)
+		tlsCfg, err := buildInboundTLSConfig(s.cfg)
+		if err != nil {
+			return fmt.Errorf("start server: build inbound tls config: %w", err)
+		}
+		s.httpServer.TLSConfig = tlsCfg
+		serveErr = s.httpServer.ListenAndServeTLS("", "")
 	} else {
 		serveErr = s.httpServer.ListenAndServe()
 	}
@@ -215,6 +221,29 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func buildInboundTLSConfig(cfg *config.Config) (*tls.Config, error) {
+	if cfg == nil || !cfg.IsTLSConfigured() {
+		return nil, nil
+	}
+	if strings.TrimSpace(cfg.TLSCAPath) == "" {
+		return nil, fmt.Errorf("MCPGW_TLS_CA is required when TLS is enabled")
+	}
+
+	tlsCfg, err := identity.BuildServerTLSConfig(identity.TLSConfig{
+		CertPath:     cfg.TLSCertPath,
+		KeyPath:      cfg.TLSKeyPath,
+		ClientCAPath: cfg.TLSCAPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep health probes and non-mTLS routes reachable while still verifying
+	// client certs when provided so registration routes can enforce mTLS identity.
+	tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+	return tlsCfg, nil
 }
 
 // MountRegistrationRoutes mounts registration routes under /v1/registrations with mTLS identity middleware.
