@@ -15,9 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Resolve Harbor Registry
         shell: bash
         run: |
@@ -51,12 +48,19 @@ jobs:
           username: ${{ env.HARBOR_USERNAME }}
           password: ${{ env.HARBOR_PASSWORD }}
 
-      - name: Build And Push Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/cruvero/cruvero-mcp-gateway:dev-${{ github.sha }}
-            ${{ env.REGISTRY }}/cruvero/cruvero-mcp-gateway:dev
+      - name: Build Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            -f ./Dockerfile \
+            -t "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev-${GITHUB_SHA}" \
+            -t "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev" \
+            .
+
+      - name: Push Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev-${GITHUB_SHA}"
+          docker push "${REGISTRY}/cruvero/cruvero-mcp-gateway:dev"
