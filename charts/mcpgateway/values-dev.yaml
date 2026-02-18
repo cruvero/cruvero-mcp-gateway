@@ -17,6 +17,9 @@ imagePullSecrets:
 tls:
   secretName: cruvero-dev-tls
 
+config:
+  MCPGW_TLS_CA: /etc/ssl/certs/ca-certificates.crt
+
 vault:
   enabled: true
   createAuth: false
