@@ -13,7 +13,7 @@ spec:
     name: {{ required "tls.certManager.issuerRef.name is required when certManager is enabled" .Values.tls.certManager.issuerRef.name | quote }}
     kind: {{ .Values.tls.certManager.issuerRef.kind | quote }}
     group: {{ .Values.tls.certManager.issuerRef.group | quote }}
-  renewBefore: 360h
+  renewBefore: 360h0m0s
   dnsNames:
     {{- toYaml .Values.tls.certManager.dnsNames | nindent 4 }}
 {{- end }}
