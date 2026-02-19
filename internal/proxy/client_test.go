@@ -107,6 +107,47 @@ func TestBackendClientTimeout(t *testing.T) {
 	}
 }
 
+func TestBackendClientCallToolHTTPProtocol(t *testing.T) {
+	t.Parallel()
+
+	mcpSrv := mcpserver.NewMCPServer(
+		"backend-http",
+		"1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("echo", mcp.WithDescription("echo input"), mcp.WithString("message", mcp.Required())),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			message, err := req.RequireString("message")
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return mcp.NewToolResultText(message), nil
+		},
+	)
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	record := recordFromServerURL(t, srv.URL)
+	record.ID = "backend-http-1"
+	record.Status = types.StatusActive
+	record.Protocol = "http"
+
+	client := NewBackendClient(record, nil, 2*time.Second)
+	defer func() { _ = client.Close() }()
+
+	result, err := client.CallTool(context.Background(), "echo", map[string]any{"message": "hello-http"})
+	if err != nil {
+		t.Fatalf("call tool over http: %v", err)
+	}
+	if len(result.Content) != 1 || strings.TrimSpace(result.Content[0].Text) != "hello-http" {
+		t.Fatalf("unexpected tool result: %+v", result)
+	}
+}
+
 func newBackendTestServer(t *testing.T, slowTool bool) (*httptest.Server, types.ServerRecord, *tls.Config) {
 	t.Helper()
 
@@ -188,7 +229,8 @@ func recordFromServerURL(t *testing.T, rawURL string) types.ServerRecord {
 	}
 
 	return types.ServerRecord{
-		Host: host,
-		Port: port,
+		Host:     host,
+		Port:     port,
+		Protocol: strings.ToLower(strings.TrimSpace(parsed.Scheme)),
 	}
 }

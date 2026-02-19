@@ -55,12 +55,21 @@ func NewBackendClient(record types.ServerRecord, tlsConfig *tls.Config, timeout 
 		Timeout:   timeout,
 	}
 
-	baseURL := fmt.Sprintf("https://%s:%d/mcp", strings.TrimSpace(record.Host), record.Port)
+	baseURL := fmt.Sprintf("%s://%s:%d/mcp", backendScheme(record.Protocol), strings.TrimSpace(record.Host), record.Port)
 	return &BackendClient{
 		record:     record,
 		httpClient: httpClient,
 		logger:     slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		baseURL:    baseURL,
+	}
+}
+
+func backendScheme(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "http":
+		return "http"
+	default:
+		return "https"
 	}
 }
 

@@ -31,6 +31,7 @@ func TestPostgresServerStoreCreate(t *testing.T) {
 			record.Version,
 			record.Host,
 			record.Port,
+			record.Protocol,
 			capabilitiesJSON,
 			record.Status,
 			record.PolicyProfile,
@@ -76,6 +77,7 @@ func TestPostgresServerStoreGetAndNotFound(t *testing.T) {
 			"1.0.0",
 			"alpha.svc.cluster.local",
 			8080,
+			"https",
 			[]byte(`{"tools":["tool.a"],"resources":["res://alpha"],"prompts":["prompt.a"]}`),
 			"active",
 			"default",
@@ -120,6 +122,7 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			"1.0.0",
 			"alpha.svc.cluster.local",
 			8080,
+			"https",
 			[]byte(`{"tools":[],"resources":[],"prompts":[]}`),
 			"active",
 			"default",
@@ -142,6 +145,7 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			"1.0.0",
 			"alpha.svc.cluster.local",
 			8080,
+			"https",
 			[]byte(`{"tools":[],"resources":[],"prompts":[]}`),
 			"active",
 			"default",
@@ -165,8 +169,8 @@ func TestPostgresServerStoreList(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
 		WithArgs(status.String(), "alpha%", int64(10), int64(2)).
 		WillReturnRows(serverRows().
-			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now).
-			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now))
+			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now).
+			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now))
 
 	records, err := s.List(context.Background(), types.ServerFilter{
 		Status:      &status,
@@ -199,6 +203,7 @@ func TestPostgresServerStoreUpdateMethods(t *testing.T) {
 			record.Version,
 			record.Host,
 			record.Port,
+			record.Protocol,
 			capabilitiesJSON,
 			record.Status,
 			record.PolicyProfile,
@@ -256,6 +261,7 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			"1.0.0",
 			"alpha.svc",
 			8080,
+			"https",
 			[]byte(`{"tools":[],"resources":[],"prompts":[]}`),
 			"active",
 			"default",
@@ -281,6 +287,7 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			"1.1.0",
 			"beta.svc",
 			8081,
+			"https",
 			[]byte(`{"tools":[],"resources":[],"prompts":[]}`),
 			"stale",
 			"default",
@@ -324,6 +331,7 @@ func sampleServerRecord() *types.ServerRecord {
 		Version:  "1.0.0",
 		Host:     "alpha.svc.cluster.local",
 		Port:     8080,
+		Protocol: "https",
 		Capabilities: types.Capability{
 			Tools:     []string{"tool.a"},
 			Resources: []string{"res://alpha"},

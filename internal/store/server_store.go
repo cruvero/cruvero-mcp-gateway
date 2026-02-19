@@ -11,7 +11,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
-const serverColumns = "id, name, spiffe_id, version, host, port, capabilities, status, policy_profile, last_heartbeat, created_at, updated_at"
+const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, created_at, updated_at"
 
 // PostgresServerStore is a Postgres-backed implementation of ServerStore.
 type PostgresServerStore struct {
@@ -46,10 +46,15 @@ func (s *PostgresServerStore) Create(ctx context.Context, record *types.ServerRe
 		policyProfile = "default"
 	}
 
-	const query = `
-INSERT INTO mcp_servers (name, spiffe_id, version, host, port, capabilities, status, policy_profile, last_heartbeat)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+const query = `
+INSERT INTO mcp_servers (name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
+
+	protocol := strings.TrimSpace(record.Protocol)
+	if protocol == "" {
+		protocol = "https"
+	}
 
 	if _, err := s.db.ExecContext(
 		ctx,
@@ -59,6 +64,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		record.Version,
 		record.Host,
 		record.Port,
+		protocol,
 		capabilitiesJSON,
 		status,
 		policyProfile,
@@ -184,13 +190,19 @@ SET name = $1,
     version = $3,
     host = $4,
     port = $5,
-    capabilities = $6,
-    status = $7,
-    policy_profile = $8,
-    last_heartbeat = $9,
+    protocol = $6,
+    capabilities = $7,
+    status = $8,
+    policy_profile = $9,
+    last_heartbeat = $10,
     updated_at = now()
-WHERE id = $10
+WHERE id = $11
 `
+
+	protocol := strings.TrimSpace(record.Protocol)
+	if protocol == "" {
+		protocol = "https"
+	}
 
 	if _, err := s.db.ExecContext(
 		ctx,
@@ -200,6 +212,7 @@ WHERE id = $10
 		record.Version,
 		record.Host,
 		record.Port,
+		protocol,
 		capabilitiesJSON,
 		record.Status,
 		record.PolicyProfile,
@@ -319,6 +332,7 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 		&record.Version,
 		&record.Host,
 		&record.Port,
+		&record.Protocol,
 		&capabilitiesJSON,
 		&status,
 		&record.PolicyProfile,

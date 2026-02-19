@@ -75,6 +75,7 @@ type ServerRecord struct {
 	Version       string       `json:"version"`
 	Host          string       `json:"host"`
 	Port          int          `json:"port"`
+	Protocol      string       `json:"protocol"`
 	Capabilities  Capability   `json:"capabilities"`
 	Status        ServerStatus `json:"status"`
 	PolicyProfile string       `json:"policy_profile"`

@@ -146,6 +146,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		Version:       strings.TrimSpace(req.Version),
 		Host:          strings.TrimSpace(req.Listen.Host),
 		Port:          req.Listen.Port,
+		Protocol:      normalizedListenProtocol(req.Listen.Protocol),
 		Capabilities:  req.Capabilities,
 		Status:        types.StatusPending,
 		PolicyProfile: policySnapshot.Name,
@@ -321,6 +322,14 @@ func newUUID() string {
 		bytes[8:10],
 		bytes[10:16],
 	)
+}
+
+func normalizedListenProtocol(raw string) string {
+	protocol := strings.ToLower(strings.TrimSpace(raw))
+	if protocol == "http" || protocol == "https" {
+		return protocol
+	}
+	return "https"
 }
 
 func (s *Service) currentSPIFFEAllowList() []string {
