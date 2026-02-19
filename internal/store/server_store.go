@@ -11,7 +11,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
-const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, created_at, updated_at"
+const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, lease_epoch, capability_hash, sync_state, last_platform_ack_version, last_platform_ack_at, created_at, updated_at"
 
 // PostgresServerStore is a Postgres-backed implementation of ServerStore.
 type PostgresServerStore struct {
@@ -46,9 +46,25 @@ func (s *PostgresServerStore) Create(ctx context.Context, record *types.ServerRe
 		policyProfile = "default"
 	}
 
-const query = `
-INSERT INTO mcp_servers (name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	const query = `
+INSERT INTO mcp_servers (
+	name,
+	spiffe_id,
+	version,
+	host,
+	port,
+	protocol,
+	capabilities,
+	status,
+	policy_profile,
+	last_heartbeat,
+	lease_epoch,
+	capability_hash,
+	sync_state,
+	last_platform_ack_version,
+	last_platform_ack_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 `
 
 	protocol := strings.TrimSpace(record.Protocol)
@@ -69,6 +85,11 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		status,
 		policyProfile,
 		record.LastHeartbeat,
+		maxInt64(record.LeaseEpoch, 1),
+		strings.TrimSpace(record.CapabilityHash),
+		normalizedSyncState(record.SyncState),
+		strings.TrimSpace(record.LastPlatformAckVersion),
+		record.LastPlatformAckAt,
 	); err != nil {
 		return fmt.Errorf("server store: %w", err)
 	}
@@ -195,8 +216,13 @@ SET name = $1,
     status = $8,
     policy_profile = $9,
     last_heartbeat = $10,
+    lease_epoch = $11,
+    capability_hash = $12,
+    sync_state = $13,
+    last_platform_ack_version = $14,
+    last_platform_ack_at = $15,
     updated_at = now()
-WHERE id = $11
+WHERE id = $16
 `
 
 	protocol := strings.TrimSpace(record.Protocol)
@@ -217,6 +243,11 @@ WHERE id = $11
 		record.Status,
 		record.PolicyProfile,
 		record.LastHeartbeat,
+		maxInt64(record.LeaseEpoch, 1),
+		strings.TrimSpace(record.CapabilityHash),
+		normalizedSyncState(record.SyncState),
+		strings.TrimSpace(record.LastPlatformAckVersion),
+		record.LastPlatformAckAt,
 		record.ID,
 	); err != nil {
 		return fmt.Errorf("server store: %w", err)
@@ -239,6 +270,49 @@ func (s *PostgresServerStore) UpdateHeartbeat(ctx context.Context, id string) er
 	const query = `UPDATE mcp_servers SET last_heartbeat = now(), updated_at = now() WHERE id = $1`
 	if _, err := s.db.ExecContext(ctx, query, id); err != nil {
 		return fmt.Errorf("server store: %w", err)
+	}
+	return nil
+}
+
+// AcknowledgeRegistration marks the current registration lease as platform
+// acknowledged when registration id, lease epoch, and capability hash match.
+func (s *PostgresServerStore) AcknowledgeRegistration(
+	ctx context.Context,
+	id string,
+	leaseEpoch int64,
+	capabilityHash string,
+	ackVersion string,
+	ackedAt time.Time,
+) error {
+	const query = `
+UPDATE mcp_servers
+SET sync_state = $1,
+    last_platform_ack_version = $2,
+    last_platform_ack_at = $3,
+    updated_at = now()
+WHERE id = $4
+  AND lease_epoch = $5
+  AND ($6 = '' OR capability_hash = $6)
+`
+	result, err := s.db.ExecContext(
+		ctx,
+		query,
+		types.SyncStateAcked.String(),
+		strings.TrimSpace(ackVersion),
+		ackedAt.UTC(),
+		strings.TrimSpace(id),
+		leaseEpoch,
+		strings.TrimSpace(capabilityHash),
+	)
+	if err != nil {
+		return fmt.Errorf("server store: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("server store: %w", err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
 	}
 	return nil
 }
@@ -322,7 +396,9 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 		record           types.ServerRecord
 		capabilitiesJSON []byte
 		status           string
+		syncState        string
 		lastHeartbeat    sql.NullTime
+		lastPlatformAck  sql.NullTime
 	)
 
 	if err := scanner.Scan(
@@ -337,6 +413,11 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 		&status,
 		&record.PolicyProfile,
 		&lastHeartbeat,
+		&record.LeaseEpoch,
+		&record.CapabilityHash,
+		&syncState,
+		&record.LastPlatformAckVersion,
+		&lastPlatformAck,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
@@ -344,9 +425,14 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 	}
 
 	record.Status = types.ServerStatus(status)
+	record.SyncState = parseSyncState(syncState)
 	if lastHeartbeat.Valid {
 		t := lastHeartbeat.Time
 		record.LastHeartbeat = &t
+	}
+	if lastPlatformAck.Valid {
+		t := lastPlatformAck.Time
+		record.LastPlatformAckAt = &t
 	}
 
 	if len(capabilitiesJSON) > 0 {
@@ -356,4 +442,32 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 	}
 
 	return &record, nil
+}
+
+func maxInt64(value int64, minimum int64) int64 {
+	if value < minimum {
+		return minimum
+	}
+	return value
+}
+
+func normalizedSyncState(state types.RegistrationSyncState) string {
+	switch state {
+	case types.SyncStateAcked:
+		return state.String()
+	case types.SyncStateStale:
+		return state.String()
+	default:
+		return types.SyncStateUnacked.String()
+	}
+}
+
+func parseSyncState(raw string) types.RegistrationSyncState {
+	normalized := types.RegistrationSyncState(strings.ToLower(strings.TrimSpace(raw)))
+	switch normalized {
+	case types.SyncStateAcked, types.SyncStateStale:
+		return normalized
+	default:
+		return types.SyncStateUnacked
+	}
 }

@@ -45,6 +45,9 @@ type Server struct {
 	eventSubscriber   *events.Subscriber
 	eventPublisher    *events.Publisher
 	degradation       *events.DegradationManager
+	serverCfgHandler  *events.ServerConfigHandler
+	settingsHandler   *events.ServerSettingsConfigHandler
+	ackHandler        *events.ServerRegisteredAckHandler
 }
 
 // New builds a configured HTTP server with middleware and routes.
@@ -92,15 +95,21 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 			subscriber := events.NewSubscriber(natsClient, logger)
 			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimiterStore, logger)
 			serverHandler := events.NewServerConfigHandler(nil, logger)
+			serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
 			serverSettingsHandler := &metricsServerSettingsHandler{
-				next: events.NewServerSettingsConfigHandler(nil, nil, logger),
+				next: serverSettings,
 			}
 			authHandler := events.NewAuthConfigHandler(logger)
+			ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
 			subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
+			subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
 			if startErr := subscriber.Start(context.Background()); startErr != nil {
 				logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
 			} else {
 				srv.eventSubscriber = subscriber
+				srv.serverCfgHandler = serverHandler
+				srv.settingsHandler = serverSettings
+				srv.ackHandler = ackHandler
 			}
 
 			degradation := events.NewDegradationManager(natsClient, nil, srv.eventSubscriber, logger)
@@ -303,6 +312,34 @@ func (s *Server) EventPublisher() *events.Publisher {
 		return nil
 	}
 	return s.eventPublisher
+}
+
+// BindRegistrationService wires registration-aware config and ack handlers.
+func (s *Server) BindRegistrationService(registrationService interface {
+	UpdateSPIFFEAllowList(prefixes []string)
+	UpdateEffectiveSettings(configVersion int64, settingsByServer map[string]map[string]any) error
+	AcknowledgeServerRegistration(
+		ctx context.Context,
+		registrationID string,
+		leaseEpoch int64,
+		capabilityHash string,
+		registryVersion string,
+		toolSchemaHash string,
+		ackedAt time.Time,
+	) error
+}) {
+	if s == nil || registrationService == nil {
+		return
+	}
+	if s.serverCfgHandler != nil {
+		s.serverCfgHandler.SetRegistrationService(registrationService)
+	}
+	if s.settingsHandler != nil {
+		s.settingsHandler.SetRegistrationService(registrationService)
+	}
+	if s.ackHandler != nil {
+		s.ackHandler.SetRegistrationService(registrationService)
+	}
 }
 
 // Handler returns the root HTTP handler for testing and embedding.

@@ -66,6 +66,15 @@ func TestServiceRegisterHappyPath(t *testing.T) {
 	if resp.Status != types.StatusPending {
 		t.Fatalf("expected status pending, got %q", resp.Status)
 	}
+	if resp.RegistrationID == "" || resp.RegistrationID != resp.InstanceID {
+		t.Fatalf("expected registration_id to mirror instance_id, got instance=%q registration=%q", resp.InstanceID, resp.RegistrationID)
+	}
+	if resp.LeaseEpoch != 1 {
+		t.Fatalf("expected lease epoch 1 for new registration, got %d", resp.LeaseEpoch)
+	}
+	if resp.SyncState != types.SyncStateUnacked {
+		t.Fatalf("expected unacked sync state, got %q", resp.SyncState)
+	}
 	if resp.HeartbeatInterval != 30 || resp.HeartbeatIntervalSeconds != 30 {
 		t.Fatalf("unexpected heartbeat interval values: %+v", resp)
 	}
@@ -129,9 +138,10 @@ func TestServiceRegisterUpdatesExisting(t *testing.T) {
 	serverStore := &mockServerStore{
 		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
 			return &types.ServerRecord{
-				ID:        "existing-id",
-				SPIFFEID:  spiffeID,
-				CreatedAt: existingCreatedAt,
+				ID:         "existing-id",
+				SPIFFEID:   spiffeID,
+				LeaseEpoch: 7,
+				CreatedAt:  existingCreatedAt,
 			}, nil
 		},
 		updateFn: func(ctx context.Context, record *types.ServerRecord) error {
@@ -141,6 +151,9 @@ func TestServiceRegisterUpdatesExisting(t *testing.T) {
 			}
 			if !record.CreatedAt.Equal(existingCreatedAt) {
 				t.Fatalf("expected existing created_at to be preserved")
+			}
+			if record.LeaseEpoch != 8 {
+				t.Fatalf("expected lease epoch to increment to 8, got %d", record.LeaseEpoch)
 			}
 			return nil
 		},
@@ -163,6 +176,9 @@ func TestServiceRegisterUpdatesExisting(t *testing.T) {
 	}
 	if resp.HeartbeatInterval != 1 || resp.HeartbeatIntervalSeconds != 1 {
 		t.Fatalf("expected heartbeat interval seconds to clamp to 1, got %+v", resp)
+	}
+	if resp.LeaseEpoch != 8 {
+		t.Fatalf("expected response lease epoch 8, got %d", resp.LeaseEpoch)
 	}
 }
 
@@ -372,6 +388,38 @@ func TestServiceDeregisterPublishesServerDeregisteredEvent(t *testing.T) {
 	}
 }
 
+func TestServiceAcknowledgeServerRegistration(t *testing.T) {
+	t.Parallel()
+
+	ackCalled := false
+	store := &mockServerStore{
+		ackFn: func(ctx context.Context, id string, leaseEpoch int64, capabilityHash string, ackVersion string, ackedAt time.Time) error {
+			ackCalled = true
+			if id != "server-1" || leaseEpoch != 3 {
+				t.Fatalf("unexpected ack target: id=%q lease=%d", id, leaseEpoch)
+			}
+			if capabilityHash != "hash-123" {
+				t.Fatalf("unexpected capability hash: %q", capabilityHash)
+			}
+			if ackVersion != "vauto-1" {
+				t.Fatalf("unexpected ack version: %q", ackVersion)
+			}
+			if ackedAt.IsZero() {
+				t.Fatal("expected acked_at to be populated")
+			}
+			return nil
+		},
+	}
+
+	svc := NewService(store, &mockAuditStore{}, &config.Config{}, nil)
+	if err := svc.AcknowledgeServerRegistration(context.Background(), "server-1", 3, "hash-123", "vauto-1", "", time.Time{}); err != nil {
+		t.Fatalf("ack registration: %v", err)
+	}
+	if !ackCalled {
+		t.Fatal("expected store ack call")
+	}
+}
+
 func TestServiceListFailure(t *testing.T) {
 	t.Parallel()
 
@@ -568,6 +616,7 @@ type mockServerStore struct {
 	updateFn          func(ctx context.Context, record *types.ServerRecord) error
 	updateStatusFn    func(ctx context.Context, id string, status types.ServerStatus) error
 	updateHeartbeatFn func(ctx context.Context, id string) error
+	ackFn             func(ctx context.Context, id string, leaseEpoch int64, capabilityHash string, ackVersion string, ackedAt time.Time) error
 	deleteFn          func(ctx context.Context, id string) error
 	listStaleFn       func(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error)
 	listExpiredFn     func(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error)
@@ -625,6 +674,20 @@ func (m *mockServerStore) UpdateStatus(ctx context.Context, id string, status ty
 func (m *mockServerStore) UpdateHeartbeat(ctx context.Context, id string) error {
 	if m.updateHeartbeatFn != nil {
 		return m.updateHeartbeatFn(ctx, id)
+	}
+	return nil
+}
+
+func (m *mockServerStore) AcknowledgeRegistration(
+	ctx context.Context,
+	id string,
+	leaseEpoch int64,
+	capabilityHash string,
+	ackVersion string,
+	ackedAt time.Time,
+) error {
+	if m.ackFn != nil {
+		return m.ackFn(ctx, id, leaseEpoch, capabilityHash, ackVersion, ackedAt)
 	}
 	return nil
 }

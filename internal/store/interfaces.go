@@ -17,6 +17,14 @@ type ServerStore interface {
 	Update(ctx context.Context, record *types.ServerRecord) error
 	UpdateStatus(ctx context.Context, id string, status types.ServerStatus) error
 	UpdateHeartbeat(ctx context.Context, id string) error
+	AcknowledgeRegistration(
+		ctx context.Context,
+		id string,
+		leaseEpoch int64,
+		capabilityHash string,
+		ackVersion string,
+		ackedAt time.Time,
+	) error
 	Delete(ctx context.Context, id string) error
 	ListStale(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error)
 	ListExpired(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error)

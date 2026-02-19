@@ -36,6 +36,11 @@ func TestPostgresServerStoreCreate(t *testing.T) {
 			record.Status,
 			record.PolicyProfile,
 			record.LastHeartbeat,
+			record.LeaseEpoch,
+			record.CapabilityHash,
+			record.SyncState,
+			record.LastPlatformAckVersion,
+			record.LastPlatformAckAt,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -82,6 +87,11 @@ func TestPostgresServerStoreGetAndNotFound(t *testing.T) {
 			"active",
 			"default",
 			now,
+			int64(3),
+			"cap-hash",
+			"unacked",
+			"",
+			nil,
 			now,
 			now,
 		))
@@ -127,6 +137,11 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			"active",
 			"default",
 			now,
+			int64(1),
+			"",
+			"unacked",
+			"",
+			nil,
 			now,
 			now,
 		))
@@ -150,6 +165,11 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			"active",
 			"default",
 			now,
+			int64(1),
+			"",
+			"unacked",
+			"",
+			nil,
 			now,
 			now,
 		))
@@ -169,8 +189,8 @@ func TestPostgresServerStoreList(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
 		WithArgs(status.String(), "alpha%", int64(10), int64(2)).
 		WillReturnRows(serverRows().
-			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now).
-			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, now, now))
+			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, now, now).
+			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, now, now))
 
 	records, err := s.List(context.Background(), types.ServerFilter{
 		Status:      &status,
@@ -208,6 +228,11 @@ func TestPostgresServerStoreUpdateMethods(t *testing.T) {
 			record.Status,
 			record.PolicyProfile,
 			record.LastHeartbeat,
+			record.LeaseEpoch,
+			record.CapabilityHash,
+			record.SyncState,
+			record.LastPlatformAckVersion,
+			record.LastPlatformAckAt,
 			record.ID,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -246,6 +271,28 @@ func TestPostgresServerStoreDelete(t *testing.T) {
 	}
 }
 
+func TestPostgresServerStoreAcknowledgeRegistration(t *testing.T) {
+	db, mock := newMockDB(t)
+	s := NewPostgresServerStore(db)
+
+	ackedAt := fixedTime()
+	mock.ExpectExec("UPDATE mcp_servers").
+		WithArgs("acked", "vauto-1", ackedAt, "server-1", int64(4), "cap-hash").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := s.AcknowledgeRegistration(context.Background(), "server-1", 4, "cap-hash", "vauto-1", ackedAt); err != nil {
+		t.Fatalf("ack registration: %v", err)
+	}
+
+	mock.ExpectExec("UPDATE mcp_servers").
+		WithArgs("acked", "vauto-2", ackedAt, "server-1", int64(5), "cap-hash").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := s.AcknowledgeRegistration(context.Background(), "server-1", 5, "cap-hash", "vauto-2", ackedAt); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows for stale ack, got %v", err)
+	}
+}
+
 func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 	db, mock := newMockDB(t)
 	s := NewPostgresServerStore(db)
@@ -266,6 +313,11 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			"active",
 			"default",
 			now,
+			int64(1),
+			"",
+			"unacked",
+			"",
+			nil,
 			now,
 			now,
 		))
@@ -292,6 +344,11 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			"stale",
 			"default",
 			now,
+			int64(1),
+			"",
+			"unacked",
+			"",
+			nil,
 			now,
 			now,
 		))
@@ -325,13 +382,18 @@ func sampleServerRecord() *types.ServerRecord {
 	now := fixedTime()
 	status := types.StatusActive
 	return &types.ServerRecord{
-		ID:       "server-1",
-		Name:     "alpha",
-		SPIFFEID: "spiffe://trust/ns/default/sa/alpha",
-		Version:  "1.0.0",
-		Host:     "alpha.svc.cluster.local",
-		Port:     8080,
-		Protocol: "https",
+		ID:                     "server-1",
+		Name:                   "alpha",
+		SPIFFEID:               "spiffe://trust/ns/default/sa/alpha",
+		Version:                "1.0.0",
+		Host:                   "alpha.svc.cluster.local",
+		Port:                   8080,
+		Protocol:               "https",
+		LeaseEpoch:             3,
+		CapabilityHash:         "cap-hash",
+		SyncState:              types.SyncStateUnacked,
+		LastPlatformAckVersion: "",
+		LastPlatformAckAt:      nil,
 		Capabilities: types.Capability{
 			Tools:     []string{"tool.a"},
 			Resources: []string{"res://alpha"},

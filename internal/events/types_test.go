@@ -35,6 +35,15 @@ func TestSubjectForConfigRequest(t *testing.T) {
 	}
 }
 
+func TestSubjectForAck(t *testing.T) {
+	t.Parallel()
+
+	got := SubjectForAck("gw-1", AckScopeServerRegistered)
+	if got != "mcpgw.gw-1.acks.server_registered" {
+		t.Fatalf("unexpected subject: %q", got)
+	}
+}
+
 func TestEventEnvelopeJSONRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -115,6 +124,17 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 				ToolName:   "danger.tool",
 				Violations: []string{"denylist"},
 				Decision:   "denied",
+			},
+		},
+		{
+			name: "server registered ack payload",
+			payload: ServerRegisteredAckPayload{
+				RegistrationID:  "server-1",
+				LeaseEpoch:      2,
+				CapabilityHash:  "hash-1",
+				RegistryVersion: "vauto-1",
+				ToolSchemaHash:  "schema-hash",
+				AckedAt:         time.Date(2026, 2, 19, 3, 0, 0, 0, time.UTC),
 			},
 		},
 	}

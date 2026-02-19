@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -214,6 +215,34 @@ func (s *inMemoryServerStore) UpdateHeartbeat(ctx context.Context, id string) er
 	}
 	now := time.Now().UTC()
 	record.LastHeartbeat = &now
+	s.records[id] = record
+	return nil
+}
+
+func (s *inMemoryServerStore) AcknowledgeRegistration(
+	ctx context.Context,
+	id string,
+	leaseEpoch int64,
+	capabilityHash string,
+	ackVersion string,
+	ackedAt time.Time,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[id]
+	if !ok {
+		return sql.ErrNoRows
+	}
+	if record.LeaseEpoch != leaseEpoch {
+		return sql.ErrNoRows
+	}
+	if strings.TrimSpace(capabilityHash) != "" && strings.TrimSpace(record.CapabilityHash) != strings.TrimSpace(capabilityHash) {
+		return sql.ErrNoRows
+	}
+	record.SyncState = types.SyncStateAcked
+	record.LastPlatformAckVersion = strings.TrimSpace(ackVersion)
+	ack := ackedAt.UTC()
+	record.LastPlatformAckAt = &ack
 	s.records[id] = record
 	return nil
 }

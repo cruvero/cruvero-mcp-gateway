@@ -13,18 +13,35 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
+const (
+	// HeartbeatActionNone indicates no client-side corrective action is required.
+	HeartbeatActionNone = "none"
+	// HeartbeatActionReRegister indicates the backend must perform a full
+	// register handshake because the lease is missing or mismatched.
+	HeartbeatActionReRegister = "re_register"
+	// HeartbeatActionResendCapabilities indicates the gateway-side capability
+	// hash no longer matches the backend declaration.
+	HeartbeatActionResendCapabilities = "resend_capabilities"
+)
+
 // HeartbeatRequest is the optional payload sent by backends during heartbeat.
 type HeartbeatRequest struct {
-	Status   string            `json:"status"`
-	Metadata map[string]string `json:"metadata"`
+	Status         string            `json:"status"`
+	Metadata       map[string]string `json:"metadata"`
+	RegistrationID string            `json:"registration_id,omitempty"`
+	LeaseEpoch     int64             `json:"lease_epoch,omitempty"`
+	CapabilityHash string            `json:"capability_hash,omitempty"`
 }
 
 // HeartbeatResponse is returned after processing a heartbeat.
 type HeartbeatResponse struct {
-	ServerStatus      types.ServerStatus `json:"server_status"`
-	NextDeadline      time.Time          `json:"next_deadline"`
-	ConfigVersion     int64              `json:"config_version"`
-	EffectiveSettings map[string]any     `json:"effective_settings"`
+	ServerStatus      types.ServerStatus          `json:"server_status"`
+	NextDeadline      time.Time                   `json:"next_deadline"`
+	LeaseEpoch        int64                       `json:"lease_epoch"`
+	SyncState         types.RegistrationSyncState `json:"sync_state"`
+	Action            string                      `json:"action"`
+	ConfigVersion     int64                       `json:"config_version"`
+	EffectiveSettings map[string]any              `json:"effective_settings"`
 }
 
 // Heartbeat records liveness and updates lifecycle status.
@@ -48,7 +65,34 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 		return nil, fmt.Errorf("heartbeat: %w", ErrForbidden)
 	}
 
-	_ = req
+	action := HeartbeatActionNone
+	requestedRegistrationID := strings.TrimSpace(req.RegistrationID)
+	if requestedRegistrationID != "" && requestedRegistrationID != record.ID {
+		action = HeartbeatActionReRegister
+	}
+	if req.LeaseEpoch > 0 && req.LeaseEpoch != record.LeaseEpoch {
+		action = HeartbeatActionReRegister
+	}
+
+	intervalSeconds := heartbeatIntervalSeconds(s.config)
+	nextDeadline := time.Now().UTC().Add(time.Duration(intervalSeconds) * time.Second)
+	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
+	if action == HeartbeatActionReRegister {
+		return &HeartbeatResponse{
+			ServerStatus:      record.Status,
+			NextDeadline:      nextDeadline,
+			LeaseEpoch:        record.LeaseEpoch,
+			SyncState:         record.SyncState,
+			Action:            action,
+			ConfigVersion:     configVersion,
+			EffectiveSettings: effectiveSettings,
+		}, nil
+	}
+
+	if reqHash := strings.TrimSpace(req.CapabilityHash); reqHash != "" && reqHash != strings.TrimSpace(record.CapabilityHash) {
+		action = HeartbeatActionResendCapabilities
+	}
+
 	nextStatus, err := Transition(record.Status, EventHeartbeat)
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat: %w: %v", ErrInvalidRequest, err)
@@ -71,12 +115,16 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 		return nil, fmt.Errorf("heartbeat: update heartbeat: %w", err)
 	}
 
-	intervalSeconds := heartbeatIntervalSeconds(s.config)
-	nextDeadline := time.Now().UTC().Add(time.Duration(intervalSeconds) * time.Second)
-	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
+	syncState := record.SyncState
+	if syncState == "" {
+		syncState = types.SyncStateUnacked
+	}
 	return &HeartbeatResponse{
 		ServerStatus:      nextStatus,
 		NextDeadline:      nextDeadline,
+		LeaseEpoch:        record.LeaseEpoch,
+		SyncState:         syncState,
+		Action:            action,
 		ConfigVersion:     configVersion,
 		EffectiveSettings: effectiveSettings,
 	}, nil

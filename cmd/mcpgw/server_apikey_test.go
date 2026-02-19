@@ -68,6 +68,22 @@ func (m *mockServerStore) UpdateHeartbeat(ctx context.Context, id string) error 
 	_ = id
 	return nil
 }
+func (m *mockServerStore) AcknowledgeRegistration(
+	ctx context.Context,
+	id string,
+	leaseEpoch int64,
+	capabilityHash string,
+	ackVersion string,
+	ackedAt time.Time,
+) error {
+	_ = ctx
+	_ = id
+	_ = leaseEpoch
+	_ = capabilityHash
+	_ = ackVersion
+	_ = ackedAt
+	return nil
+}
 func (m *mockServerStore) Delete(ctx context.Context, id string) error {
 	_ = ctx
 	_ = id

@@ -238,6 +238,22 @@ func (s *securityServerStore) UpdateHeartbeat(ctx context.Context, id string) er
 	_ = id
 	return nil
 }
+func (s *securityServerStore) AcknowledgeRegistration(
+	ctx context.Context,
+	id string,
+	leaseEpoch int64,
+	capabilityHash string,
+	ackVersion string,
+	ackedAt time.Time,
+) error {
+	_ = ctx
+	_ = id
+	_ = leaseEpoch
+	_ = capabilityHash
+	_ = ackVersion
+	_ = ackedAt
+	return nil
+}
 func (s *securityServerStore) Delete(ctx context.Context, id string) error {
 	_ = ctx
 	_ = id

@@ -19,6 +19,10 @@ const (
 	// EventPolicyViolated is emitted when a policy violation occurs.
 	EventPolicyViolated = "policy.violated"
 
+	// AckScopeServerRegistered is used for platform ack messages that confirm
+	// tool-registry ingestion of a server registration lease.
+	AckScopeServerRegistered = "server_registered"
+
 	// ConfigScopePolicy is the policy configuration subject suffix.
 	ConfigScopePolicy = "policy"
 	// ConfigScopeServers is the server configuration subject suffix.
@@ -39,11 +43,17 @@ type EventEnvelope struct {
 
 // ServerRegisteredPayload is the payload for EventServerRegistered.
 type ServerRegisteredPayload struct {
-	ServerID     string           `json:"server_id"`
-	Name         string           `json:"name"`
-	SPIFFEID     string           `json:"spiffe_id"`
-	Capabilities types.Capability `json:"capabilities"`
-	Endpoint     string           `json:"endpoint"`
+	EventID        string           `json:"event_id,omitempty"`
+	OccurredAt     time.Time        `json:"occurred_at,omitempty"`
+	ServerID       string           `json:"server_id"`
+	RegistrationID string           `json:"registration_id,omitempty"`
+	LeaseEpoch     int64            `json:"lease_epoch,omitempty"`
+	CapabilityHash string           `json:"capability_hash,omitempty"`
+	SyncState      string           `json:"sync_state,omitempty"`
+	Name           string           `json:"name"`
+	SPIFFEID       string           `json:"spiffe_id"`
+	Capabilities   types.Capability `json:"capabilities"`
+	Endpoint       string           `json:"endpoint"`
 }
 
 // ServerDeregisteredPayload is the payload for EventServerDeregistered.
@@ -67,6 +77,17 @@ type PolicyViolatedPayload struct {
 	ToolName   string   `json:"tool_name"`
 	Violations []string `json:"violations"`
 	Decision   string   `json:"decision"`
+}
+
+// ServerRegisteredAckPayload is emitted by the platform after processing a
+// registration event and refreshing tool registry state.
+type ServerRegisteredAckPayload struct {
+	RegistrationID  string    `json:"registration_id"`
+	LeaseEpoch      int64     `json:"lease_epoch"`
+	CapabilityHash  string    `json:"capability_hash,omitempty"`
+	RegistryVersion string    `json:"registry_version,omitempty"`
+	ToolSchemaHash  string    `json:"tool_schema_hash,omitempty"`
+	AckedAt         time.Time `json:"acked_at,omitempty"`
 }
 
 // SubjectForEvent returns the publish subject for a gateway-scoped event type.
@@ -96,4 +117,15 @@ func SubjectForConfigRequest(gatewayID string) string {
 		gateway = "unknown"
 	}
 	return fmt.Sprintf("mcpgw.%s.config.request", gateway)
+}
+
+// SubjectForAck returns the publish/subscribe subject for gateway-scoped
+// acknowledgement messages.
+func SubjectForAck(gatewayID string, scope string) string {
+	gateway := strings.TrimSpace(gatewayID)
+	if gateway == "" {
+		gateway = "unknown"
+	}
+	ackScope := strings.TrimSpace(scope)
+	return fmt.Sprintf("mcpgw.%s.acks.%s", gateway, ackScope)
 }

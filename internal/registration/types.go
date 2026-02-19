@@ -28,13 +28,18 @@ type ListenConfig struct {
 
 // RegistrationResponse is returned after a successful registration handshake.
 type RegistrationResponse struct {
-	InstanceID               string               `json:"instance_id"`
-	PolicySnapshot           *types.PolicyProfile `json:"policy_snapshot"`
-	HeartbeatInterval        int                  `json:"heartbeat_interval"`
-	HeartbeatIntervalSeconds int                  `json:"heartbeat_interval_seconds"`
-	ConfigVersion            int64                `json:"config_version"`
-	EffectiveSettings        map[string]any       `json:"effective_settings"`
-	Status                   types.ServerStatus   `json:"status"`
+	InstanceID               string                      `json:"instance_id"`
+	RegistrationID           string                      `json:"registration_id"`
+	LeaseEpoch               int64                       `json:"lease_epoch"`
+	CapabilityHash           string                      `json:"capability_hash"`
+	SyncState                types.RegistrationSyncState `json:"sync_state"`
+	LastPlatformAckVersion   string                      `json:"last_platform_ack_version,omitempty"`
+	PolicySnapshot           *types.PolicyProfile        `json:"policy_snapshot"`
+	HeartbeatInterval        int                         `json:"heartbeat_interval"`
+	HeartbeatIntervalSeconds int                         `json:"heartbeat_interval_seconds"`
+	ConfigVersion            int64                       `json:"config_version"`
+	EffectiveSettings        map[string]any              `json:"effective_settings"`
+	Status                   types.ServerStatus          `json:"status"`
 }
 
 // Validate validates untrusted registration payload input.

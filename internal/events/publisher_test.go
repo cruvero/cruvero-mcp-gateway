@@ -46,6 +46,15 @@ func TestPublisherServerRegistered(t *testing.T) {
 	if payload.Endpoint != "alpha.default.svc:8443" {
 		t.Fatalf("expected endpoint alpha.default.svc:8443, got %q", payload.Endpoint)
 	}
+	if payload.RegistrationID != "server-1" {
+		t.Fatalf("expected registration id server-1, got %q", payload.RegistrationID)
+	}
+	if payload.EventID == "" {
+		t.Fatal("expected non-empty event id")
+	}
+	if payload.OccurredAt.IsZero() {
+		t.Fatal("expected non-zero occurred_at")
+	}
 }
 
 func TestPublisherServerDeregistered(t *testing.T) {
@@ -187,4 +196,3 @@ func expectEventEnvelope(t *testing.T, messages <-chan *nats.Msg, expectedSubjec
 
 	return EventEnvelope{}
 }
-

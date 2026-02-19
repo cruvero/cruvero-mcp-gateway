@@ -3,11 +3,15 @@ package registration
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -139,19 +143,25 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 
 	now := time.Now().UTC()
 	policySnapshot := defaultPolicyProfile(s.config)
+	capabilityHash := hashCapabilities(req.Capabilities)
 	record := &types.ServerRecord{
-		ID:            newUUID(),
-		Name:          strings.TrimSpace(req.ServiceName),
-		SPIFFEID:      caller.ID,
-		Version:       strings.TrimSpace(req.Version),
-		Host:          strings.TrimSpace(req.Listen.Host),
-		Port:          req.Listen.Port,
-		Protocol:      normalizedListenProtocol(req.Listen.Protocol),
-		Capabilities:  req.Capabilities,
-		Status:        types.StatusPending,
-		PolicyProfile: policySnapshot.Name,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                     newUUID(),
+		Name:                   strings.TrimSpace(req.ServiceName),
+		SPIFFEID:               caller.ID,
+		Version:                strings.TrimSpace(req.Version),
+		Host:                   strings.TrimSpace(req.Listen.Host),
+		Port:                   req.Listen.Port,
+		Protocol:               normalizedListenProtocol(req.Listen.Protocol),
+		Capabilities:           req.Capabilities,
+		Status:                 types.StatusPending,
+		PolicyProfile:          policySnapshot.Name,
+		LeaseEpoch:             1,
+		CapabilityHash:         capabilityHash,
+		SyncState:              types.SyncStateUnacked,
+		LastPlatformAckVersion: "",
+		LastPlatformAckAt:      nil,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 
 	existing, err := s.serverStore.GetBySPIFFEID(ctx, caller.ID)
@@ -160,6 +170,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 	case err == nil && existing != nil:
 		record.ID = existing.ID
 		record.CreatedAt = existing.CreatedAt
+		record.LeaseEpoch = nextLeaseEpoch(existing.LeaseEpoch)
 		if updateErr := s.serverStore.Update(ctx, record); updateErr != nil {
 			return nil, fmt.Errorf("register: update existing registration: %w", updateErr)
 		}
@@ -199,6 +210,11 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
 	return &RegistrationResponse{
 		InstanceID:               record.ID,
+		RegistrationID:           record.ID,
+		LeaseEpoch:               record.LeaseEpoch,
+		CapabilityHash:           record.CapabilityHash,
+		SyncState:                record.SyncState,
+		LastPlatformAckVersion:   record.LastPlatformAckVersion,
 		PolicySnapshot:           policySnapshot,
 		HeartbeatInterval:        heartbeatIntervalSeconds,
 		HeartbeatIntervalSeconds: heartbeatIntervalSeconds,
@@ -206,6 +222,42 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		EffectiveSettings:        effectiveSettings,
 		Status:                   record.Status,
 	}, nil
+}
+
+// AcknowledgeServerRegistration marks a registration lease as platform-synced.
+func (s *Service) AcknowledgeServerRegistration(
+	ctx context.Context,
+	registrationID string,
+	leaseEpoch int64,
+	capabilityHash string,
+	ackVersion string,
+	_ string,
+	ackedAt time.Time,
+) error {
+	if strings.TrimSpace(registrationID) == "" {
+		return fmt.Errorf("ack registration: %w: missing registration id", ErrInvalidRequest)
+	}
+	if leaseEpoch <= 0 {
+		return fmt.Errorf("ack registration: %w: invalid lease epoch", ErrInvalidRequest)
+	}
+	if ackedAt.IsZero() {
+		ackedAt = time.Now().UTC()
+	}
+
+	if err := s.serverStore.AcknowledgeRegistration(
+		ctx,
+		registrationID,
+		leaseEpoch,
+		capabilityHash,
+		ackVersion,
+		ackedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("ack registration: %w", ErrNotFound)
+		}
+		return fmt.Errorf("ack registration: %w", err)
+	}
+	return nil
 }
 
 // List returns registrations matching the provided filter.
@@ -407,4 +459,29 @@ func cloneSettings(input map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+func nextLeaseEpoch(current int64) int64 {
+	if current <= 0 {
+		return 1
+	}
+	return current + 1
+}
+
+func hashCapabilities(cap types.Capability) string {
+	normalized := types.Capability{
+		Tools:     append([]string(nil), cap.Tools...),
+		Resources: append([]string(nil), cap.Resources...),
+		Prompts:   append([]string(nil), cap.Prompts...),
+	}
+	sort.Strings(normalized.Tools)
+	sort.Strings(normalized.Resources)
+	sort.Strings(normalized.Prompts)
+
+	payload, err := json.Marshal(normalized)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }

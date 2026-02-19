@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/types"
@@ -126,6 +127,29 @@ func TestServerSettingsConfigHandlerValidVersionedAndInvalid(t *testing.T) {
 	}
 }
 
+func TestServerRegisteredAckHandler(t *testing.T) {
+	t.Parallel()
+
+	updater := &mockServerRegistrationAckUpdater{}
+	handler := NewServerRegisteredAckHandler(updater, nil)
+
+	valid := []byte(`{"registration_id":"server-1","lease_epoch":4,"capability_hash":"hash-1","registry_version":"vauto-1","tool_schema_hash":"abc"}`)
+	if err := handler.Handle(context.Background(), valid); err != nil {
+		t.Fatalf("handle server registration ack: %v", err)
+	}
+	if updater.registrationID != "server-1" || updater.leaseEpoch != 4 {
+		t.Fatalf("unexpected ack target: id=%q lease=%d", updater.registrationID, updater.leaseEpoch)
+	}
+	if updater.ackedAt.IsZero() {
+		t.Fatal("expected acked_at to be populated")
+	}
+
+	invalid := []byte(`{"registration_id":"","lease_epoch":0}`)
+	if err := handler.Handle(context.Background(), invalid); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
 type mockPolicyEngine struct {
 	profiles map[string]*types.PolicyProfile
 }
@@ -156,5 +180,32 @@ func (m *mockServerSettingsUpdater) UpdateEffectiveSettings(configVersion int64,
 	}
 	m.version = configVersion
 	m.settings = settingsByServer
+	return nil
+}
+
+type mockServerRegistrationAckUpdater struct {
+	registrationID  string
+	leaseEpoch      int64
+	capabilityHash  string
+	registryVersion string
+	toolSchemaHash  string
+	ackedAt         time.Time
+}
+
+func (m *mockServerRegistrationAckUpdater) AcknowledgeServerRegistration(
+	_ context.Context,
+	registrationID string,
+	leaseEpoch int64,
+	capabilityHash string,
+	registryVersion string,
+	toolSchemaHash string,
+	ackedAt time.Time,
+) error {
+	m.registrationID = registrationID
+	m.leaseEpoch = leaseEpoch
+	m.capabilityHash = capabilityHash
+	m.registryVersion = registryVersion
+	m.toolSchemaHash = toolSchemaHash
+	m.ackedAt = ackedAt
 	return nil
 }

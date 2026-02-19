@@ -33,6 +33,26 @@ func (s ServerStatus) IsRoutable() bool {
 	return s == StatusActive
 }
 
+// RegistrationSyncState tracks whether platform-side ingestion has acknowledged
+// a server registration lease.
+type RegistrationSyncState string
+
+const (
+	// SyncStateUnacked means the gateway has not yet received platform ack for
+	// the current lease epoch.
+	SyncStateUnacked RegistrationSyncState = "unacked"
+	// SyncStateAcked means the current lease epoch has been acknowledged by the
+	// platform registry pipeline.
+	SyncStateAcked RegistrationSyncState = "acked"
+	// SyncStateStale means ack information is outdated for the current lease.
+	SyncStateStale RegistrationSyncState = "stale"
+)
+
+// String returns the string value of the registration sync state.
+func (s RegistrationSyncState) String() string {
+	return string(s)
+}
+
 // EnforcementMode controls policy handling behavior.
 type EnforcementMode string
 
@@ -69,19 +89,24 @@ type ToolResult struct {
 
 // ServerRecord is the persisted representation of a registered MCP server.
 type ServerRecord struct {
-	ID            string       `json:"id"`
-	Name          string       `json:"name"`
-	SPIFFEID      string       `json:"spiffe_id"`
-	Version       string       `json:"version"`
-	Host          string       `json:"host"`
-	Port          int          `json:"port"`
-	Protocol      string       `json:"protocol"`
-	Capabilities  Capability   `json:"capabilities"`
-	Status        ServerStatus `json:"status"`
-	PolicyProfile string       `json:"policy_profile"`
-	LastHeartbeat *time.Time   `json:"last_heartbeat"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	ID                     string                `json:"id"`
+	Name                   string                `json:"name"`
+	SPIFFEID               string                `json:"spiffe_id"`
+	Version                string                `json:"version"`
+	Host                   string                `json:"host"`
+	Port                   int                   `json:"port"`
+	Protocol               string                `json:"protocol"`
+	Capabilities           Capability            `json:"capabilities"`
+	Status                 ServerStatus          `json:"status"`
+	PolicyProfile          string                `json:"policy_profile"`
+	LastHeartbeat          *time.Time            `json:"last_heartbeat"`
+	LeaseEpoch             int64                 `json:"lease_epoch"`
+	CapabilityHash         string                `json:"capability_hash"`
+	SyncState              RegistrationSyncState `json:"sync_state"`
+	LastPlatformAckVersion string                `json:"last_platform_ack_version"`
+	LastPlatformAckAt      *time.Time            `json:"last_platform_ack_at"`
+	CreatedAt              time.Time             `json:"created_at"`
+	UpdatedAt              time.Time             `json:"updated_at"`
 }
 
 // Registration is the request payload for backend server registration.

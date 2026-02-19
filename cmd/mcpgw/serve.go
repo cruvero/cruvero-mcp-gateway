@@ -89,6 +89,7 @@ func serveWithContext(ctx context.Context) error {
 
 	registrationService := registration.NewService(serverStore, auditStore, cfg, logger)
 	registrationService.SetLifecycleEventPublisher(eventPublisher)
+	gw.BindRegistrationService(registrationService)
 
 	sweeper := registration.NewSweeper(serverStore, index, cfg, logger)
 	sweeper.SetLifecycleEventPublisher(eventPublisher)

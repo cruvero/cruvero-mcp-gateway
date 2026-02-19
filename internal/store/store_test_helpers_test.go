@@ -9,7 +9,26 @@ import (
 )
 
 var (
-	serverColumnNames = []string{"id", "name", "spiffe_id", "version", "host", "port", "protocol", "capabilities", "status", "policy_profile", "last_heartbeat", "created_at", "updated_at"}
+	serverColumnNames = []string{
+		"id",
+		"name",
+		"spiffe_id",
+		"version",
+		"host",
+		"port",
+		"protocol",
+		"capabilities",
+		"status",
+		"policy_profile",
+		"last_heartbeat",
+		"lease_epoch",
+		"capability_hash",
+		"sync_state",
+		"last_platform_ack_version",
+		"last_platform_ack_at",
+		"created_at",
+		"updated_at",
+	}
 	apiKeyColumnNames = []string{"id", "key_lookup_hash", "key_bcrypt_hash", "name", "scopes", "client_id", "expires_at", "created_at"}
 	auditColumnNames  = []string{"id", "event_type", "client_id", "server_name", "details", "created_at"}
 )

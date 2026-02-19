@@ -2,6 +2,8 @@ package events
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -69,12 +71,19 @@ func (p *Publisher) publish(ctx context.Context, eventType string, payload any) 
 
 // PublishServerRegistered publishes a server.registered event.
 func (p *Publisher) PublishServerRegistered(ctx context.Context, server types.ServerRecord) error {
+	occurredAt := time.Now().UTC()
 	payload := ServerRegisteredPayload{
-		ServerID:     server.ID,
-		Name:         server.Name,
-		SPIFFEID:     server.SPIFFEID,
-		Capabilities: server.Capabilities,
-		Endpoint:     fmt.Sprintf("%s:%d", strings.TrimSpace(server.Host), server.Port),
+		EventID:        newEventID(),
+		OccurredAt:     occurredAt,
+		ServerID:       server.ID,
+		RegistrationID: server.ID,
+		LeaseEpoch:     server.LeaseEpoch,
+		CapabilityHash: strings.TrimSpace(server.CapabilityHash),
+		SyncState:      strings.TrimSpace(server.SyncState.String()),
+		Name:           server.Name,
+		SPIFFEID:       server.SPIFFEID,
+		Capabilities:   server.Capabilities,
+		Endpoint:       fmt.Sprintf("%s:%d", strings.TrimSpace(server.Host), server.Port),
 	}
 	return p.publish(ctx, EventServerRegistered, payload)
 }
@@ -123,3 +132,10 @@ func (p *Publisher) PublishPolicyViolated(
 	return p.publish(ctx, EventPolicyViolated, payload)
 }
 
+func newEventID() string {
+	bytes := make([]byte, 8)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
+	}
+	return fmt.Sprintf("evt-%s", hex.EncodeToString(bytes))
+}

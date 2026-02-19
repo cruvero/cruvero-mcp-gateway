@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/policy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
@@ -60,6 +61,18 @@ type serverConfigUpdater interface {
 
 type serverSettingsUpdater interface {
 	UpdateEffectiveSettings(configVersion int64, settingsByServer map[string]map[string]any) error
+}
+
+type registrationAckUpdater interface {
+	AcknowledgeServerRegistration(
+		ctx context.Context,
+		registrationID string,
+		leaseEpoch int64,
+		capabilityHash string,
+		registryVersion string,
+		toolSchemaHash string,
+		ackedAt time.Time,
+	) error
 }
 
 // PolicyConfigHandler applies policy profile updates.
@@ -157,6 +170,14 @@ func (h *ServerConfigHandler) SetConfigStore(configStore ConfigStore) {
 	h.configStore = configStore
 }
 
+// SetRegistrationService sets the optional registration updater dependency.
+func (h *ServerConfigHandler) SetRegistrationService(registrationService serverConfigUpdater) {
+	if h == nil {
+		return
+	}
+	h.registrationService = registrationService
+}
+
 // Handle validates and applies server configuration updates.
 func (h *ServerConfigHandler) Handle(ctx context.Context, data []byte) error {
 	if h == nil {
@@ -212,6 +233,14 @@ func NewServerSettingsConfigHandler(registrationService serverSettingsUpdater, c
 	}
 }
 
+// SetRegistrationService sets the optional registration updater dependency.
+func (h *ServerSettingsConfigHandler) SetRegistrationService(registrationService serverSettingsUpdater) {
+	if h == nil {
+		return
+	}
+	h.registrationService = registrationService
+}
+
 // Handle validates, versions, and applies effective server settings.
 func (h *ServerSettingsConfigHandler) Handle(ctx context.Context, data []byte) error {
 	if h == nil {
@@ -262,6 +291,76 @@ func (h *ServerSettingsConfigHandler) Handle(ctx context.Context, data []byte) e
 type AuthConfigHandler struct {
 	logger      *slog.Logger
 	configStore ConfigStore
+}
+
+// ServerRegisteredAckHandler applies platform registration acknowledgements.
+type ServerRegisteredAckHandler struct {
+	registrationService registrationAckUpdater
+	logger              *slog.Logger
+}
+
+// NewServerRegisteredAckHandler creates a server registration ack handler.
+func NewServerRegisteredAckHandler(registrationService registrationAckUpdater, logger *slog.Logger) *ServerRegisteredAckHandler {
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+	return &ServerRegisteredAckHandler{
+		registrationService: registrationService,
+		logger:              logger,
+	}
+}
+
+// SetRegistrationService sets the optional registration ack updater.
+func (h *ServerRegisteredAckHandler) SetRegistrationService(registrationService registrationAckUpdater) {
+	if h == nil {
+		return
+	}
+	h.registrationService = registrationService
+}
+
+// Handle validates and applies server registration ack payloads.
+func (h *ServerRegisteredAckHandler) Handle(ctx context.Context, data []byte) error {
+	if h == nil {
+		return fmt.Errorf("handle server registration ack: handler is nil")
+	}
+
+	var message ServerRegisteredAckPayload
+	if err := decodeConfigMessage(data, &message); err != nil {
+		return fmt.Errorf("handle server registration ack: %w", err)
+	}
+	message.RegistrationID = strings.TrimSpace(message.RegistrationID)
+	if message.RegistrationID == "" {
+		return fmt.Errorf("handle server registration ack: registration_id is required")
+	}
+	if message.LeaseEpoch <= 0 {
+		return fmt.Errorf("handle server registration ack: lease_epoch must be positive")
+	}
+	if message.AckedAt.IsZero() {
+		message.AckedAt = time.Now().UTC()
+	}
+
+	if h.registrationService != nil {
+		if err := h.registrationService.AcknowledgeServerRegistration(
+			ctx,
+			message.RegistrationID,
+			message.LeaseEpoch,
+			strings.TrimSpace(message.CapabilityHash),
+			strings.TrimSpace(message.RegistryVersion),
+			strings.TrimSpace(message.ToolSchemaHash),
+			message.AckedAt,
+		); err != nil {
+			return fmt.Errorf("handle server registration ack: apply ack: %w", err)
+		}
+	}
+
+	h.logger.InfoContext(
+		ctx,
+		"server registration ack applied",
+		slog.String("registration_id", message.RegistrationID),
+		slog.Int64("lease_epoch", message.LeaseEpoch),
+		slog.String("registry_version", strings.TrimSpace(message.RegistryVersion)),
+	)
+	return nil
 }
 
 // NewAuthConfigHandler creates an auth config handler.
