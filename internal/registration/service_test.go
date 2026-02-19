@@ -24,8 +24,8 @@ func TestServiceRegisterHappyPath(t *testing.T) {
 		},
 		createFn: func(ctx context.Context, record *types.ServerRecord) error {
 			createCalled = true
-			if record.Status != types.StatusPending {
-				t.Fatalf("expected pending status, got %q", record.Status)
+			if record.Status != types.StatusActive {
+				t.Fatalf("expected active status, got %q", record.Status)
 			}
 			if record.SPIFFEID != "spiffe://example.org/ns/default/sa/server" {
 				t.Fatalf("unexpected spiffe id: %q", record.SPIFFEID)
@@ -63,8 +63,8 @@ func TestServiceRegisterHappyPath(t *testing.T) {
 	if !auditCalled {
 		t.Fatal("expected audit log to be called")
 	}
-	if resp.Status != types.StatusPending {
-		t.Fatalf("expected status pending, got %q", resp.Status)
+	if resp.Status != types.StatusActive {
+		t.Fatalf("expected status active, got %q", resp.Status)
 	}
 	if resp.RegistrationID == "" || resp.RegistrationID != resp.InstanceID {
 		t.Fatalf("expected registration_id to mirror instance_id, got instance=%q registration=%q", resp.InstanceID, resp.RegistrationID)

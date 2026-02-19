@@ -145,15 +145,17 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 	policySnapshot := defaultPolicyProfile(s.config)
 	capabilityHash := hashCapabilities(req.Capabilities)
 	record := &types.ServerRecord{
-		ID:                     newUUID(),
-		Name:                   strings.TrimSpace(req.ServiceName),
-		SPIFFEID:               caller.ID,
-		Version:                strings.TrimSpace(req.Version),
-		Host:                   strings.TrimSpace(req.Listen.Host),
-		Port:                   req.Listen.Port,
-		Protocol:               normalizedListenProtocol(req.Listen.Protocol),
-		Capabilities:           req.Capabilities,
-		Status:                 types.StatusPending,
+		ID:           newUUID(),
+		Name:         strings.TrimSpace(req.ServiceName),
+		SPIFFEID:     caller.ID,
+		Version:      strings.TrimSpace(req.Version),
+		Host:         strings.TrimSpace(req.Listen.Host),
+		Port:         req.Listen.Port,
+		Protocol:     normalizedListenProtocol(req.Listen.Protocol),
+		Capabilities: req.Capabilities,
+		// Register marks servers active immediately so newly registered tools
+		// are routable before the first heartbeat arrives.
+		Status:                 types.StatusActive,
 		PolicyProfile:          policySnapshot.Name,
 		LeaseEpoch:             1,
 		CapabilityHash:         capabilityHash,
