@@ -103,3 +103,63 @@ func TestProxyServerHandlerNilServer(t *testing.T) {
 		t.Fatalf("expected status 404, got %d", rec.Code)
 	}
 }
+
+func TestRewriteLegacyToolCallNameRewritesBareTool(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quick_add_task","arguments":{"text":"x"}}}`)
+	rewritten, fromName, toName, changed, err := rewriteLegacyToolCallName(body, "mcp-todoist")
+	if err != nil {
+		t.Fatalf("rewrite legacy tool call: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected legacy call to be rewritten")
+	}
+	if fromName != "quick_add_task" {
+		t.Fatalf("expected fromName quick_add_task, got %q", fromName)
+	}
+	if toName != "mcp.mcp-todoist.quick_add_task" {
+		t.Fatalf("expected federated tool name, got %q", toName)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rewritten, &payload); err != nil {
+		t.Fatalf("decode rewritten payload: %v", err)
+	}
+	params, _ := payload["params"].(map[string]any)
+	if got, _ := params["name"].(string); got != "mcp.mcp-todoist.quick_add_task" {
+		t.Fatalf("expected rewritten params.name, got %q", got)
+	}
+}
+
+func TestRewriteLegacyToolCallNameNoRewriteForFederatedName(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp.mcp-todoist.quick_add_task","arguments":{"text":"x"}}}`)
+	rewritten, _, _, changed, err := rewriteLegacyToolCallName(body, "mcp-todoist")
+	if err != nil {
+		t.Fatalf("rewrite legacy tool call: %v", err)
+	}
+	if changed {
+		t.Fatal("expected federated name not to be rewritten")
+	}
+	if string(rewritten) != string(body) {
+		t.Fatalf("expected body unchanged, got %s", string(rewritten))
+	}
+}
+
+func TestRewriteLegacyToolCallNameNoRewriteWithoutServerHint(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quick_add_task","arguments":{"text":"x"}}}`)
+	rewritten, _, _, changed, err := rewriteLegacyToolCallName(body, "")
+	if err != nil {
+		t.Fatalf("rewrite legacy tool call: %v", err)
+	}
+	if changed {
+		t.Fatal("expected no rewrite without server hint")
+	}
+	if string(rewritten) != string(body) {
+		t.Fatalf("expected body unchanged, got %s", string(rewritten))
+	}
+}

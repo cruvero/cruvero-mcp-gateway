@@ -1,13 +1,17 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,7 +136,77 @@ func (p *ProxyServer) Handler() http.Handler {
 		})
 	}
 
-	return p.streamableHandler
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, readErr := io.ReadAll(r.Body)
+			if readErr != nil {
+				http.Error(w, "failed to read request body", http.StatusBadRequest)
+				return
+			}
+			_ = r.Body.Close()
+
+			rewrittenBody := body
+			if len(body) > 0 {
+				candidate, fromName, toName, changed, rewriteErr := rewriteLegacyToolCallName(body, r.Header.Get("X-MCP-Server"))
+				switch {
+				case rewriteErr != nil:
+					p.logger.Debug("legacy tool call rewrite skipped",
+						slog.String("error", rewriteErr.Error()),
+					)
+				case changed:
+					rewrittenBody = candidate
+					p.logger.Debug("rewrote legacy tools/call name",
+						slog.String("from", fromName),
+						slog.String("to", toName),
+						slog.String("server_hint", strings.TrimSpace(r.Header.Get("X-MCP-Server"))),
+					)
+				}
+			}
+
+			r.Body = io.NopCloser(bytes.NewReader(rewrittenBody))
+			r.ContentLength = int64(len(rewrittenBody))
+			r.Header.Set("Content-Length", strconv.Itoa(len(rewrittenBody)))
+		}
+
+		p.streamableHandler.ServeHTTP(w, r)
+	})
+}
+
+func rewriteLegacyToolCallName(body []byte, serverHint string) ([]byte, string, string, bool, error) {
+	server := strings.TrimSpace(serverHint)
+	if server == "" || strings.EqualFold(server, "federation") {
+		return body, "", "", false, nil
+	}
+
+	var envelope map[string]any
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, "", "", false, fmt.Errorf("decode request body: %w", err)
+	}
+
+	method, _ := envelope["method"].(string)
+	if strings.TrimSpace(method) != string(mcp.MethodToolsCall) {
+		return body, "", "", false, nil
+	}
+
+	params, ok := envelope["params"].(map[string]any)
+	if !ok || params == nil {
+		return body, "", "", false, nil
+	}
+
+	nameRaw, _ := params["name"].(string)
+	name := strings.TrimSpace(nameRaw)
+	if name == "" || strings.HasPrefix(name, "mcp.") {
+		return body, "", "", false, nil
+	}
+
+	federated := "mcp." + server + "." + name
+	params["name"] = federated
+
+	rewritten, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, "", "", false, fmt.Errorf("encode rewritten request body: %w", err)
+	}
+	return rewritten, name, federated, true, nil
 }
 
 func (p *ProxyServer) getOrCreateClient(record types.ServerRecord) *BackendClient {
