@@ -27,6 +27,30 @@ spec:
         runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      {{- if .Values.database.autoMigrate.enabled }}
+      initContainers:
+        - name: db-migrate
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /mcpgw
+            - migrate
+            - --direction
+            - up
+          env:
+            {{- include "mcpgateway.runtimeSecretEnv" . | nindent 12 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      {{- end }}
       containers:
         - name: mcpgw
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"

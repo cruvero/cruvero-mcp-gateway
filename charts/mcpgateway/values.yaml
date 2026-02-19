@@ -101,6 +101,9 @@ nats:
 database:
   # -- Logical reference for DB URL source. Actual value must come from existingSecret.
   url: "existing-secret-ref"
+  autoMigrate:
+    # -- Run `mcpgw migrate --direction up` before starting each pod.
+    enabled: true
 
 # Vault Secrets Operator integration contract.
 vault:

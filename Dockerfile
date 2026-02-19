@@ -15,6 +15,7 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/mcpgw ./cmd/mcpgw
 
 FROM ${GCR_PROXY}/distroless/static-debian12:nonroot AS runtime
 COPY --from=build /out/mcpgw /mcpgw
+COPY migrations /migrations
 EXPOSE 8443 9090
 USER nonroot:nonroot
 ENTRYPOINT ["/mcpgw", "serve"]

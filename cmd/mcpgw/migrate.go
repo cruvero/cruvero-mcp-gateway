@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
@@ -127,13 +128,20 @@ func newMigrateRunner(dbURL string) (migrateRunner, error) {
 		return nil, fmt.Errorf("initialize migrator: create postgres driver: %w", err)
 	}
 
-	runner, err := migrate.NewWithDatabaseInstance("file://migrations", "postgres", driver)
+	runner, err := migrate.NewWithDatabaseInstance(migrationSourceURL(), "postgres", driver)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize migrator: create migrate instance: %w", err)
 	}
 
 	return runner, nil
+}
+
+func migrationSourceURL() string {
+	if _, err := os.Stat("/migrations"); err == nil {
+		return "file:///migrations"
+	}
+	return "file://migrations"
 }
 
 var _ migrateRunner = (*migrate.Migrate)(nil)
