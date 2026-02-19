@@ -116,7 +116,17 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 		return nil, fmt.Errorf("route tool: missing tool name")
 	}
 
-	candidates := r.index.LookupTool(name)
+	requestedServer, backendToolName := splitFederatedToolName(name)
+	candidates := r.index.LookupTool(backendToolName)
+	if requestedServer != "" {
+		filtered := make([]types.ServerRecord, 0, len(candidates))
+		for _, candidate := range candidates {
+			if strings.EqualFold(strings.TrimSpace(candidate.Name), requestedServer) || strings.EqualFold(strings.TrimSpace(candidate.ID), requestedServer) {
+				filtered = append(filtered, candidate)
+			}
+		}
+		candidates = filtered
+	}
 	if len(candidates) == 0 {
 		servermetrics.ObserveToolCall(name, backendLabel, "not_found", time.Since(start))
 		return nil, fmt.Errorf("route tool: %w: %s", ErrToolNotFound, name)
@@ -134,7 +144,7 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 	span.SetAttributes(attribute.String("backend.name", backendLabel))
 
 	client := r.GetOrCreateClient(*selected)
-	result, err := client.CallTool(ctx, name, args)
+	result, err := client.CallTool(ctx, backendToolName, args)
 	if err != nil {
 		errorType := "upstream_call"
 		if errors.Is(err, resilience.ErrCircuitOpen) {
@@ -149,6 +159,24 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 	span.SetAttributes(attribute.Bool("route.success", true))
 
 	return result, nil
+}
+
+func splitFederatedToolName(input string) (server string, tool string) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", ""
+	}
+
+	parts := strings.SplitN(trimmed, ".", 3)
+	if len(parts) == 3 && parts[0] == "mcp" {
+		server = strings.TrimSpace(parts[1])
+		tool = strings.TrimSpace(parts[2])
+		if tool == "" {
+			return "", trimmed
+		}
+		return server, tool
+	}
+	return "", trimmed
 }
 
 // GetOrCreateClient returns an existing client or lazily creates one.

@@ -73,13 +73,13 @@ func TestProxyMountedInGatewayToolsListAndCall(t *testing.T) {
 		t.Fatalf("expected 2 aggregated tools, got %d", len(tools.Tools))
 	}
 	names := []string{tools.Tools[0].Name, tools.Tools[1].Name}
-	if !slices.Contains(names, "tool.alpha") || !slices.Contains(names, "tool.beta") {
-		t.Fatalf("expected tool.alpha and tool.beta, got %v", names)
+	if !slices.Contains(names, "mcp.backend-1.tool.alpha") || !slices.Contains(names, "mcp.backend-2.tool.beta") {
+		t.Fatalf("expected namespaced tool names, got %v", names)
 	}
 
 	result, err := client.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      "tool.alpha",
+			Name:      "mcp.backend-1.tool.alpha",
 			Arguments: map[string]any{},
 		},
 	})

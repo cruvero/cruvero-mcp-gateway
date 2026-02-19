@@ -129,7 +129,7 @@ func TestHandleListToolsCacheExpiryTriggersRefetch(t *testing.T) {
 	}
 }
 
-func TestHandleListToolsDeduplicatesConflicts(t *testing.T) {
+func TestHandleListToolsExposesConflictsByBackendNamespace(t *testing.T) {
 	t.Parallel()
 
 	var firstCalls atomic.Int64
@@ -152,17 +152,18 @@ func TestHandleListToolsDeduplicatesConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools) != 1 {
-		t.Fatalf("expected one deduplicated tool, got %d", len(tools))
+	if len(tools) != 2 {
+		t.Fatalf("expected both backend-scoped tools, got %d", len(tools))
 	}
-	if tools[0].Description != "first" {
-		t.Fatalf("expected first server definition to win, got %q", tools[0].Description)
+	names := []string{tools[0].Name, tools[1].Name}
+	if !slices.Contains(names, "mcp.server-1.tool.same") || !slices.Contains(names, "mcp.server-2.tool.same") {
+		t.Fatalf("expected namespaced conflict tools, got %v", names)
 	}
 	if firstCalls.Load() != 1 {
-		t.Fatalf("expected first backend to be queried once, got %d", firstCalls.Load())
+		t.Fatalf("expected first backend queried once, got %d", firstCalls.Load())
 	}
-	if secondCalls.Load() != 0 {
-		t.Fatalf("expected second backend not queried for conflict resolution, got %d", secondCalls.Load())
+	if secondCalls.Load() != 1 {
+		t.Fatalf("expected second backend queried once, got %d", secondCalls.Load())
 	}
 }
 
@@ -194,8 +195,8 @@ func TestHandleListToolsAggregatesMultipleBackends(t *testing.T) {
 	}
 
 	names := []string{tools[0].Name, tools[1].Name}
-	if !slices.Contains(names, "tool.alpha") || !slices.Contains(names, "tool.beta") {
-		t.Fatalf("expected aggregated tools [tool.alpha, tool.beta], got %v", names)
+	if !slices.Contains(names, "mcp.server-1.tool.alpha") || !slices.Contains(names, "mcp.server-2.tool.beta") {
+		t.Fatalf("expected aggregated namespaced tools [mcp.server-1.tool.alpha, mcp.server-2.tool.beta], got %v", names)
 	}
 }
 

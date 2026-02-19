@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
 const defaultToolCacheTTL = 30 * time.Second
@@ -126,18 +128,10 @@ func (p *ProxyServer) handleListTools(ctx context.Context) ([]ToolDefinition, er
 
 	result := make([]ToolDefinition, 0, len(toolNames))
 	seen := make(map[string]struct{}, len(toolNames))
+	backendDefs := make(map[string]map[string]ToolDefinition)
 	for _, toolName := range toolNames {
 		toolName = strings.TrimSpace(toolName)
 		if toolName == "" {
-			continue
-		}
-		if _, exists := seen[toolName]; exists {
-			continue
-		}
-
-		if cached, ok := p.toolCache.Get(toolName); ok {
-			result = append(result, cached)
-			seen[toolName] = struct{}{}
 			continue
 		}
 
@@ -146,29 +140,84 @@ func (p *ProxyServer) handleListTools(ctx context.Context) ([]ToolDefinition, er
 			continue
 		}
 
-		backend := candidates[0]
-		client := p.getOrCreateClient(backend)
-		defs, err := client.ListTools(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list tools: backend %s: %w", backend.ID, err)
-		}
-
-		var selected *ToolDefinition
-		for _, def := range defs {
-			if def.Name == toolName {
-				defCopy := def
-				selected = &defCopy
-				break
+		for _, backend := range candidates {
+			federatedName := federatedToolName(backend, toolName)
+			if federatedName == "" {
+				continue
 			}
-		}
-		if selected == nil {
-			return nil, fmt.Errorf("list tools: backend %s missing definition for tool %s", backend.ID, toolName)
-		}
+			if _, exists := seen[federatedName]; exists {
+				continue
+			}
 
-		p.toolCache.Set(toolName, *selected, backend.ID)
-		result = append(result, *selected)
-		seen[toolName] = struct{}{}
+			if cached, ok := p.toolCache.Get(federatedName); ok {
+				result = append(result, cached)
+				seen[federatedName] = struct{}{}
+				continue
+			}
+
+			definitionsByName, err := p.loadBackendDefinitions(ctx, backend, backendDefs)
+			if err != nil {
+				return nil, err
+			}
+
+			selected, ok := definitionsByName[toolName]
+			if !ok {
+				return nil, fmt.Errorf("list tools: backend %s missing definition for tool %s", backend.ID, toolName)
+			}
+
+			selected.Name = federatedName
+			p.toolCache.Set(federatedName, selected, backend.ID)
+			result = append(result, selected)
+			seen[federatedName] = struct{}{}
+		}
 	}
 
 	return result, nil
+}
+
+func (p *ProxyServer) loadBackendDefinitions(
+	ctx context.Context,
+	backend types.ServerRecord,
+	cache map[string]map[string]ToolDefinition,
+) (map[string]ToolDefinition, error) {
+	if defs, ok := cache[backend.ID]; ok {
+		return defs, nil
+	}
+
+	client := p.getOrCreateClient(backend)
+	defs, err := client.ListTools(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list tools: backend %s: %w", backend.ID, err)
+	}
+
+	byName := make(map[string]ToolDefinition, len(defs))
+	for _, def := range defs {
+		name := strings.TrimSpace(def.Name)
+		if name == "" {
+			continue
+		}
+		byName[name] = def
+	}
+	cache[backend.ID] = byName
+	return byName, nil
+}
+
+func federatedToolName(server types.ServerRecord, toolName string) string {
+	base := strings.TrimSpace(toolName)
+	if base == "" {
+		return ""
+	}
+	if strings.HasPrefix(base, "mcp.") {
+		return base
+	}
+
+	serverName := strings.TrimSpace(server.Name)
+	if serverName == "" {
+		serverName = strings.TrimSpace(server.ID)
+	}
+	if serverName == "" {
+		return ""
+	}
+
+	return "mcp." + serverName + "." + base
 }

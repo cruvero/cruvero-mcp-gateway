@@ -75,6 +75,34 @@ func TestRouterRoundRobinDistribution(t *testing.T) {
 	}
 }
 
+func TestRouterRoutesFederatedToolToNamedBackend(t *testing.T) {
+	t.Parallel()
+
+	record1, client1, cleanup1 := buildRoutedToolBackend(t, "server-1", "tool.shared", "one")
+	defer cleanup1()
+	record2, client2, cleanup2 := buildRoutedToolBackend(t, "server-2", "tool.shared", "two")
+	defer cleanup2()
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record1)
+	index.Add(record2)
+
+	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
+	router.clients.Store(record1.ID, newResilientClientForTest(record1.ID, client1))
+	router.clients.Store(record2.ID, newResilientClientForTest(record2.ID, client2))
+
+	result, err := router.Route(context.Background(), "mcp.server-2.tool.shared", map[string]any{})
+	if err != nil {
+		t.Fatalf("route federated tool: %v", err)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected one content block, got %d", len(result.Content))
+	}
+	if result.Content[0].Text != "two" {
+		t.Fatalf("expected routed backend result two, got %q", result.Content[0].Text)
+	}
+}
+
 func TestRouterToolNotFound(t *testing.T) {
 	t.Parallel()
 
