@@ -19,6 +19,14 @@
 | 7 | Kubernetes & Observability | Not Started | [7A](PHASE7A.md), [7B](PHASE7B.md) | Phase 1--6 |
 | 8 | CLI & Testing | Not Started | [8A](PHASE8A.md), [8B](PHASE8B.md) | Phase 1--7 |
 | 9 | GitOps Deployment | Not Started | [9A](PHASE9A.md), [9B](PHASE9B.md) | Phase 1--8 |
+| 10 | Production Hardening & Tool Risk Classification | Not Started | [10A](PHASE10A.md), [10B](PHASE10B.md) | Phase 1--9 |
+| 11 | Distributed Rate Limiting | Not Started | [11A](PHASE11A.md), [11B](PHASE11B.md) | Phase 1--10 |
+| 12 | OIDC Device Code Flow & Admin Dashboard | Not Started | [12A](PHASE12A.md), [12B](PHASE12B.md) | Phase 2, 10 |
+| 14 | Code Mode & Production Hardening | Not Started | [14A](PHASE14A.md), [14B](PHASE14B.md) | Phase 1--12 |
+| 15 | NATS Resilience & Security | Not Started | [15A](PHASE15A.md), [15B](PHASE15B.md) | Phase 6 |
+| 16 | Multi-Environment GitOps & Ingress | Not Started | [16A](PHASE16A.md), [16B](PHASE16B.md) | Phase 9, 12 |
+| 17 | CI/CD Supply Chain Hardening | Not Started | [17A](PHASE17A.md), [17B](PHASE17B.md) | Phase 7 |
+| 18 | Developer Experience | Not Started | [18A](PHASE18A.md), [18B](PHASE18B.md) | Phase 12, 15 |
 
 ## Phase Details
 
@@ -94,6 +102,70 @@ Devcontainer-first local validation, Helm environment overlays, Argo CD AppProje
 - [9A: Devcontainer Baseline, Helm Env Overlays, Vault Wiring](PHASE9A.md) -- [Prompts](PHASE9A-PROMPT.md)
 - [9B: Argo AppProject/ApplicationSet, Rollout Policy, Drift Handling](PHASE9B.md) -- [Prompts](PHASE9B-PROMPT.md)
 
+### Phase 10: Production Hardening & Tool Risk Classification
+
+Fix P0 blockers (audit wiring, DB pool, CORS, retention) and implement a database-backed tool risk classification system.
+
+- [Overview](PHASE10.md)
+- [10A: P0 Bug Fixes: Audit Wiring, DB Pool, CORS, Retention](PHASE10A.md) -- [Prompts](PHASE10A-PROMPT.md)
+- [10B: Tool Risk Classification & Policy Engine Integration](PHASE10B.md) -- [Prompts](PHASE10B-PROMPT.md)
+
+### Phase 11: Distributed Rate Limiting
+
+Enable multi-replica scaling via DragonflyDB distributed rate limiting and cross-pod state synchronization.
+
+- [Overview](PHASE11.md)
+- [11A: DragonflyDB Rate Limit Backend](PHASE11A.md) -- [Prompts](PHASE11A-PROMPT.md)
+- [11B: NATS-Based State Sync](PHASE11B.md) -- [Prompts](PHASE11B-PROMPT.md)
+
+### Phase 12: OIDC Device Code Flow & Admin Dashboard
+
+OAuth2 Device Code flow for IDE/CLI authentication and a minimal admin dashboard with OIDC auth for observability and tool management.
+
+- [Overview](PHASE12.md)
+- [12A: Device Code Flow](PHASE12A.md) -- [Prompts](PHASE12A-PROMPT.md)
+- [12B: Admin Dashboard](PHASE12B.md) -- [Prompts](PHASE12B-PROMPT.md)
+
+### Phase 14: Code Mode & Production Hardening
+
+Cloudflare-style Code Mode via goja JavaScript runtime, ECS structured logging, NATS TLS spec, container scanning spec, and staging/prod environment spec.
+
+- [Overview](PHASE14.md)
+- [14A: Code Mode Integration](PHASE14A.md) -- [Prompts](PHASE14A-PROMPT.md)
+- [14B: ECS Logging, NATS TLS, Environments](PHASE14B.md) -- [Prompts](PHASE14B-PROMPT.md)
+
+### Phase 15: NATS Resilience & Security
+
+Wire PostgresConfigStore into DegradationManager for cached config recovery, and add TLS support for NATS connections.
+
+- [Overview](PHASE15.md)
+- [15A: ConfigStore Wiring & Degradation Recovery](PHASE15A.md) -- [Prompts](PHASE15A-PROMPT.md)
+- [15B: NATS TLS Configuration & Connection Security](PHASE15B.md) -- [Prompts](PHASE15B-PROMPT.md)
+
+### Phase 16: Multi-Environment GitOps & Ingress
+
+Extend ArgoCD from dev-only to multi-environment (dev/staging/prod), create environment-specific image workflows, and enable admin dashboard ingress.
+
+- [Overview](PHASE16.md)
+- [16A: ArgoCD Multi-Environment & Image Workflows](PHASE16A.md) -- [Prompts](PHASE16A-PROMPT.md)
+- [16B: Admin Dashboard Ingress](PHASE16B.md) -- [Prompts](PHASE16B-PROMPT.md)
+
+### Phase 17: CI/CD Supply Chain Hardening
+
+Add Trivy container scanning to image workflows, configure Dependabot for dependency updates, and establish SonarQube integration.
+
+- [Overview](PHASE17.md)
+- [17A: Container Scanning & Dependabot](PHASE17A.md) -- [Prompts](PHASE17A-PROMPT.md)
+- [17B: SonarQube Integration](PHASE17B.md) -- [Prompts](PHASE17B-PROMPT.md)
+
+### Phase 18: Developer Experience
+
+Standalone dev scripts for certificates and environment setup, admin dashboard dev mode, and devcontainer improvements.
+
+- [Overview](PHASE18.md)
+- [18A: Dev Scripts: Certificate Generation & Environment Setup](PHASE18A.md) -- [Prompts](PHASE18A-PROMPT.md)
+- [18B: Admin Dev Mode & Devcontainer Improvements](PHASE18B.md) -- [Prompts](PHASE18B-PROMPT.md)
+
 ## Dependency Graph
 
 ```
@@ -112,6 +184,21 @@ Phase 1 (Core Foundation)
   Phase 1 through 7 --------------------> Phase 8 (CLI & Testing)
   |
   Phase 1 through 8 --------------------> Phase 9 (GitOps Deployment)
+  |
+  Phase 1 through 9 --------------------> Phase 10 (Production Hardening)
+  |
+  Phase 10 -----------------------------> Phase 11 (Distributed Rate Limiting)
+  |
+  Phase 2 + Phase 10 -------------------> Phase 12 (OIDC Device Code & Admin)
+  |
+  Phase 1 through 12 -------------------> Phase 14 (Code Mode & Hardening)
+
+  --- Gap-closure phases (can run in parallel) ---
+
+  Phase 6 ------------------------------> Phase 15 (NATS Resilience & Security)
+  Phase 9 + Phase 12 -------------------> Phase 16 (Multi-Env GitOps & Ingress)
+  Phase 7 ------------------------------> Phase 17 (CI/CD Supply Chain)
+  Phase 12 + Phase 15 ------------------> Phase 18 (Developer Experience)
 ```
 
 ### Reading the Graph
@@ -125,6 +212,14 @@ Phase 1 (Core Foundation)
 - **Phase 7** depends on all prior phases (packages the complete system for Kubernetes deployment).
 - **Phase 8** depends on all prior phases (tests the full integrated system end-to-end).
 - **Phase 9** depends on all prior phases (ships environment-aware GitOps deployment and rollout policy).
+- **Phase 10** depends on Phase 1–9 (fixes P0 blockers in the complete system).
+- **Phase 11** depends on Phase 10 (distributed rate limiting builds on the rate limit backend).
+- **Phase 12** depends on Phase 2 and 10 (admin dashboard needs auth and hardened foundation).
+- **Phase 14** depends on Phase 1–12 (code mode needs the full platform).
+- **Phase 15** depends on Phase 6 (NATS resilience builds on the events subsystem).
+- **Phase 16** depends on Phase 9 and 12 (multi-env GitOps extends deployment; ingress exposes admin).
+- **Phase 17** depends on Phase 7 (container scanning requires Dockerfile and image workflows).
+- **Phase 18** depends on Phase 12 and 15 (dev mode needs admin dashboard; scripts need NATS TLS awareness).
 
 ### Parallelism Opportunities
 
@@ -132,3 +227,5 @@ Within the dependency constraints:
 - After Phase 2 completes, Phase 3 and Phase 5 can proceed in parallel.
 - Phase 4 can begin after Phase 1, but its routing logic requires the capability index from Phase 3. The protocol handler and catalog aggregation (4A) can start early; routing (4B) waits for 3B.
 - Phase 9 should start only after Phase 8 validation gates are stable, because Argo rollout policy depends on tested chart and image artifacts.
+- **Phases 15, 16, and 17 can proceed in parallel** — they address independent concerns (NATS resilience, GitOps, CI/CD) with no cross-dependencies.
+- **Phase 18 can start after Phase 15** completes (needs NATS TLS config awareness for dev scripts), but is independent of Phases 16 and 17.

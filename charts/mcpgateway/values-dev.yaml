@@ -59,7 +59,29 @@ secrets:
 tracing:
   enabled: true
 
+# Ingress: exposes admin dashboard at cruvero-mcp-gateway.dev.gchinfo.com
+# OIDC redirect URI: https://cruvero-mcp-gateway.dev.gchinfo.com/admin/callback
+ingress:
+  enabled: true
+  className: traefik
+  host: cruvero-mcp-gateway.dev.gchinfo.com
+  tls: true
+  tlsSecretName: mcpgateway-dev-ingress-tls
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+    cert-manager.io/cluster-issuer: vault-mcp-gateway-server
+
 networkPolicy:
+  ingress:
+    sources:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: traefik
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
   egress:
     otel:
       - namespaceSelector:
