@@ -462,6 +462,13 @@ func buildAuditFilter(r *http.Request) types.AuditFilter {
 }
 
 func csvEscape(s string) string {
+	// Prevent CSV formula injection: prefix dangerous leading characters with a single quote.
+	if len(s) > 0 {
+		switch s[0] {
+		case '=', '+', '-', '@', '\t', '\r':
+			s = "'" + s
+		}
+	}
 	if strings.ContainsAny(s, ",\"\n") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}

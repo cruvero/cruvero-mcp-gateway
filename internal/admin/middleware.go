@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
@@ -72,7 +73,8 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			csrfToken = r.Header.Get("X-CSRF-Token")
 		}
 
-		if strings.TrimSpace(csrfToken) == "" || csrfToken != session.CSRFToken {
+		if strings.TrimSpace(csrfToken) == "" ||
+		subtle.ConstantTimeCompare([]byte(csrfToken), []byte(session.CSRFToken)) != 1 {
 			http.Error(w, "invalid CSRF token", http.StatusForbidden)
 			return
 		}

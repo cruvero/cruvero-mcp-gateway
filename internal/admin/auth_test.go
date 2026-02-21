@@ -197,7 +197,10 @@ func TestCSRFMiddleware_POST_InvalidToken(t *testing.T) {
 }
 
 func TestPKCEVerifier(t *testing.T) {
-	verifier := generatePKCEVerifier()
+	verifier, err := generatePKCEVerifier()
+	if err != nil {
+		t.Fatalf("generatePKCEVerifier: %v", err)
+	}
 	if len(verifier) == 0 {
 		t.Fatalf("expected non-empty verifier")
 	}

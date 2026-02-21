@@ -321,17 +321,28 @@ func TestHandleAuditExport(t *testing.T) {
 
 func TestCSVEscape(t *testing.T) {
 	tests := []struct {
+		name  string
 		input string
 		want  string
 	}{
-		{"simple", "simple"},
-		{"has,comma", "\"has,comma\""},
-		{"has\"quote", "\"has\"\"quote\""},
-		{"has\nnewline", "\"has\nnewline\""},
+		{"simple text", "simple", "simple"},
+		{"has comma", "has,comma", "\"has,comma\""},
+		{"has quote", "has\"quote", "\"has\"\"quote\""},
+		{"has newline", "has\nnewline", "\"has\nnewline\""},
+		{"empty string", "", ""},
+		// Formula injection prevention cases.
+		{"formula equals", "=CMD|'/C calc'!A0", "'=CMD|'/C calc'!A0"},
+		{"formula plus", "+1+1", "'+1+1"},
+		{"formula minus", "-1-1", "'-1-1"},
+		{"formula at", "@SUM(A1:A10)", "'@SUM(A1:A10)"},
+		{"formula tab", "\tcmd", "'\tcmd"},
+		{"formula cr", "\rcmd", "'\rcmd"},
+		// Formula char + comma triggers both prefix and quoting.
+		{"formula with comma", "=a,b", "\"'=a,b\""},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			got := csvEscape(tt.input)
 			if got != tt.want {
 				t.Fatalf("csvEscape(%q) = %q, want %q", tt.input, got, tt.want)
