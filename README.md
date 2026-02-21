@@ -194,8 +194,8 @@ Sync policies:
 | `mcpgw serve` | Start the gateway server (default command) |
 | `mcpgw migrate` | Run database migrations |
 | `mcpgw server list` | List registered MCP servers |
-| `mcpgw server inspect <id>` | Show server details |
-| `mcpgw server deregister <id>` | Remove a server |
+| `mcpgw server inspect <id-or-name>` | Show server details |
+| `mcpgw server deregister <id-or-name>` | Remove a server |
 | `mcpgw apikey create` | Create a new API key |
 | `mcpgw apikey list` | List API keys |
 | `mcpgw apikey revoke <id>` | Revoke an API key |
@@ -212,7 +212,7 @@ Sync policies:
 | `mcpgw health` | Check gateway health |
 | `mcpgw version` | Print build version |
 
-Global flags: `--log-level`, `--log-format`, `--config`
+Global flags: `--log-level`, `--log-format`, `--config` (reserved for future use; currently no config file is loaded)
 
 Default policy profiles: `default` (10 req/s, burst 20), `premium` (50 req/s, burst 100), `admin` (100 req/s, burst 200).
 
@@ -228,7 +228,7 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | `MCPGW_LISTEN_ADDR` | `:8443` | No | Server listen address |
 | `MCPGW_TLS_CERT` | -- | No | Server TLS certificate path (must pair with TLS_KEY) |
 | `MCPGW_TLS_KEY` | -- | No | Server TLS private key path (must pair with TLS_CERT) |
-| `MCPGW_TLS_CA` | -- | No | Client CA bundle for mTLS verification |
+| `MCPGW_TLS_CA` | -- | Yes (with TLS) | Client CA bundle for TLS/mTLS verification; required when `MCPGW_TLS_CERT` and `MCPGW_TLS_KEY` are set |
 | `MCPGW_DB_MAX_OPEN_CONNS` | `25` | No | Max open database connections |
 | `MCPGW_DB_MAX_IDLE_CONNS` | `10` | No | Max idle database connections |
 | `MCPGW_DB_CONN_MAX_LIFETIME` | `5m` | No | Max connection lifetime |
@@ -387,7 +387,7 @@ The gateway exposes metrics on `MCPGW_METRICS_ADDR` (default `:9090`). The Helm 
 
 ### OpenTelemetry Tracing
 
-Configure distributed tracing by setting `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector address. The Helm chart can deploy a sidecar OTel Collector and Tempo instance when `tracing.enabled=true`.
+Configure distributed tracing by setting `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector address. The Helm chart can deploy a dedicated OTel Collector Deployment/Service and a Tempo instance when `tracing.enabled=true`.
 
 ### Structured Logging
 
@@ -469,7 +469,7 @@ For environments without browser access:
 
 ## Database Migrations
 
-The gateway embeds SQL migrations and applies them via `golang-migrate`:
+The gateway ships SQL migration files (copied into the image) and applies them via `golang-migrate` from the filesystem:
 
 ```bash
 # Run all pending migrations (default direction: up)
