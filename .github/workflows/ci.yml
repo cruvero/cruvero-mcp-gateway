@@ -124,7 +124,7 @@ jobs:
   sonar:
     runs-on:
       group: cruvero-org-runners
-    if: github.event_name == 'push' && vars.SONAR_ENABLED == 'true'
+    if: vars.SONAR_ENABLED == 'true'
     needs: [test, coverage]
     steps:
       - uses: actions/checkout@v6
