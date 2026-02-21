@@ -92,7 +92,7 @@ func serveWithContext(ctx context.Context) error {
 
 	classificationStore := storepkg.NewPostgresToolClassificationStore(db)
 
-	gw := server.New(cfg, logger)
+	gw := server.New(cfg, logger, db)
 
 	// Rate limit backend override.
 	var dragonflyBackend *ratelimit.DragonflyBackend

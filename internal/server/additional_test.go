@@ -101,7 +101,7 @@ func TestMetricsServerSettingsHandler(t *testing.T) {
 
 func TestServerMiddlewareSettersAndHandlers(t *testing.T) {
 	cfg := baseConfig()
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 
 	var authCalled bool
 	var policyCalled bool

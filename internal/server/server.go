@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,9 +53,15 @@ type Server struct {
 }
 
 // New builds a configured HTTP server with middleware and routes.
-func New(cfg *config.Config, logger *slog.Logger) *Server {
+// When db is non-nil, a PostgresConfigStore is created for DegradationManager.
+func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+
+	var configStore events.ConfigStore
+	if db != nil {
+		configStore = events.NewPostgresConfigStore(db)
 	}
 
 	router := chi.NewRouter()
@@ -122,7 +129,7 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 				srv.ackHandler = ackHandler
 			}
 
-			degradation := events.NewDegradationManager(natsClient, nil, srv.eventSubscriber, logger)
+			degradation := events.NewDegradationManager(natsClient, configStore, srv.eventSubscriber, logger)
 			natsClient.SetDisconnectHandler(func() {
 				SetNATSConnected(false)
 				degradation.OnDisconnect()
@@ -140,7 +147,14 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 		SetNATSConnected(false)
 	}
 	if cfg != nil && cfg.CruveroEnabled && srv.degradation == nil {
-		srv.degradation = events.NewDegradationManager(nil, nil, nil, logger)
+		srv.degradation = events.NewDegradationManager(nil, configStore, nil, logger)
+		if srv.degradation != nil && !srv.degradation.EverConnected() {
+			if err := srv.degradation.LoadCachedConfig(context.Background()); err != nil {
+				logger.Warn("failed to load cached config from postgres", slog.String("error", err.Error()))
+			} else if srv.degradation.HasCachedConfig() {
+				logger.Info("loaded cached config from postgres; running in degraded mode")
+			}
+		}
 	}
 
 	ratelimit.SetRateLimitedObserver(func(clientID string, route string) {
