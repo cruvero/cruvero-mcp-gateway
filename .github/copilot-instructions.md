@@ -6,6 +6,8 @@ Go 1.25.7 mTLS reverse-proxy gateway for MCP (Model Context Protocol) servers on
 
 - **Module**: `github.com/cruvero/mcp-gateway`
 - **Configuration**: All configuration is via `MCPGW_*` environment variables. There are no YAML/TOML/JSON config files.
+- **Admin Dashboard**: OIDC AuthCode+PKCE login, AES-256-GCM encrypted sessions, CSRF protection, HTMX/Alpine.js templates for managing servers, API keys, policies, and tool classifications.
+- **Device Code Flow**: OAuth2 Device Authorization Grant for CLI authentication (`mcpgw auth login`), with secure token caching.
 - **Branch strategy**: `dev` is the integration branch. `main` is production.
 
 ## PR Rules
@@ -14,7 +16,7 @@ Go 1.25.7 mTLS reverse-proxy gateway for MCP (Model Context Protocol) servers on
 - One logical change per PR. Reference issues with `Closes #<number>`.
 - Conventional commits are required: `type(scope): description`
   - **Types**: feat, fix, docs, test, chore, refactor, perf, ci, build
-  - **Scopes**: proxy, auth, store, config, events, identity, policy, ratelimit, registration, resilience, server, types, testutil, migrations, helm, ci, readme
+  - **Scopes**: proxy, auth, admin, store, config, events, identity, policy, ratelimit, registration, resilience, server, types, testutil, migrations, helm, ci, readme
 
 ## Code Standards
 

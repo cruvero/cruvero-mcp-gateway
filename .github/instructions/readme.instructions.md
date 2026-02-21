@@ -17,3 +17,6 @@ Any PR adding new features, CLI subcommands, or environment variables must updat
 - The "Phase Roadmap" table should be updated when phases complete.
 - The "CLI Subcommands" list (if present) must match `cmd/mcpgw/main.go` subcommands.
 - Quick Start instructions must remain functional.
+- Admin Dashboard section must document OIDC configuration requirements and available dashboard pages.
+- Device Code Flow section must document the `auth` and `mcp-proxy` CLI commands and their usage.
+- CLI Subcommands list must include `auth` and `mcp-proxy` commands.
