@@ -56,7 +56,7 @@ jobs:
             .
 
       - name: Scan Image with Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.34.1
         with:
           image-ref: ${{ env.REGISTRY_NORM }}/${{ env.HARBOR_PROJECT }}/cruvero-mcp-gateway:staging-${{ github.sha }}
           format: sarif
