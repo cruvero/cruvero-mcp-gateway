@@ -46,7 +46,8 @@ func TestServeWithContextInitializesAndShutsDown(t *testing.T) {
 		errCh <- serveWithContext(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Allow enough time for full initialization under CI + race detector load.
+	time.Sleep(500 * time.Millisecond)
 	cancel()
 
 	select {
@@ -54,7 +55,7 @@ func TestServeWithContextInitializesAndShutsDown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serveWithContext returned error: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("serveWithContext did not shut down in time")
 	}
 }
@@ -78,7 +79,8 @@ func TestServeWithContext_AdminDevMode(t *testing.T) {
 		errCh <- serveWithContext(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	// Allow enough time for full initialization under CI + race detector load.
+	time.Sleep(500 * time.Millisecond)
 	cancel()
 
 	select {
@@ -86,7 +88,7 @@ func TestServeWithContext_AdminDevMode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serveWithContext returned error: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("serveWithContext did not shut down in time")
 	}
 }

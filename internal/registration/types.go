@@ -2,6 +2,7 @@ package registration
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
@@ -47,8 +48,12 @@ func (r RegistrationRequest) Validate() error {
 	if !serviceNamePattern.MatchString(strings.TrimSpace(r.ServiceName)) {
 		return fmt.Errorf("invalid service_name format")
 	}
-	if strings.TrimSpace(r.Listen.Host) == "" {
+	host := strings.TrimSpace(r.Listen.Host)
+	if host == "" {
 		return fmt.Errorf("listen.host is required")
+	}
+	if err := validateHost(host); err != nil {
+		return fmt.Errorf("listen.host: %w", err)
 	}
 	if r.Listen.Port < 1 || r.Listen.Port > 65535 {
 		return fmt.Errorf("listen.port must be between 1 and 65535")
@@ -77,6 +82,54 @@ func (r RegistrationRequest) Validate() error {
 		if strings.TrimSpace(prompt) == "" {
 			return fmt.Errorf("capabilities.prompts cannot contain empty names")
 		}
+	}
+
+	return nil
+}
+
+// validateHost blocks SSRF-prone hosts: loopback, link-local, unspecified,
+// localhost, and cloud metadata endpoints. Private RFC 1918 addresses are
+// intentionally allowed because MCP servers in Kubernetes use pod IPs.
+func validateHost(host string) error {
+	// Normalize: strip bracketed IPv6 (e.g. "[::1]") and trailing DNS dot.
+	if len(host) > 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
+	}
+	host = strings.TrimRight(host, ".")
+
+	lower := strings.ToLower(host)
+
+	metadataHosts := []string{
+		"169.254.169.254",
+		"metadata.google.internal",
+		"metadata.goog",
+	}
+	for _, m := range metadataHosts {
+		if lower == m {
+			return fmt.Errorf("cloud metadata endpoint not allowed")
+		}
+	}
+
+	ip := net.ParseIP(host)
+	if ip != nil {
+		// Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to IPv4.
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("loopback and link-local addresses not allowed")
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("unspecified address not allowed")
+		}
+		// Re-check metadata IP after normalization.
+		if ip.Equal(net.ParseIP("169.254.169.254")) {
+			return fmt.Errorf("cloud metadata endpoint not allowed")
+		}
+	}
+
+	if lower == "localhost" || strings.HasSuffix(lower, ".localhost") {
+		return fmt.Errorf("localhost not allowed")
 	}
 
 	return nil

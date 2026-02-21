@@ -64,6 +64,7 @@ func NewRouter(deps AdminDeps) chi.Router {
 
 	// Authenticated routes.
 	r.Group(func(r chi.Router) {
+		r.Use(SecurityHeadersMiddleware)
 		r.Use(AdminAuthMiddleware(deps.Auth, deps.DevMode))
 		r.Use(CSRFMiddleware)
 

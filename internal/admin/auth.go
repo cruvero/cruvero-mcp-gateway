@@ -106,7 +106,12 @@ func NewAdminAuth(cfg *config.Config, logger *slog.Logger) (*AdminAuth, error) {
 
 // HandleLogin initiates the OIDC Authorization Code + PKCE flow.
 func (a *AdminAuth) HandleLogin(w http.ResponseWriter, r *http.Request) {
-	verifier := generatePKCEVerifier()
+	verifier, err := generatePKCEVerifier()
+	if err != nil {
+		a.logger.Error("generate PKCE verifier failed", slog.String("error", err.Error()))
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	challenge := pkceS256Challenge(verifier)
 
 	state, err := a.generateState(verifier)
@@ -334,12 +339,12 @@ func (a *AdminAuth) extractVerifierFromState(state string) (string, error) {
 	return payload.Verifier, nil
 }
 
-func generatePKCEVerifier() string {
+func generatePKCEVerifier() (string, error) {
 	b := make([]byte, pkceVerifierLen)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return ""
+		return "", fmt.Errorf("generate pkce verifier: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(b)
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func pkceS256Challenge(verifier string) string {

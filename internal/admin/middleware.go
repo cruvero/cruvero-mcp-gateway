@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,17 @@ func AdminAuthMiddleware(auth *AdminAuth, devMode bool) func(http.Handler) http.
 	}
 }
 
+// SecurityHeadersMiddleware adds standard security headers to all responses.
+func SecurityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // CSRFMiddleware validates CSRF tokens on state-changing requests.
 func CSRFMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +84,8 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			csrfToken = r.Header.Get("X-CSRF-Token")
 		}
 
-		if strings.TrimSpace(csrfToken) == "" || csrfToken != session.CSRFToken {
+		if strings.TrimSpace(csrfToken) == "" ||
+			subtle.ConstantTimeCompare([]byte(csrfToken), []byte(session.CSRFToken)) != 1 {
 			http.Error(w, "invalid CSRF token", http.StatusForbidden)
 			return
 		}
