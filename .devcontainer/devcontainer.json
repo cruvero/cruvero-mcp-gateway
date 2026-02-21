@@ -4,6 +4,7 @@
   "service": "devcontainer",
   "workspaceFolder": "/workspaces/cruvero-mcp-gateway",
   "remoteUser": "vscode",
+  "forwardPorts": [8443, 9090],
   "customizations": {
     "vscode": {
       "settings": {
@@ -19,5 +20,5 @@
       ]
     }
   },
-  "postCreateCommand": "bash -lc 'set -euo pipefail; go version; helm version --short; kubectl version --client --output=yaml >/dev/null; argocd version --client --short; golangci-lint version; staticcheck --version; govulncheck --version; go list ./... >/dev/null; echo \"devcontainer smoke check complete\"'"
+  "postCreateCommand": "bash -lc 'set -euo pipefail; scripts/dev-setup.sh'"
 }

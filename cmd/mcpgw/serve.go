@@ -211,12 +211,26 @@ func serveWithContext(ctx context.Context) error {
 	}
 
 	if cfg.AdminEnabled {
-		adminAuth, adminErr := admin.NewAdminAuth(cfg, logger)
-		if adminErr != nil {
-			return fmt.Errorf("serve command: initialize admin auth: %w", adminErr)
+		var adminAuth *admin.AdminAuth
+		if cfg.AdminDevMode {
+			logger.Warn("ADMIN DEV MODE ENABLED - authentication bypassed, do not use in production")
+			if strings.TrimSpace(cfg.TLSCAPath) != "" {
+				caLower := strings.ToLower(cfg.TLSCAPath)
+				if !strings.Contains(caLower, "dev") && !strings.Contains(caLower, "local") {
+					logger.Warn("admin dev mode with non-dev TLS CA path",
+						slog.String("tls_ca_path", cfg.TLSCAPath))
+				}
+			}
+		} else {
+			var adminErr error
+			adminAuth, adminErr = admin.NewAdminAuth(cfg, logger)
+			if adminErr != nil {
+				return fmt.Errorf("serve command: initialize admin auth: %w", adminErr)
+			}
 		}
 		adminRouter := admin.NewRouter(admin.AdminDeps{
 			Auth:                adminAuth,
+			DevMode:             cfg.AdminDevMode,
 			Logger:              logger,
 			ServerStore:         serverStore,
 			AuditStore:          auditStore,
@@ -225,7 +239,7 @@ func serveWithContext(ctx context.Context) error {
 			RateLimitBackend:    gw.RateLimitBackend(),
 		})
 		gw.MountAdmin(adminRouter)
-		logger.Info("admin dashboard enabled")
+		logger.Info("admin dashboard enabled", slog.Bool("dev_mode", cfg.AdminDevMode))
 	}
 
 	go storepkg.StartAuditRetention(ctx, db, cfg.AuditRetentionDays, cfg.AuditCleanupInterval, logger)
