@@ -692,6 +692,33 @@ func TestAdminAuthMiddleware_DevMode(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	handler := SecurityHeadersMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	expected := map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":       "DENY",
+		"Referrer-Policy":       "strict-origin-when-cross-origin",
+		"Permissions-Policy":    "camera=(), microphone=(), geolocation=()",
+	}
+	for header, want := range expected {
+		got := w.Header().Get(header)
+		if got != want {
+			t.Errorf("%s: got %q, want %q", header, got, want)
+		}
+	}
+}
+
 func TestCSRFMiddleware_DevMode_StaticToken(t *testing.T) {
 	session := &AdminSession{CSRFToken: "dev-csrf-token"}
 	handler := CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
