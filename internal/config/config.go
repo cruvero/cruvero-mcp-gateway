@@ -23,8 +23,9 @@ const (
 	defaultMetricsAddr      = ":9090"
 	defaultCruveroEnabled   = false
 	defaultGatewayID        = "auto"
-	defaultCORSEnabled      = false
-	defaultOTELServiceName  = "mcpgw"
+	defaultCORSEnabled             = false
+	defaultOTELServiceName         = "mcpgw"
+	defaultProgressiveDiscovery    = false
 	defaultDBMaxOpenConns       = 25
 	defaultDBMaxIdleConns       = 10
 	defaultDBConnMaxLifetime    = 5 * time.Minute
@@ -83,6 +84,7 @@ type Config struct {
 	AdminSessionKey        [32]byte      `json:"-"`
 	AdminSessionTTL        time.Duration `json:"admin_session_ttl"`
 	AdminDevMode           bool          `json:"admin_dev_mode"`
+	ProgressiveDiscovery   bool          `json:"progressive_discovery"`
 }
 
 // Load reads all MCPGW_* environment variables into Config and validates them.
@@ -192,6 +194,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	progressiveDiscovery, err := parseBool("MCPGW_PROGRESSIVE_DISCOVERY", defaultProgressiveDiscovery)
+	if err != nil {
+		return nil, err
+	}
+
 	var adminSessionKey [32]byte
 	if rawKey := strings.TrimSpace(os.Getenv("MCPGW_ADMIN_SESSION_KEY")); rawKey != "" {
 		decoded, decodeErr := hex.DecodeString(rawKey)
@@ -253,6 +260,7 @@ func Load() (*Config, error) {
 		AdminSessionKey:        adminSessionKey,
 		AdminSessionTTL:        adminSessionTTL,
 		AdminDevMode:           adminDevMode,
+		ProgressiveDiscovery:   progressiveDiscovery,
 	}
 
 	if err := cfg.Validate(); err != nil {
