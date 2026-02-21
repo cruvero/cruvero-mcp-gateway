@@ -23,7 +23,7 @@ jobs:
   docker-build-push:
     runs-on: [self-hosted, cruvero]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Normalize Harbor Registry
         shell: bash
