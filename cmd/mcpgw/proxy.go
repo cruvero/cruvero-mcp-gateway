@@ -113,7 +113,7 @@ func sendMCPRequest(ctx context.Context, endpoint, accessToken string, body []by
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 
-		resp, err := httpClientForProxy.Do(req)
+		resp, err := httpClientForProxy.Do(req) // #nosec G704 -- endpoint is the user-configured gateway URL
 		if err != nil {
 			lastErr = err
 			continue

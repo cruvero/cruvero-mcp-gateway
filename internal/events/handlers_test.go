@@ -16,7 +16,7 @@ func TestPolicyConfigHandlerValidConfig(t *testing.T) {
 
 	engine := &mockPolicyEngine{}
 	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	handler := NewPolicyConfigHandler(nil, backend, nil)
 	handler.engine = engine
 
