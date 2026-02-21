@@ -56,12 +56,18 @@ func APIKeyMiddleware(store store.APIKeyStore, logger *slog.Logger) func(http.Ha
 				return
 			}
 
+			policyProfile := record.PolicyProfile
+			if policyProfile == "" {
+				policyProfile = "default"
+			}
+
 			id := &identity.Identity{
 				Type:   identity.IdentityAPIKey,
 				ID:     record.ClientID,
 				Scopes: append([]string(nil), record.Scopes...),
 				Metadata: map[string]string{
-					"auth_method": "apikey",
+					"auth_method":    "apikey",
+					"policy_profile": policyProfile,
 				},
 			}
 

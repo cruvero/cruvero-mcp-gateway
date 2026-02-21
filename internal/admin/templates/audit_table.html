@@ -1,0 +1,26 @@
+{{define "audit_table"}}
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Event Type</th>
+      <th>Client ID</th>
+      <th>Server</th>
+      <th>Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Entries}}
+    <tr>
+      <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+      <td>{{.EventType}}</td>
+      <td>{{.ClientID}}</td>
+      <td>{{.ServerName}}</td>
+      <td><code>{{.DetailsJSON}}</code></td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No audit entries found.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

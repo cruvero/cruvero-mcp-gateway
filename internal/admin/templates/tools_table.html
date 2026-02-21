@@ -1,0 +1,26 @@
+{{define "tools_table"}}
+<table>
+  <thead>
+    <tr>
+      <th>Tool Name</th>
+      <th>Risk Level</th>
+      <th>Reason</th>
+      <th>Updated By</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Tools}}
+    <tr>
+      <td>{{.ToolName}}</td>
+      <td><span class="badge badge-{{.RiskLevel}}">{{.RiskLevel}}</span></td>
+      <td>{{.Reason}}</td>
+      <td>{{.UpdatedBy}}</td>
+      <td><a href="/admin/tools/{{.ToolName}}">Edit</a></td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No tools found.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

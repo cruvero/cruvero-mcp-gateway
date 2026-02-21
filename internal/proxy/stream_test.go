@@ -72,7 +72,7 @@ func TestSSEWriterKeepaliveStopsOnCancel(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	cancel()
 
 	select {

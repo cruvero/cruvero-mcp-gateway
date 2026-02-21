@@ -67,6 +67,28 @@ spec:
                 name: {{ include "mcpgateway.configMapName" . }}
           env:
             {{- include "mcpgateway.runtimeSecretEnv" . | nindent 12 }}
+            {{- if .Values.admin.enabled }}
+            - name: MCPGW_ADMIN_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcpgateway.runtimeSecretName" . }}
+                  key: MCPGW_ADMIN_OIDC_CLIENT_SECRET
+                  optional: true
+            - name: MCPGW_ADMIN_SESSION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcpgateway.runtimeSecretName" . }}
+                  key: MCPGW_ADMIN_SESSION_KEY
+                  optional: false
+            {{- end }}
+            {{- if .Values.deviceFlow.enabled }}
+            - name: MCPGW_DEVICE_FLOW_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mcpgateway.runtimeSecretName" . }}
+                  key: MCPGW_DEVICE_FLOW_CLIENT_SECRET
+                  optional: true
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

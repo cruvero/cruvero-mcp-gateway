@@ -18,25 +18,26 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/policy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
+	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 )
 
-const shutdownTimeout = 10 * time.Second
-
 // Server wraps the gateway HTTP server and router.
 type Server struct {
-	cfg        *config.Config
-	logger     *slog.Logger
-	router     chi.Router
-	httpServer *http.Server
-	metricsSrv *http.Server
-	startTime  time.Time
-	ready      atomic.Bool
+	cfg             *config.Config
+	logger          *slog.Logger
+	router          chi.Router
+	httpServer      *http.Server
+	metricsSrv      *http.Server
+	startTime       time.Time
+	ready           atomic.Bool
+	shutdownTimeout time.Duration
 
-	rateLimiterStore  *ratelimit.LimiterStore
-	profileResolver   ratelimit.ProfileResolver
+	policyEngine     *policy.Engine
+	rateLimitBackend ratelimit.LimiterBackend
+	profileResolver  ratelimit.ProfileResolver
 	proxyAuthMW       func(http.Handler) http.Handler
 	proxyPolicyMW     func(http.Handler) http.Handler
 	cleanupInterval   time.Duration
@@ -64,23 +65,32 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 	router.Use(RecoveryMiddleware(logger))
 	router.Use(RequestBodyLimitMiddleware(defaultMaxRequestBodyBytes))
 	if cfg != nil && cfg.CORSEnabled {
-		router.Use(CORSMiddleware)
+		router.Use(CORSMiddleware(cfg.CORSAllowedOrigins))
+	}
+
+	shutdownTimeout := 30 * time.Second
+	if cfg != nil && cfg.ShutdownTimeout > 0 {
+		shutdownTimeout = cfg.ShutdownTimeout
 	}
 
 	srv := &Server{
-		cfg:       cfg,
-		logger:    logger,
-		router:    router,
-		startTime: time.Now().UTC(),
+		cfg:             cfg,
+		logger:          logger,
+		router:          router,
+		startTime:       time.Now().UTC(),
+		shutdownTimeout: shutdownTimeout,
 
 		cleanupInterval:   time.Minute,
 		cleanupMaxIdleTTL: 5 * time.Minute,
 	}
 	profiles := defaultProfiles(cfg)
 	defaultProfile := profiles["default"]
-	srv.rateLimiterStore = ratelimit.NewLimiterStore(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
+	mb := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	mb.SetDefaults(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
+	srv.rateLimitBackend = mb
 	srv.profileResolver = ratelimit.NewDefaultProfileResolver(profiles, defaultProfile)
 	policyEngine := policy.NewEngine(profiles, nil, logger)
+	srv.policyEngine = policyEngine
 
 	if cfg != nil && cfg.CruveroEnabled && strings.TrimSpace(cfg.NATSURL) != "" {
 		natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID)
@@ -93,7 +103,7 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 			SetNATSConnected(true)
 
 			subscriber := events.NewSubscriber(natsClient, logger)
-			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimiterStore, logger)
+			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimitBackend, logger)
 			serverHandler := events.NewServerConfigHandler(nil, logger)
 			serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
 			serverSettingsHandler := &metricsServerSettingsHandler{
@@ -190,12 +200,12 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
-	ratelimit.StartCleanup(ctx, s.rateLimiterStore, s.cleanupInterval, s.cleanupMaxIdleTTL)
+	// MemoryBackend manages its own cleanup internally; no external cleanup needed.
 
 	shutdownErrCh := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
 		if s.metricsSrv != nil {
 			if err := s.metricsSrv.Shutdown(shutdownCtx); err != nil {
@@ -282,12 +292,45 @@ func (s *Server) MountProxyRoutes(proxyHandler http.Handler) {
 		if s.proxyAuthMW != nil {
 			r.Use(s.proxyAuthMW)
 		}
-		r.Use(ratelimit.RateLimitMiddleware(s.rateLimiterStore, s.profileResolver, s.logger))
+		r.Use(ratelimit.RateLimitMiddleware(s.rateLimitBackend, s.profileResolver, s.logger))
 		if s.proxyPolicyMW != nil {
 			r.Use(s.proxyPolicyMW)
 		}
 		r.Mount("/", proxyHandler)
 	})
+}
+
+// MountAdmin mounts the admin dashboard router under /admin/.
+func (s *Server) MountAdmin(adminRouter chi.Router) {
+	if s == nil || adminRouter == nil {
+		return
+	}
+	s.router.Mount("/admin", adminRouter)
+}
+
+// RateLimitBackend returns the server's rate limit backend for sharing with admin.
+func (s *Server) RateLimitBackend() ratelimit.LimiterBackend {
+	if s == nil {
+		return nil
+	}
+	return s.rateLimitBackend
+}
+
+// MountDeviceFlowRoutes mounts device code flow endpoints under /device.
+func (s *Server) MountDeviceFlowRoutes(handler http.Handler) {
+	if s == nil || handler == nil {
+		return
+	}
+	s.router.Mount("/device", handler)
+}
+
+// SetRateLimitBackend replaces the default memory rate-limit backend.
+// Call before MountProxyRoutes.
+func (s *Server) SetRateLimitBackend(backend ratelimit.LimiterBackend) {
+	if s == nil || backend == nil {
+		return
+	}
+	s.rateLimitBackend = backend
 }
 
 // SetProxyAuthMiddleware configures auth middleware for the /mcp chain.
@@ -304,6 +347,14 @@ func (s *Server) SetProxyPolicyMiddleware(middleware func(http.Handler) http.Han
 		return
 	}
 	s.proxyPolicyMW = middleware
+}
+
+// EventsClient returns the NATS events client, if configured.
+func (s *Server) EventsClient() *events.Client {
+	if s == nil {
+		return nil
+	}
+	return s.eventsClient
 }
 
 // EventPublisher returns the configured events publisher, if NATS is enabled.
@@ -467,6 +518,30 @@ func defaultProfiles(cfg *config.Config) map[string]*types.PolicyProfile {
 		"premium": premium,
 		"admin":   admin,
 	}
+}
+
+// SetAuditStore wires the audit store into the policy engine for decision logging.
+func (s *Server) SetAuditStore(auditStore store.AuditStore) {
+	if s == nil || s.policyEngine == nil {
+		return
+	}
+	s.policyEngine.SetAuditStore(auditStore)
+}
+
+// SetClassificationStore wires the tool classification store into the policy engine.
+func (s *Server) SetClassificationStore(classificationStore store.ToolClassificationStore) {
+	if s == nil || s.policyEngine == nil {
+		return
+	}
+	s.policyEngine.SetClassificationStore(classificationStore)
+}
+
+// PolicyEngine returns the server's policy engine instance.
+func (s *Server) PolicyEngine() *policy.Engine {
+	if s == nil {
+		return nil
+	}
+	return s.policyEngine
 }
 
 // SetDegradationManager overrides server degradation state integration.

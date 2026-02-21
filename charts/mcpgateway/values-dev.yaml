@@ -31,6 +31,9 @@ tls:
 probes:
   scheme: HTTPS
 
+rateLimit:
+  backend: memory
+
 config:
   MCPGW_TLS_CERT: "/tls/tls.crt"
   MCPGW_TLS_KEY: "/tls/tls.key"
@@ -38,6 +41,7 @@ config:
   MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://cruvero.dev/ns/cruvero-dev/sa/"
   MCPGW_CRUVERO_ENABLED: "true"
   MCPGW_GATEWAY_ID: "mcpgateway-dev"
+  MCPGW_RATE_LIMIT_BACKEND: "memory"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://mcpgateway-dev-otel-collector:4318"
 
 vault:

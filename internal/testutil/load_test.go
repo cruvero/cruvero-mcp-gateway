@@ -19,12 +19,14 @@ import (
 )
 
 func TestSustainedThroughput(t *testing.T) {
-	store := ratelimit.NewLimiterStore(100, 100)
+	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer backend.Close()
+	backend.SetDefaults(100, 100)
 	resolver := ratelimit.NewDefaultProfileResolver(map[string]*types.PolicyProfile{
 		"default": {Name: "default", RateLimit: 100, RateBurst: 100},
 	}, &types.PolicyProfile{Name: "default", RateLimit: 100, RateBurst: 100})
 
-	handler := ratelimit.RateLimitMiddleware(store, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := ratelimit.RateLimitMiddleware(backend, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -65,12 +67,14 @@ func TestSustainedThroughput(t *testing.T) {
 }
 
 func TestBurst(t *testing.T) {
-	store := ratelimit.NewLimiterStore(10, 20)
+	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer backend.Close()
+	backend.SetDefaults(10, 20)
 	resolver := ratelimit.NewDefaultProfileResolver(map[string]*types.PolicyProfile{
 		"default": {Name: "default", RateLimit: 10, RateBurst: 20},
 	}, &types.PolicyProfile{Name: "default", RateLimit: 10, RateBurst: 20})
 
-	handler := ratelimit.RateLimitMiddleware(store, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := ratelimit.RateLimitMiddleware(backend, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

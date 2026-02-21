@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -24,6 +25,12 @@ const (
 	defaultGatewayID        = "auto"
 	defaultCORSEnabled      = false
 	defaultOTELServiceName  = "mcpgw"
+	defaultDBMaxOpenConns       = 25
+	defaultDBMaxIdleConns       = 10
+	defaultDBConnMaxLifetime    = 5 * time.Minute
+	defaultAuditRetentionDays   = 90
+	defaultAuditCleanupInterval = 1 * time.Hour
+	defaultShutdownTimeout      = 30 * time.Second
 )
 
 // Config contains all gateway runtime settings loaded from MCPGW_* env vars.
@@ -48,9 +55,29 @@ type Config struct {
 	MetricsAddr          string        `json:"metrics_addr"`
 	CruveroEnabled       bool          `json:"cruvero_enabled"`
 	GatewayID            string        `json:"gateway_id"`
-	CORSEnabled          bool          `json:"cors_enabled"`
+	CORSEnabled          bool     `json:"cors_enabled"`
+	CORSAllowedOrigins   []string `json:"cors_allowed_origins"`
+	DBMaxOpenConns       int           `json:"db_max_open_conns"`
+	DBMaxIdleConns       int           `json:"db_max_idle_conns"`
+	DBConnMaxLifetime    time.Duration `json:"db_conn_max_lifetime"`
+	AuditRetentionDays   int           `json:"audit_retention_days"`
+	AuditCleanupInterval time.Duration `json:"audit_cleanup_interval"`
+	ShutdownTimeout      time.Duration `json:"shutdown_timeout"`
+	RateLimitBackend     string        `json:"rate_limit_backend"`
+	DragonflyURL         string        `json:"dragonfly_url"`
 	OTLPExporterEndpoint string        `json:"otlp_exporter_endpoint"`
 	OTELServiceName      string        `json:"otel_service_name"`
+	DeviceFlowEnabled      bool   `json:"device_flow_enabled"`
+	DeviceFlowIDPDeviceURL string `json:"device_flow_idp_device_url"`
+	DeviceFlowIDPTokenURL  string `json:"device_flow_idp_token_url"`
+	DeviceFlowClientID     string `json:"device_flow_client_id"`
+	DeviceFlowClientSecret string `json:"device_flow_client_secret"`
+	AdminEnabled           bool          `json:"admin_enabled"`
+	AdminOIDCClientID      string        `json:"admin_oidc_client_id"`
+	AdminOIDCClientSecret  string        `json:"admin_oidc_client_secret"`
+	AdminRequiredScope     string        `json:"admin_required_scope"`
+	AdminSessionKey        [32]byte      `json:"-"`
+	AdminSessionTTL        time.Duration `json:"admin_session_ttl"`
 }
 
 // Load reads all MCPGW_* environment variables into Config and validates them.
@@ -95,12 +122,71 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	dbMaxOpenConns, err := parseInt("MCPGW_DB_MAX_OPEN_CONNS", defaultDBMaxOpenConns)
+	if err != nil {
+		return nil, err
+	}
+
+	dbMaxIdleConns, err := parseInt("MCPGW_DB_MAX_IDLE_CONNS", defaultDBMaxIdleConns)
+	if err != nil {
+		return nil, err
+	}
+
+	dbConnMaxLifetime, err := parseDuration("MCPGW_DB_CONN_MAX_LIFETIME", defaultDBConnMaxLifetime)
+	if err != nil {
+		return nil, err
+	}
+
+	auditRetentionDays, err := parseInt("MCPGW_AUDIT_RETENTION_DAYS", defaultAuditRetentionDays)
+	if err != nil {
+		return nil, err
+	}
+
+	auditCleanupInterval, err := parseDuration("MCPGW_AUDIT_CLEANUP_INTERVAL", defaultAuditCleanupInterval)
+	if err != nil {
+		return nil, err
+	}
+
+	shutdownTimeout, err := parseDuration("MCPGW_SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
+	if err != nil {
+		return nil, err
+	}
+
 	gatewayID := getEnv("MCPGW_GATEWAY_ID", defaultGatewayID)
 	if gatewayID == "auto" {
 		gatewayID, err = generateUUID()
 		if err != nil {
 			return nil, fmt.Errorf("generate gateway id: %w", err)
 		}
+	}
+
+	rateLimitBackend := getEnv("MCPGW_RATE_LIMIT_BACKEND", "memory")
+
+	deviceFlowEnabled, err := parseBool("MCPGW_DEVICE_FLOW_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
+
+	adminEnabled, err := parseBool("MCPGW_ADMIN_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
+
+	adminSessionTTL, err := parseDuration("MCPGW_ADMIN_SESSION_TTL", 8*time.Hour)
+	if err != nil {
+		return nil, err
+	}
+
+	var adminSessionKey [32]byte
+	if rawKey := strings.TrimSpace(os.Getenv("MCPGW_ADMIN_SESSION_KEY")); rawKey != "" {
+		decoded, decodeErr := hex.DecodeString(rawKey)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("parse MCPGW_ADMIN_SESSION_KEY: %w", decodeErr)
+		}
+		if len(decoded) != 32 {
+			return nil, fmt.Errorf("parse MCPGW_ADMIN_SESSION_KEY: must be exactly 32 bytes (64 hex chars), got %d bytes", len(decoded))
+		}
+		copy(adminSessionKey[:], decoded)
 	}
 
 	cfg := &Config{
@@ -125,8 +211,28 @@ func Load() (*Config, error) {
 		CruveroEnabled:       cruveroEnabled,
 		GatewayID:            gatewayID,
 		CORSEnabled:          corsEnabled,
-		OTLPExporterEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		OTELServiceName:      getEnv("OTEL_SERVICE_NAME", defaultOTELServiceName),
+		CORSAllowedOrigins:   parseCSV("MCPGW_CORS_ALLOWED_ORIGINS"),
+		DBMaxOpenConns:       dbMaxOpenConns,
+		DBMaxIdleConns:       dbMaxIdleConns,
+		DBConnMaxLifetime:    dbConnMaxLifetime,
+		AuditRetentionDays:   auditRetentionDays,
+		AuditCleanupInterval: auditCleanupInterval,
+		ShutdownTimeout:      shutdownTimeout,
+		RateLimitBackend:     rateLimitBackend,
+		DragonflyURL:         os.Getenv("MCPGW_DRAGONFLY_URL"),
+		OTLPExporterEndpoint:   getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OTELServiceName:        getEnv("OTEL_SERVICE_NAME", defaultOTELServiceName),
+		DeviceFlowEnabled:      deviceFlowEnabled,
+		DeviceFlowIDPDeviceURL: os.Getenv("MCPGW_DEVICE_FLOW_IDP_DEVICE_URL"),
+		DeviceFlowIDPTokenURL:  os.Getenv("MCPGW_DEVICE_FLOW_IDP_TOKEN_URL"),
+		DeviceFlowClientID:     os.Getenv("MCPGW_DEVICE_FLOW_CLIENT_ID"),
+		DeviceFlowClientSecret: os.Getenv("MCPGW_DEVICE_FLOW_CLIENT_SECRET"),
+		AdminEnabled:           adminEnabled,
+		AdminOIDCClientID:      os.Getenv("MCPGW_ADMIN_OIDC_CLIENT_ID"),
+		AdminOIDCClientSecret:  os.Getenv("MCPGW_ADMIN_OIDC_CLIENT_SECRET"),
+		AdminRequiredScope:     getEnv("MCPGW_ADMIN_REQUIRED_SCOPE", "admin"),
+		AdminSessionKey:        adminSessionKey,
+		AdminSessionTTL:        adminSessionTTL,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -166,6 +272,78 @@ func (c *Config) Validate() error {
 
 	if c.CruveroEnabled && strings.TrimSpace(c.NATSURL) == "" {
 		return fmt.Errorf("validate config: MCPGW_NATS_URL is required when MCPGW_CRUVERO_ENABLED is true")
+	}
+
+	if c.CORSEnabled && len(c.CORSAllowedOrigins) == 0 {
+		return fmt.Errorf("validate config: MCPGW_CORS_ALLOWED_ORIGINS is required when MCPGW_CORS_ENABLED is true")
+	}
+
+	if c.DBMaxOpenConns <= 0 {
+		return fmt.Errorf("validate config: MCPGW_DB_MAX_OPEN_CONNS must be positive")
+	}
+
+	if c.DBMaxIdleConns <= 0 {
+		return fmt.Errorf("validate config: MCPGW_DB_MAX_IDLE_CONNS must be positive")
+	}
+
+	if c.DBConnMaxLifetime <= 0 {
+		return fmt.Errorf("validate config: MCPGW_DB_CONN_MAX_LIFETIME must be positive")
+	}
+
+	if c.AuditRetentionDays <= 0 {
+		return fmt.Errorf("validate config: MCPGW_AUDIT_RETENTION_DAYS must be positive")
+	}
+
+	if c.AuditCleanupInterval <= 0 {
+		return fmt.Errorf("validate config: MCPGW_AUDIT_CLEANUP_INTERVAL must be positive")
+	}
+
+	if c.ShutdownTimeout <= 0 {
+		return fmt.Errorf("validate config: MCPGW_SHUTDOWN_TIMEOUT must be positive")
+	}
+
+	if c.ShutdownTimeout > 120*time.Second {
+		return fmt.Errorf("validate config: MCPGW_SHUTDOWN_TIMEOUT must not exceed 120s")
+	}
+
+	switch c.RateLimitBackend {
+	case "memory", "dragonfly", "nats", "":
+		// valid
+	default:
+		return fmt.Errorf("validate config: MCPGW_RATE_LIMIT_BACKEND must be memory, dragonfly, or nats")
+	}
+
+	if c.RateLimitBackend == "dragonfly" && strings.TrimSpace(c.DragonflyURL) == "" {
+		return fmt.Errorf("validate config: MCPGW_DRAGONFLY_URL is required when MCPGW_RATE_LIMIT_BACKEND is dragonfly")
+	}
+
+	if c.RateLimitBackend == "nats" && !c.CruveroEnabled {
+		return fmt.Errorf("validate config: MCPGW_CRUVERO_ENABLED must be true when MCPGW_RATE_LIMIT_BACKEND is nats")
+	}
+
+	if c.AdminEnabled {
+		if strings.TrimSpace(c.AdminOIDCClientID) == "" {
+			return fmt.Errorf("validate config: MCPGW_ADMIN_OIDC_CLIENT_ID is required when MCPGW_ADMIN_ENABLED is true")
+		}
+		if strings.TrimSpace(c.OIDCIssuer) == "" {
+			return fmt.Errorf("validate config: MCPGW_OIDC_ISSUER is required when MCPGW_ADMIN_ENABLED is true")
+		}
+		emptyKey := [32]byte{}
+		if c.AdminSessionKey == emptyKey {
+			return fmt.Errorf("validate config: MCPGW_ADMIN_SESSION_KEY is required when MCPGW_ADMIN_ENABLED is true")
+		}
+	}
+
+	if c.DeviceFlowEnabled {
+		if strings.TrimSpace(c.DeviceFlowIDPDeviceURL) == "" {
+			return fmt.Errorf("validate config: MCPGW_DEVICE_FLOW_IDP_DEVICE_URL is required when MCPGW_DEVICE_FLOW_ENABLED is true")
+		}
+		if strings.TrimSpace(c.DeviceFlowIDPTokenURL) == "" {
+			return fmt.Errorf("validate config: MCPGW_DEVICE_FLOW_IDP_TOKEN_URL is required when MCPGW_DEVICE_FLOW_ENABLED is true")
+		}
+		if strings.TrimSpace(c.DeviceFlowClientID) == "" {
+			return fmt.Errorf("validate config: MCPGW_DEVICE_FLOW_CLIENT_ID is required when MCPGW_DEVICE_FLOW_ENABLED is true")
+		}
 	}
 
 	return nil

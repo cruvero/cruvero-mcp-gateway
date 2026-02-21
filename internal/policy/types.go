@@ -18,6 +18,8 @@ const (
 	ViolationSchemaViolation ViolationType = "schema_violation"
 	// ViolationAllowlist indicates the requested tool was not present in the allowlist.
 	ViolationAllowlist ViolationType = "allowlist"
+	// ViolationDestructive indicates the tool is classified as destructive.
+	ViolationDestructive ViolationType = "destructive_tool"
 )
 
 // ViolationSeverity ranks policy violation impact.

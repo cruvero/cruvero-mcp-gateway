@@ -2,14 +2,20 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/registration"
+	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
 func TestProxyServerSetupMCP(t *testing.T) {
@@ -161,5 +167,214 @@ func TestRewriteLegacyToolCallNameNoRewriteWithoutServerHint(t *testing.T) {
 	}
 	if string(rewritten) != string(body) {
 		t.Fatalf("expected body unchanged, got %s", string(rewritten))
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "empty string",
+			input:  "",
+			maxLen: 10,
+			want:   "",
+		},
+		{
+			name:   "short string under limit",
+			input:  "hello",
+			maxLen: 10,
+			want:   "hello",
+		},
+		{
+			name:   "string exactly at limit",
+			input:  "abcde",
+			maxLen: 5,
+			want:   "abcde",
+		},
+		{
+			name:   "string over limit",
+			input:  "hello world, this is a long string",
+			maxLen: 11,
+			want:   "hello world",
+		},
+		{
+			name:   "multi-byte unicode truncated at byte boundary",
+			input:  "abc" + strings.Repeat("\u00e9", 10), // \u00e9 is 2 bytes in UTF-8
+			maxLen: 5,
+			want:   "abc" + string([]byte{0xc3, 0xa9}), // 3 + 2 = 5 bytes
+		},
+		{
+			name:   "zero max length",
+			input:  "anything",
+			maxLen: 0,
+			want:   "",
+		},
+		{
+			name:   "max length of one",
+			input:  "hello",
+			maxLen: 1,
+			want:   "h",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncate(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+		})
+	}
+}
+
+// mockAuditStore is a test double for store.AuditStore that records logged entries.
+type mockAuditStore struct {
+	mu      sync.Mutex
+	entries []*types.AuditEntry
+	logErr  error
+	logged  chan struct{}
+}
+
+// Log records the audit entry and optionally returns a configured error.
+func (m *mockAuditStore) Log(_ context.Context, entry *types.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries = append(m.entries, entry)
+	if m.logged != nil {
+		select {
+		case m.logged <- struct{}{}:
+		default:
+		}
+	}
+	return m.logErr
+}
+
+// Query is a no-op stub required by the AuditStore interface.
+func (m *mockAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
+	return nil, nil
+}
+
+// getEntries returns a snapshot of logged entries.
+func (m *mockAuditStore) getEntries() []*types.AuditEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*types.AuditEntry, len(m.entries))
+	copy(out, m.entries)
+	return out
+}
+
+func TestAuditToolCall(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		auditStore      *mockAuditStore
+		toolName        string
+		responsePreview string
+		isError         bool
+		expectEntry     bool
+	}{
+		{
+			name:            "nil audit store does not panic",
+			auditStore:      nil,
+			toolName:        "mcp.test.hello",
+			responsePreview: "ok",
+			isError:         false,
+			expectEntry:     false,
+		},
+		{
+			name: "successful audit log entry",
+			auditStore: &mockAuditStore{
+				logged: make(chan struct{}, 1),
+			},
+			toolName:        "mcp.backend.run_query",
+			responsePreview: "rows returned: 42",
+			isError:         false,
+			expectEntry:     true,
+		},
+		{
+			name: "error result is recorded",
+			auditStore: &mockAuditStore{
+				logged: make(chan struct{}, 1),
+			},
+			toolName:        "mcp.backend.bad_call",
+			responsePreview: "internal error",
+			isError:         true,
+			expectEntry:     true,
+		},
+		{
+			name: "audit store error is tolerated",
+			auditStore: &mockAuditStore{
+				logged: make(chan struct{}, 1),
+				logErr: fmt.Errorf("database unavailable"),
+			},
+			toolName:        "mcp.backend.flaky",
+			responsePreview: "partial",
+			isError:         false,
+			expectEntry:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ps := NewProxyServer(
+				registration.NewCapabilityIndex(),
+				&config.Config{},
+				nil,
+				0,
+				nil,
+			)
+			if tt.auditStore != nil {
+				ps.SetAuditStore(tt.auditStore)
+			}
+
+			ps.auditToolCall(tt.toolName, tt.responsePreview, tt.isError)
+
+			if !tt.expectEntry {
+				// No store configured; nothing to verify beyond no panic.
+				return
+			}
+
+			// Wait for the fire-and-forget goroutine to complete its write.
+			select {
+			case <-tt.auditStore.logged:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for audit log write")
+			}
+
+			entries := tt.auditStore.getEntries()
+			if len(entries) != 1 {
+				t.Fatalf("expected 1 audit entry, got %d", len(entries))
+			}
+
+			entry := entries[0]
+			if entry.EventType != "tool_call_result" {
+				t.Errorf("expected event type %q, got %q", "tool_call_result", entry.EventType)
+			}
+			if entry.ServerName != tt.toolName {
+				t.Errorf("expected server name %q, got %q", tt.toolName, entry.ServerName)
+			}
+			if entry.Details == nil {
+				t.Fatal("expected non-nil details map")
+			}
+			if got, _ := entry.Details["tool"].(string); got != tt.toolName {
+				t.Errorf("expected details.tool %q, got %q", tt.toolName, got)
+			}
+			if got, _ := entry.Details["response_preview"].(string); got != tt.responsePreview {
+				t.Errorf("expected details.response_preview %q, got %q", tt.responsePreview, got)
+			}
+			if got, _ := entry.Details["is_error"].(bool); got != tt.isError {
+				t.Errorf("expected details.is_error %v, got %v", tt.isError, got)
+			}
+		})
 	}
 }

@@ -26,6 +26,9 @@ var (
 	policyHandler  = policyCommand
 	healthHandler  = healthCommand
 	migrateHandler = migrateCommand
+	toolHandler    = toolCommand
+	authHandler    = authCommand
+	proxyHandler   = mcpProxyCommand
 )
 
 func main() {
@@ -77,6 +80,12 @@ func run(args []string) error {
 		return healthHandler(commandArgs)
 	case "migrate":
 		return migrateHandler(commandArgs)
+	case "tool":
+		return toolHandler(commandArgs)
+	case "auth":
+		return authHandler(commandArgs)
+	case "mcp-proxy":
+		return proxyHandler(commandArgs)
 	default:
 		printUsage(stderr)
 		return fmt.Errorf("unknown command %q", command)
@@ -133,6 +142,9 @@ func printUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  apikey      Manage API keys")
 	_, _ = fmt.Fprintln(w, "  policy      Manage policy profiles")
 	_, _ = fmt.Fprintln(w, "  health      Check gateway health")
+	_, _ = fmt.Fprintln(w, "  tool        Manage tool classifications")
+	_, _ = fmt.Fprintln(w, "  auth        Authenticate via device code flow")
+	_, _ = fmt.Fprintln(w, "  mcp-proxy   Stdio-to-HTTP MCP bridge for IDEs")
 	_, _ = fmt.Fprintln(w, "  migrate     Run database migrations")
 	_, _ = fmt.Fprintln(w, "  version     Print build version information")
 	_, _ = fmt.Fprintln(w, "")

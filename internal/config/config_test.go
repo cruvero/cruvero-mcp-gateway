@@ -54,6 +54,30 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.GatewayID) != 36 || strings.Count(cfg.GatewayID, "-") != 4 {
 		t.Fatalf("expected generated UUID gateway id, got %q", cfg.GatewayID)
 	}
+	if cfg.DBMaxOpenConns != 25 {
+		t.Fatalf("expected default db max open conns 25, got %d", cfg.DBMaxOpenConns)
+	}
+	if cfg.DBMaxIdleConns != 10 {
+		t.Fatalf("expected default db max idle conns 10, got %d", cfg.DBMaxIdleConns)
+	}
+	if cfg.DBConnMaxLifetime != 5*time.Minute {
+		t.Fatalf("expected default db conn max lifetime 5m, got %s", cfg.DBConnMaxLifetime)
+	}
+	if cfg.AuditRetentionDays != 90 {
+		t.Fatalf("expected default audit retention days 90, got %d", cfg.AuditRetentionDays)
+	}
+	if cfg.AuditCleanupInterval != time.Hour {
+		t.Fatalf("expected default audit cleanup interval 1h, got %s", cfg.AuditCleanupInterval)
+	}
+	if cfg.ShutdownTimeout != 30*time.Second {
+		t.Fatalf("expected default shutdown timeout 30s, got %s", cfg.ShutdownTimeout)
+	}
+	if cfg.RateLimitBackend != "memory" {
+		t.Fatalf("expected default rate limit backend memory, got %q", cfg.RateLimitBackend)
+	}
+	if cfg.DragonflyURL != "" {
+		t.Fatalf("expected empty dragonfly url by default, got %q", cfg.DragonflyURL)
+	}
 }
 
 func TestLoadAllEnvVars(t *testing.T) {
@@ -80,6 +104,7 @@ func TestLoadAllEnvVars(t *testing.T) {
 	t.Setenv("MCPGW_CRUVERO_ENABLED", "true")
 	t.Setenv("MCPGW_GATEWAY_ID", "gateway-fixed")
 	t.Setenv("MCPGW_CORS_ENABLED", "true")
+	t.Setenv("MCPGW_CORS_ALLOWED_ORIGINS", "https://example.com, https://other.com")
 
 	cfg, err := Load()
 	if err != nil {
@@ -126,6 +151,12 @@ func TestLoadParseErrors(t *testing.T) {
 		{name: "invalid retry max", key: "MCPGW_RETRY_MAX", value: "not-int"},
 		{name: "invalid cruvero enabled", key: "MCPGW_CRUVERO_ENABLED", value: "not-bool"},
 		{name: "invalid cors enabled", key: "MCPGW_CORS_ENABLED", value: "not-bool"},
+		{name: "invalid db max open conns", key: "MCPGW_DB_MAX_OPEN_CONNS", value: "not-int"},
+		{name: "invalid db max idle conns", key: "MCPGW_DB_MAX_IDLE_CONNS", value: "not-int"},
+		{name: "invalid db conn max lifetime", key: "MCPGW_DB_CONN_MAX_LIFETIME", value: "not-duration"},
+		{name: "invalid audit retention days", key: "MCPGW_AUDIT_RETENTION_DAYS", value: "not-int"},
+		{name: "invalid audit cleanup interval", key: "MCPGW_AUDIT_CLEANUP_INTERVAL", value: "not-duration"},
+		{name: "invalid shutdown timeout", key: "MCPGW_SHUTDOWN_TIMEOUT", value: "not-duration"},
 	}
 
 	for _, tt := range tests {
@@ -221,6 +252,72 @@ func TestValidateErrors(t *testing.T) {
 			},
 			errText: "MCPGW_NATS_URL",
 		},
+		{
+			name: "cors enabled without origins",
+			cfg: Config{
+				DBURL:            "postgres://db",
+				RateDefault:      1,
+				RateBurst:        1,
+				CircuitThreshold: 1,
+				RetryMax:         1,
+				CORSEnabled:      true,
+			},
+			errText: "MCPGW_CORS_ALLOWED_ORIGINS",
+		},
+		{
+			name: "invalid rate limit backend",
+			cfg: Config{
+				DBURL:            "postgres://db",
+				RateDefault:      1,
+				RateBurst:        1,
+				CircuitThreshold: 1,
+				RetryMax:         1,
+				DBMaxOpenConns:       25,
+				DBMaxIdleConns:       10,
+				DBConnMaxLifetime:    5 * time.Minute,
+				AuditRetentionDays:   90,
+				AuditCleanupInterval: time.Hour,
+				ShutdownTimeout:      30 * time.Second,
+				RateLimitBackend:     "invalid",
+			},
+			errText: "MCPGW_RATE_LIMIT_BACKEND",
+		},
+		{
+			name: "dragonfly backend without url",
+			cfg: Config{
+				DBURL:            "postgres://db",
+				RateDefault:      1,
+				RateBurst:        1,
+				CircuitThreshold: 1,
+				RetryMax:         1,
+				DBMaxOpenConns:       25,
+				DBMaxIdleConns:       10,
+				DBConnMaxLifetime:    5 * time.Minute,
+				AuditRetentionDays:   90,
+				AuditCleanupInterval: time.Hour,
+				ShutdownTimeout:      30 * time.Second,
+				RateLimitBackend:     "dragonfly",
+			},
+			errText: "MCPGW_DRAGONFLY_URL",
+		},
+		{
+			name: "nats backend without cruvero",
+			cfg: Config{
+				DBURL:            "postgres://db",
+				RateDefault:      1,
+				RateBurst:        1,
+				CircuitThreshold: 1,
+				RetryMax:         1,
+				DBMaxOpenConns:       25,
+				DBMaxIdleConns:       10,
+				DBConnMaxLifetime:    5 * time.Minute,
+				AuditRetentionDays:   90,
+				AuditCleanupInterval: time.Hour,
+				ShutdownTimeout:      30 * time.Second,
+				RateLimitBackend:     "nats",
+			},
+			errText: "MCPGW_CRUVERO_ENABLED",
+		},
 	}
 
 	for _, tt := range tests {
@@ -239,15 +336,21 @@ func TestValidateErrors(t *testing.T) {
 
 func TestValidateSuccessAndTLSConfigured(t *testing.T) {
 	cfg := Config{
-		DBURL:            "postgres://db",
-		TLSCertPath:      "/tls/server.crt",
-		TLSKeyPath:       "/tls/server.key",
-		RateDefault:      10,
-		RateBurst:        20,
-		CircuitThreshold: 5,
-		RetryMax:         3,
-		CruveroEnabled:   true,
-		NATSURL:          "nats://localhost:4222",
+		DBURL:             "postgres://db",
+		TLSCertPath:       "/tls/server.crt",
+		TLSKeyPath:        "/tls/server.key",
+		RateDefault:       10,
+		RateBurst:         20,
+		CircuitThreshold:  5,
+		RetryMax:          3,
+		CruveroEnabled:    true,
+		NATSURL:           "nats://localhost:4222",
+		DBMaxOpenConns:       25,
+		DBMaxIdleConns:       10,
+		DBConnMaxLifetime:    5 * time.Minute,
+		AuditRetentionDays:   90,
+		AuditCleanupInterval: time.Hour,
+		ShutdownTimeout:      30 * time.Second,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -283,6 +386,15 @@ func clearKnownEnv(t *testing.T) {
 		"MCPGW_CRUVERO_ENABLED",
 		"MCPGW_GATEWAY_ID",
 		"MCPGW_CORS_ENABLED",
+		"MCPGW_DB_MAX_OPEN_CONNS",
+		"MCPGW_DB_MAX_IDLE_CONNS",
+		"MCPGW_DB_CONN_MAX_LIFETIME",
+		"MCPGW_CORS_ALLOWED_ORIGINS",
+		"MCPGW_AUDIT_RETENTION_DAYS",
+		"MCPGW_AUDIT_CLEANUP_INTERVAL",
+		"MCPGW_SHUTDOWN_TIMEOUT",
+		"MCPGW_RATE_LIMIT_BACKEND",
+		"MCPGW_DRAGONFLY_URL",
 	}
 
 	for _, key := range keys {

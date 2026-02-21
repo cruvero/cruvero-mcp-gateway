@@ -18,12 +18,14 @@ func TestConcurrentRateLimiting(t *testing.T) {
 
 	ratePerSecond := 50
 	burst := 50
-	store := ratelimit.NewLimiterStore(float64(ratePerSecond), burst)
+	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer func() { _ = backend.Close() }()
+	backend.SetDefaults(float64(ratePerSecond), burst)
 	resolver := ratelimit.NewDefaultProfileResolver(map[string]*types.PolicyProfile{
 		"default": {Name: "default", RateLimit: ratePerSecond, RateBurst: burst},
 	}, &types.PolicyProfile{Name: "default", RateLimit: ratePerSecond, RateBurst: burst})
 
-	handler := ratelimit.RateLimitMiddleware(store, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := ratelimit.RateLimitMiddleware(backend, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -64,12 +66,14 @@ func TestConcurrentRateLimiting(t *testing.T) {
 func TestPerClientIsolation(t *testing.T) {
 	t.Parallel()
 
-	store := ratelimit.NewLimiterStore(1, 1)
+	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer func() { _ = backend.Close() }()
+	backend.SetDefaults(1, 1)
 	resolver := ratelimit.NewDefaultProfileResolver(map[string]*types.PolicyProfile{
 		"default": {Name: "default", RateLimit: 1, RateBurst: 1},
 	}, &types.PolicyProfile{Name: "default", RateLimit: 1, RateBurst: 1})
 
-	handler := ratelimit.RateLimitMiddleware(store, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := ratelimit.RateLimitMiddleware(backend, resolver, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

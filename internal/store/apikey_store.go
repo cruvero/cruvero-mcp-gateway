@@ -10,7 +10,7 @@ import (
 )
 
 // #nosec G101 -- column names are not credentials.
-const apiKeyColumns = "id, key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, expires_at, created_at"
+const apiKeyColumns = "id, key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, policy_profile, expires_at, created_at"
 
 // PostgresAPIKeyStore is a Postgres-backed implementation of APIKeyStore.
 type PostgresAPIKeyStore struct {
@@ -31,9 +31,14 @@ func (s *PostgresAPIKeyStore) Create(ctx context.Context, key *types.APIKey) err
 	}
 
 	const query = `
-INSERT INTO api_keys (key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO api_keys (key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, policy_profile, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
+
+	profile := key.PolicyProfile
+	if profile == "" {
+		profile = "default"
+	}
 
 	if _, err := s.db.ExecContext(
 		ctx,
@@ -43,6 +48,7 @@ VALUES ($1, $2, $3, $4, $5, $6)
 		key.Name,
 		pq.Array(key.Scopes),
 		key.ClientID,
+		profile,
 		key.ExpiresAt,
 	); err != nil {
 		return fmt.Errorf("api key store: %w", err)
@@ -137,6 +143,7 @@ func scanAPIKey(scanner apiKeyScanner) (*types.APIKey, error) {
 		&key.Name,
 		&scopes,
 		&key.ClientID,
+		&key.PolicyProfile,
 		&expiresAt,
 		&key.CreatedAt,
 	); err != nil {

@@ -9,6 +9,14 @@ autoscaling:
 
 config:
   MCPGW_CRUVERO_ENABLED: "true"
+  MCPGW_RATE_LIMIT_BACKEND: "dragonfly"
+
+rateLimit:
+  backend: dragonfly
+
+dragonfly:
+  enabled: true
+  url: "redis://dragonfly:6379"
 
 vault:
   enabled: true

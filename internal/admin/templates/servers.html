@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Registered Servers</h1>
+<div id="servers-table"
+     hx-get="/admin/servers" hx-trigger="every 10s"
+     hx-target="#servers-table" hx-swap="innerHTML">
+  {{template "servers_table" .}}
+</div>
+{{end}}

@@ -236,3 +236,320 @@ func TestValidateHealthBaseURL(t *testing.T) {
 		t.Fatal("expected error for URL with user info")
 	}
 }
+
+func TestHealthCommand_WithVersionAndUptime(t *testing.T) {
+	origOut := stdout
+	origErr := stderr
+	origClient := httpClientForHealth
+	t.Cleanup(func() {
+		stdout = origOut
+		stderr = origErr
+		httpClientForHealth = origClient
+	})
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	})
+	handler.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":             "ok",
+			"nats":               "connected",
+			"version":            "1.2.3",
+			"uptime":             "10h30m",
+			"registered_servers": 5,
+		})
+	})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	httpClientForHealth = srv.Client()
+
+	outBuf := &bytes.Buffer{}
+	stdout = outBuf
+	stderr = &bytes.Buffer{}
+
+	if err := healthCommand([]string{"--url", srv.URL}); err != nil {
+		t.Fatalf("health command failed: %v", err)
+	}
+
+	output := outBuf.String()
+	if !strings.Contains(output, "Version: 1.2.3") {
+		t.Fatalf("expected version in output, got %q", output)
+	}
+	if !strings.Contains(output, "Uptime: 10h30m") {
+		t.Fatalf("expected uptime in output, got %q", output)
+	}
+	if !strings.Contains(output, "Registered Servers: 5") {
+		t.Fatalf("expected registered servers in output, got %q", output)
+	}
+	if !strings.Contains(output, "NATS: connected") {
+		t.Fatalf("expected NATS in output, got %q", output)
+	}
+}
+
+func TestHealthCommand_Unhealthy(t *testing.T) {
+	origOut := stdout
+	origErr := stderr
+	origClient := httpClientForHealth
+	t.Cleanup(func() {
+		stdout = origOut
+		stderr = origErr
+		httpClientForHealth = origClient
+	})
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "degraded"})
+	})
+	handler.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "not ready"})
+	})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	httpClientForHealth = srv.Client()
+
+	outBuf := &bytes.Buffer{}
+	stdout = outBuf
+	stderr = &bytes.Buffer{}
+
+	err := healthCommand([]string{"--url", srv.URL})
+	if err == nil {
+		t.Fatal("expected error for unhealthy gateway")
+	}
+	if !strings.Contains(err.Error(), "unhealthy") {
+		t.Fatalf("expected unhealthy error, got: %v", err)
+	}
+}
+
+func TestHealthCommand_PositionalArgs(t *testing.T) {
+	err := healthCommand([]string{"extra"})
+	if err == nil {
+		t.Fatal("expected error for positional arguments")
+	}
+	if !strings.Contains(err.Error(), "positional arguments") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHealthCommand_EmptyURL(t *testing.T) {
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		stdout = origOut
+		stderr = origErr
+	})
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	err := healthCommand([]string{"--url", ""})
+	if err == nil {
+		t.Fatal("expected error for empty URL")
+	}
+}
+
+func TestFetchHealth_EmptyURL(t *testing.T) {
+	_, err := fetchHealth(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty base URL")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFetchHealth_SchemeDefaultsToHTTPS(t *testing.T) {
+	// localhost without scheme should default to https and fail to connect.
+	_, err := fetchHealth(context.Background(), "localhost:99999")
+	if err == nil {
+		t.Fatal("expected error for unreachable server")
+	}
+}
+
+func TestMigrateUpAll(t *testing.T) {
+	origNewRunner := newMigrateRunnerFunc
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		newMigrateRunnerFunc = origNewRunner
+		stdout = origOut
+		stderr = origErr
+	})
+
+	m := &mockMigrator{version: 9}
+	newMigrateRunnerFunc = func(dbURL string) (migrateRunner, error) {
+		_ = dbURL
+		return m, nil
+	}
+
+	outBuf := &bytes.Buffer{}
+	stdout = outBuf
+	stderr = &bytes.Buffer{}
+
+	if err := migrateCommand([]string{"--direction", "up", "--db-url", "postgres://override"}); err != nil {
+		t.Fatalf("migrate up all: %v", err)
+	}
+	if !m.upCalled {
+		t.Fatal("expected Up() to be called for steps=0")
+	}
+	if !strings.Contains(outBuf.String(), "migration version: 9") {
+		t.Fatalf("expected version output, got %q", outBuf.String())
+	}
+}
+
+func TestMigrateDownAll(t *testing.T) {
+	origNewRunner := newMigrateRunnerFunc
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		newMigrateRunnerFunc = origNewRunner
+		stdout = origOut
+		stderr = origErr
+	})
+
+	m := &mockMigrator{version: 0}
+	newMigrateRunnerFunc = func(dbURL string) (migrateRunner, error) {
+		_ = dbURL
+		return m, nil
+	}
+
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	if err := migrateCommand([]string{"--direction", "down", "--db-url", "postgres://override"}); err != nil {
+		t.Fatalf("migrate down all: %v", err)
+	}
+	if !m.downCalled {
+		t.Fatal("expected Down() to be called for steps=0")
+	}
+}
+
+func TestPolicyCommand_RoutesToSetAndReset(t *testing.T) {
+	origLoad := loadConfigStoreFunc
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		loadConfigStoreFunc = origLoad
+		stdout = origOut
+		stderr = origErr
+	})
+
+	store := &mockConfigStore{}
+	payload, _ := json.Marshal(events.PolicyConfigMessage{Profiles: []types.PolicyProfile{
+		{Name: "default", RateLimit: 10, RateBurst: 20, EnforcementMode: types.ModeEnforce},
+		{Name: "premium", RateLimit: 50, RateBurst: 100, EnforcementMode: types.ModeEnforce},
+	}})
+	store.values = map[string][]byte{configCachePolicyKey: payload}
+	loadConfigStoreFunc = func(ctx context.Context) (events.ConfigStore, func() error, error) {
+		_ = ctx
+		return store, func() error { return nil }, nil
+	}
+
+	outBuf := &bytes.Buffer{}
+	stdout = outBuf
+	stderr = &bytes.Buffer{}
+
+	// Test routing to set subcommand.
+	if err := policyCommand([]string{"set", "--rate-limit", "99", "default"}); err != nil {
+		t.Fatalf("policy set via dispatch: %v", err)
+	}
+	if !strings.Contains(outBuf.String(), "updated policy profile") {
+		t.Fatalf("expected updated message, got %q", outBuf.String())
+	}
+
+	// Test routing to reset subcommand.
+	outBuf.Reset()
+	if err := policyCommand([]string{"reset", "default"}); err != nil {
+		t.Fatalf("policy reset via dispatch: %v", err)
+	}
+	if !strings.Contains(outBuf.String(), "reset policy profile") {
+		t.Fatalf("expected reset message, got %q", outBuf.String())
+	}
+}
+
+func TestPolicyResetCommand_NoDefault(t *testing.T) {
+	origLoad := loadConfigStoreFunc
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		loadConfigStoreFunc = origLoad
+		stdout = origOut
+		stderr = origErr
+	})
+
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	err := policyResetCommand([]string{"nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for resetting non-default profile")
+	}
+	if !strings.Contains(err.Error(), "no default profile") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPolicySetCommand_InvalidEnforcementMode(t *testing.T) {
+	origLoad := loadConfigStoreFunc
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		loadConfigStoreFunc = origLoad
+		stdout = origOut
+		stderr = origErr
+	})
+
+	store := &mockConfigStore{}
+	loadConfigStoreFunc = func(ctx context.Context) (events.ConfigStore, func() error, error) {
+		_ = ctx
+		return store, func() error { return nil }, nil
+	}
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	err := policySetCommand([]string{"--enforcement-mode", "invalid", "default"})
+	if err == nil {
+		t.Fatal("expected error for invalid enforcement mode")
+	}
+	if !strings.Contains(err.Error(), "invalid enforcement mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPolicyListCommand_PositionalArgs(t *testing.T) {
+	err := policyListCommand([]string{"extra"})
+	if err == nil {
+		t.Fatal("expected error for positional arguments")
+	}
+	if !strings.Contains(err.Error(), "positional arguments") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMigrateApplyError(t *testing.T) {
+	origNewRunner := newMigrateRunnerFunc
+	origOut := stdout
+	origErr := stderr
+	t.Cleanup(func() {
+		newMigrateRunnerFunc = origNewRunner
+		stdout = origOut
+		stderr = origErr
+	})
+
+	newMigrateRunnerFunc = func(dbURL string) (migrateRunner, error) {
+		_ = dbURL
+		return &mockMigrator{applyErr: errors.New("migration failed")}, nil
+	}
+
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	err := migrateCommand([]string{"--direction", "up", "--db-url", "postgres://override"})
+	if err == nil {
+		t.Fatal("expected error for migration failure")
+	}
+	if !strings.Contains(err.Error(), "migration failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

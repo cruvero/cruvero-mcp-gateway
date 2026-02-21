@@ -73,6 +73,7 @@ config:
   MCPGW_CRUVERO_ENABLED: "false"
   MCPGW_GATEWAY_ID: "auto"
   MCPGW_CORS_ENABLED: "false"
+  MCPGW_RATE_LIMIT_BACKEND: "memory"
   # OTel variables consumed by internal/config.
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
   OTEL_SERVICE_NAME: "mcpgw"
@@ -97,6 +98,53 @@ nats:
   enabled: false
   # -- NATS server URL; use valueFrom secret for production deployments.
   url: ""
+
+rateLimit:
+  # -- Rate limit backend: memory (default), dragonfly, or nats.
+  backend: memory
+
+deviceFlow:
+  # -- Enable OAuth2 Device Code flow for IDE/CLI authentication.
+  enabled: false
+  # -- IdP device authorization endpoint URL.
+  idpDeviceURL: ""
+  # -- IdP token endpoint URL.
+  idpTokenURL: ""
+  # -- OAuth2 client ID for device flow.
+  clientID: ""
+  # clientSecret: via Vault secret (never in values.yaml)
+
+admin:
+  # -- Enable the admin dashboard.
+  enabled: false
+  oidc:
+    # -- OIDC client ID for admin dashboard authentication.
+    clientID: ""
+  # -- Required OIDC scope for admin access.
+  requiredScope: admin
+  # -- Admin session duration.
+  sessionTTL: 8h
+  # clientSecret + sessionKey: via secretKeyRef (never in values.yaml)
+
+dragonfly:
+  # -- Enable DragonflyDB for distributed rate limiting.
+  enabled: false
+  # -- DragonflyDB connection URL (set via secret for production).
+  url: ""
+
+ingress:
+  # -- Enable an Ingress resource for external access.
+  enabled: false
+  # -- Ingress class name (e.g. nginx, traefik).
+  className: ""
+  # -- Hostname for the Ingress rule.
+  host: gateway.example.com
+  # -- Enable TLS termination on the Ingress.
+  tls: true
+  # -- Existing TLS secret name for the Ingress; leave empty for default.
+  tlsSecretName: ""
+  # -- Additional Ingress annotations (e.g. cert-manager, CORS).
+  annotations: {}
 
 database:
   # -- Logical reference for DB URL source. Actual value must come from existingSecret.

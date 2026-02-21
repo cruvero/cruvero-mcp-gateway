@@ -1,0 +1,23 @@
+{{define "content"}}
+<h1>Tool Classifications</h1>
+<div x-data="{search: '', risk: ''}">
+  <div class="filters">
+    <input type="text" x-model="search" placeholder="Search tools..."
+           hx-get="/admin/tools" hx-trigger="keyup changed delay:300ms"
+           hx-target="#tools-table" hx-include="[name='risk']"
+           name="q">
+    <select name="risk" x-model="risk"
+            hx-get="/admin/tools" hx-trigger="change"
+            hx-target="#tools-table" hx-include="[name='q']">
+      <option value="">All risk levels</option>
+      <option value="read_only">Read Only</option>
+      <option value="write">Write</option>
+      <option value="destructive">Destructive</option>
+      <option value="unknown">Unknown</option>
+    </select>
+  </div>
+  <div id="tools-table">
+    {{template "tools_table" .}}
+  </div>
+</div>
+{{end}}

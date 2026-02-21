@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>Dashboard</h1>
+<div class="cards">
+  <div class="card">
+    <h2>{{.ServerCount}}</h2>
+    <p>Active Servers</p>
+  </div>
+  <div class="card">
+    <h2>{{.ToolCount}}</h2>
+    <p>Classified Tools</p>
+  </div>
+  <div class="card">
+    <h2>{{.AuditCount}}</h2>
+    <p>Audit Events (24h)</p>
+  </div>
+</div>
+{{end}}
