@@ -81,8 +81,9 @@ spec:
         image-updater: mcpgateway
       annotations:
         argocd-image-updater.argoproj.io/image-list: "mcpgateway=harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway"
-        argocd-image-updater.argoproj.io/mcpgateway.update-strategy: semver
+        argocd-image-updater.argoproj.io/mcpgateway.update-strategy: digest
         argocd-image-updater.argoproj.io/mcpgateway.allow-tags: "regexp:^staging-"
+        argocd-image-updater.argoproj.io/mcpgateway.force-update: "true"
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-tag: image.tag
     {{- else if eq .env "prod" }}
