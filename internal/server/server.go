@@ -102,55 +102,59 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 
 	if cfg != nil && cfg.CruveroEnabled && strings.TrimSpace(cfg.NATSURL) != "" {
 		var clientOpts []events.ClientOption
+		connectNATS := true
 		if cfg.NATSTLSEnabled {
 			tlsConfig, tlsErr := buildNATSTLSConfig(cfg.NATSTLSCert, cfg.NATSTLSKey, cfg.NATSTLSCa)
 			if tlsErr != nil {
-				logger.Error("nats tls config failed", slog.String("error", tlsErr.Error()))
+				logger.Error("nats tls config failed; skipping nats connection", slog.String("error", tlsErr.Error()))
+				connectNATS = false
 			} else {
 				clientOpts = append(clientOpts, events.WithTLS(tlsConfig))
 			}
 		}
-		natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID, clientOpts...)
-		if err != nil {
-			logger.Warn("events client init failed", slog.String("error", err.Error()))
-		} else {
-			srv.eventsClient = natsClient
-			srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
-			policyEngine.SetViolationEventPublisher(srv.eventPublisher)
-			SetNATSConnected(true)
-
-			subscriber := events.NewSubscriber(natsClient, logger)
-			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimitBackend, logger)
-			serverHandler := events.NewServerConfigHandler(nil, logger)
-			serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
-			serverSettingsHandler := &metricsServerSettingsHandler{
-				next: serverSettings,
-			}
-			authHandler := events.NewAuthConfigHandler(logger)
-			ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
-			subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
-			subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
-			if startErr := subscriber.Start(context.Background()); startErr != nil {
-				logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
+		if connectNATS {
+			natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID, clientOpts...)
+			if err != nil {
+				logger.Warn("events client init failed", slog.String("error", err.Error()))
 			} else {
-				srv.eventSubscriber = subscriber
-				srv.serverCfgHandler = serverHandler
-				srv.settingsHandler = serverSettings
-				srv.ackHandler = ackHandler
-			}
-
-			degradation := events.NewDegradationManager(natsClient, configStore, srv.eventSubscriber, logger)
-			natsClient.SetDisconnectHandler(func() {
-				SetNATSConnected(false)
-				degradation.OnDisconnect()
-			})
-			natsClient.SetReconnectHandler(func() {
+				srv.eventsClient = natsClient
+				srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
+				policyEngine.SetViolationEventPublisher(srv.eventPublisher)
 				SetNATSConnected(true)
-				if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
-					logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
+
+				subscriber := events.NewSubscriber(natsClient, logger)
+				policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimitBackend, logger)
+				serverHandler := events.NewServerConfigHandler(nil, logger)
+				serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
+				serverSettingsHandler := &metricsServerSettingsHandler{
+					next: serverSettings,
 				}
-			})
-			srv.degradation = degradation
+				authHandler := events.NewAuthConfigHandler(logger)
+				ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
+				subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
+				subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
+				if startErr := subscriber.Start(context.Background()); startErr != nil {
+					logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
+				} else {
+					srv.eventSubscriber = subscriber
+					srv.serverCfgHandler = serverHandler
+					srv.settingsHandler = serverSettings
+					srv.ackHandler = ackHandler
+				}
+
+				degradation := events.NewDegradationManager(natsClient, configStore, srv.eventSubscriber, logger)
+				natsClient.SetDisconnectHandler(func() {
+					SetNATSConnected(false)
+					degradation.OnDisconnect()
+				})
+				natsClient.SetReconnectHandler(func() {
+					SetNATSConnected(true)
+					if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
+						logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
+					}
+				})
+				srv.degradation = degradation
+			}
 		}
 	}
 	if srv.eventsClient == nil {

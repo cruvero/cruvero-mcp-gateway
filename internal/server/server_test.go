@@ -493,6 +493,24 @@ func TestEventPublisherInitializedWhenCruveroEnabled(t *testing.T) {
 	}
 }
 
+func TestNATSTLSFailureSkipsConnection(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+	cfg.NATSURL = "nats://127.0.0.1:4222"
+	cfg.GatewayID = "gw-tls-skip"
+	cfg.NATSTLSEnabled = true
+	cfg.NATSTLSCert = "/nonexistent/nats.crt"
+	cfg.NATSTLSKey = "/nonexistent/nats.key"
+	cfg.NATSTLSCa = "/nonexistent/ca.crt"
+
+	srv := New(cfg, testLogger(), nil)
+	if srv.EventsClient() != nil {
+		t.Fatal("expected nil events client when NATS TLS config fails")
+	}
+}
+
 func TestWriteJSONEncodeErrorPath(t *testing.T) {
 	t.Parallel()
 
