@@ -395,6 +395,10 @@ func clearKnownEnv(t *testing.T) {
 		"MCPGW_SHUTDOWN_TIMEOUT",
 		"MCPGW_RATE_LIMIT_BACKEND",
 		"MCPGW_DRAGONFLY_URL",
+		"MCPGW_NATS_TLS_ENABLED",
+		"MCPGW_NATS_TLS_CERT",
+		"MCPGW_NATS_TLS_KEY",
+		"MCPGW_NATS_TLS_CA",
 	}
 
 	for _, key := range keys {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,16 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 	srv.policyEngine = policyEngine
 
 	if cfg != nil && cfg.CruveroEnabled && strings.TrimSpace(cfg.NATSURL) != "" {
-		natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID)
+		var clientOpts []events.ClientOption
+		if cfg.NATSTLSEnabled {
+			tlsConfig, tlsErr := buildNATSTLSConfig(cfg.NATSTLSCert, cfg.NATSTLSKey, cfg.NATSTLSCa)
+			if tlsErr != nil {
+				logger.Error("nats tls config failed", slog.String("error", tlsErr.Error()))
+			} else {
+				clientOpts = append(clientOpts, events.WithTLS(tlsConfig))
+			}
+		}
+		natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID, clientOpts...)
 		if err != nil {
 			logger.Warn("events client init failed", slog.String("error", err.Error()))
 		} else {
@@ -277,6 +287,29 @@ func buildInboundTLSConfig(cfg *config.Config) (*tls.Config, error) {
 	// client certs when provided so registration routes can enforce mTLS identity.
 	tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
 	return tlsCfg, nil
+}
+
+func buildNATSTLSConfig(certPath, keyPath, caPath string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load nats tls cert/key: %w", err)
+	}
+
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read nats tls ca: %w", err)
+	}
+
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("failed to parse nats tls ca")
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caPool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // MountRegistrationRoutes mounts registration routes under /v1/registrations with mTLS identity middleware.
