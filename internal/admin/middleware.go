@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type contextKey string
@@ -17,9 +18,23 @@ func SessionFromContext(ctx context.Context) (*AdminSession, bool) {
 }
 
 // AdminAuthMiddleware checks for a valid admin session cookie.
-func AdminAuthMiddleware(auth *AdminAuth) func(http.Handler) http.Handler {
+// When devMode is true, authentication is bypassed with a synthetic session.
+func AdminAuthMiddleware(auth *AdminAuth, devMode bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if devMode {
+				session := &AdminSession{
+					Subject:   "dev-user",
+					Email:     "dev@localhost",
+					Scopes:    []string{"admin"},
+					CSRFToken: "dev-csrf-token",
+					ExpiresAt: time.Now().Add(24 * time.Hour),
+				}
+				ctx := context.WithValue(r.Context(), sessionContextKey, session)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
 			cookie, err := r.Cookie(sessionCookieName)
 			if err != nil {
 				http.Redirect(w, r, "/admin/login", http.StatusFound)

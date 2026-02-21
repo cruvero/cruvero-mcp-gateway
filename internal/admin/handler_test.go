@@ -1281,3 +1281,50 @@ func TestRender_WithoutSession(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
+
+func TestNewRouter_DevMode(t *testing.T) {
+	mb := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer func() { _ = mb.Close() }()
+
+	router := NewRouter(AdminDeps{
+		Auth:             nil,
+		DevMode:          true,
+		RateLimitBackend: mb,
+	})
+
+	if router == nil {
+		t.Fatal("expected non-nil router in dev mode")
+	}
+
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Dashboard should be accessible without a cookie.
+	resp, err := client.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for dev mode dashboard, got %d", resp.StatusCode)
+	}
+
+	// Login should redirect to /admin/ in dev mode.
+	resp, err = client.Get(srv.URL + "/login")
+	if err != nil {
+		t.Fatalf("GET /login: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected redirect for dev mode login, got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/admin/" {
+		t.Fatalf("expected redirect to /admin/, got %s", loc)
+	}
+}
