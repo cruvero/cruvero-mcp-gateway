@@ -62,6 +62,7 @@ openssl x509 -req -in "$TMPDIR/client.csr" -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_
   -CAcreateserial -out "$CERT_DIR/client.crt" -days 3650 -sha256 \
   -extensions v3_req -extfile "$TMPDIR/client-ext.cnf"
 
-chmod 644 "$CERT_DIR"/*.crt "$CERT_DIR"/*.key
+chmod 644 "$CERT_DIR"/*.crt
+chmod 600 "$CERT_DIR"/*.key
 
 echo "Certificate generation complete in $CERT_DIR."

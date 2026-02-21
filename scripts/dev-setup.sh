@@ -15,21 +15,15 @@ echo "--- Generating dev certificates ---"
 echo ""
 echo "--- Checking Postgres readiness ---"
 if command -v pg_isready >/dev/null 2>&1 && [ -n "${MCPGW_DB_URL:-}" ]; then
-  # Extract host and port from the DB URL for pg_isready.
-  DB_HOST=$(echo "$MCPGW_DB_URL" | sed -n 's|.*@\([^:/]*\).*|\1|p')
-  DB_PORT=$(echo "$MCPGW_DB_URL" | sed -n 's|.*:\([0-9]*\)/.*|\1|p')
-  DB_HOST="${DB_HOST:-localhost}"
-  DB_PORT="${DB_PORT:-5432}"
-
   RETRIES=0
   MAX_RETRIES=30
-  until pg_isready -h "$DB_HOST" -p "$DB_PORT" -q 2>/dev/null; do
+  until pg_isready -d "$MCPGW_DB_URL" -q 2>/dev/null; do
     RETRIES=$((RETRIES + 1))
     if [ "$RETRIES" -ge "$MAX_RETRIES" ]; then
       echo "Postgres not ready after $MAX_RETRIES attempts, skipping migration."
       break
     fi
-    echo "Waiting for Postgres at $DB_HOST:$DB_PORT ($RETRIES/$MAX_RETRIES)..."
+    echo "Waiting for Postgres ($RETRIES/$MAX_RETRIES)..."
     sleep 1
   done
 
