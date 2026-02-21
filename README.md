@@ -232,6 +232,35 @@ IDE MCP server configuration (e.g. Claude Code `mcp_servers.json`):
 
 The `mcp-proxy` command reads stdin JSON-RPC, forwards to the gateway with automatic token refresh, and writes responses to stdout.
 
+### Federated Tool Routing
+
+The gateway federates all registered MCP servers behind a single endpoint. You do **not** need a separate IDE entry per backend -- one gateway entry exposes every active server's tools automatically.
+
+Tools are namespaced using the pattern `mcp.<server-name>.<tool-name>`. When the IDE calls a federated tool, the gateway extracts the server name, looks up which backend exposes it, and forwards the request.
+
+**Example**: With SonarQube, Kubernetes, Argo CD, and GitHub MCP servers registered on the gateway, the single config above gives the IDE access to all of their tools:
+
+| Federated Tool Name | Server | Description |
+|----------------------|--------|-------------|
+| `mcp.sonarqube.search_issues` | SonarQube | Search for code quality issues |
+| `mcp.sonarqube.get_quality_gate` | SonarQube | Get project quality gate status |
+| `mcp.sonarqube.get_hotspots` | SonarQube | List security hotspots |
+| `mcp.k8s.list_pods` | Kubernetes | List pods in a namespace |
+| `mcp.k8s.get_logs` | Kubernetes | Stream container logs |
+| `mcp.k8s.describe_resource` | Kubernetes | Describe any K8s resource |
+| `mcp.k8s.apply_manifest` | Kubernetes | Apply a YAML manifest |
+| `mcp.argocd.list_applications` | Argo CD | List Argo CD applications |
+| `mcp.argocd.sync_application` | Argo CD | Trigger an application sync |
+| `mcp.argocd.get_app_health` | Argo CD | Get application health status |
+| `mcp.github.search_code` | GitHub | Search code across repositories |
+| `mcp.github.list_pull_requests` | GitHub | List PRs for a repository |
+| `mcp.github.create_issue` | GitHub | Create a new issue |
+| `mcp.github.get_workflow_runs` | GitHub | List CI workflow runs |
+
+The gateway handles authentication, rate limiting, policy enforcement, and circuit breaking for all backends transparently. Backend servers must be registered and have `active` status to be routable -- manage server status via the admin dashboard or CLI (`mcpgw server list`).
+
+If multiple servers expose the same tool name, the gateway uses round-robin selection. Use the federated prefix (`mcp.<server>.`) to target a specific backend.
+
 ### API Key Mode
 
 For environments without browser access:
