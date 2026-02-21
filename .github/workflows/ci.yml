@@ -136,10 +136,15 @@ jobs:
           cache: false
       - name: Generate Coverage and Test Reports
         run: go test -coverprofile=coverage.out -covermode=atomic -json ./... > test-report.json || true
+      - name: Sanitize Sonar Secrets
+        shell: bash
+        env:
+          RAW_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          RAW_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          echo "SONAR_TOKEN=$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+          echo "SONAR_HOST_URL=$(printf '%s' "$RAW_HOST_URL" | tr -d '[:space:]')" >> "$GITHUB_ENV"
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v7
         with:
           args: -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
