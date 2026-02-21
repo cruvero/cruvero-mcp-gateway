@@ -1,8 +1,47 @@
 commonLabels:
   environment: staging
 
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+
+image:
+  repository: harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway
+  tag: staging-latest
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: harbor-pull-secret
+
+tls:
+  certManager:
+    enabled: true
+    secretName: mcpgateway-staging-tls
+    issuerRef:
+      name: vault-mcp-gateway-server
+      kind: ClusterIssuer
+      group: cert-manager.io
+    dnsNames:
+      - mcpgateway-staging
+      - mcpgateway-staging.cruvero-staging
+      - mcpgateway-staging.cruvero-staging.svc
+      - mcpgateway-staging.cruvero-staging.svc.cluster.local
+
+probes:
+  scheme: HTTPS
+
 config:
+  MCPGW_TLS_CERT: "/tls/tls.crt"
+  MCPGW_TLS_KEY: "/tls/tls.key"
+  MCPGW_TLS_CA: "/tls/ca.crt"
+  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://cruvero.dev/ns/cruvero-staging/sa/"
   MCPGW_CRUVERO_ENABLED: "true"
+  MCPGW_GATEWAY_ID: "mcpgateway-staging"
+  MCPGW_RATE_LIMIT_BACKEND: "memory"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://mcpgateway-staging-otel-collector:4318"
 
 vault:
   enabled: true
@@ -14,6 +53,9 @@ vault:
 
 secrets:
   existingSecret: mcpgw-runtime-staging
+
+tracing:
+  enabled: true
 
 monitoring:
   serviceMonitor:
