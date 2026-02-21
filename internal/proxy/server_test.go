@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"crypto/tls"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/registration"
@@ -377,4 +383,347 @@ func TestAuditToolCall(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncMCPToolsProgressiveDiscoveryEnabled(t *testing.T) {
+	t.Parallel()
+
+	// Set up a real backend MCP server with multiple tools.
+	mcpSrv := mcpserver.NewMCPServer("backend-discovery", "1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("create_issue", mcp.WithDescription("Create a new issue in a repository. Supports labels and assignees."), mcp.WithString("title", mcp.Required())),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("created"), nil
+		},
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("list_issues", mcp.WithDescription("List issues."), mcp.WithString("repo")),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("listed"), nil
+		},
+	)
+
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	backendSrv := httptest.NewTLSServer(mux)
+	defer backendSrv.Close()
+
+	record := recordFromServerURL(t, backendSrv.URL)
+	record.ID = "backend-disc-1"
+	record.Name = "github"
+	record.Status = types.StatusActive
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(backendSrv.Certificate())
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: rootPool}
+
+	capIdx := registration.NewCapabilityIndex()
+	record.Capabilities = types.Capability{Tools: []string{"create_issue", "list_issues"}}
+	capIdx.Add(record)
+
+	proxyServer := NewProxyServer(
+		capIdx,
+		&config.Config{ProgressiveDiscovery: true},
+		tlsCfg,
+		2*time.Second,
+		nil,
+	)
+	if err := proxyServer.SetupMCP(); err != nil {
+		t.Fatalf("setup mcp: %v", err)
+	}
+
+	if err := proxyServer.syncMCPTools(context.Background()); err != nil {
+		t.Fatalf("sync tools: %v", err)
+	}
+
+	if proxyServer.discoveryIndex == nil {
+		t.Fatal("expected discoveryIndex to be non-nil when progressive discovery enabled")
+	}
+
+	// Verify search_tools and get_tool_schema are registered.
+	allTools := proxyServer.mcpServer.ListTools()
+
+	if allTools["search_tools"] == nil {
+		t.Error("expected search_tools meta-tool to be registered")
+	}
+	if allTools["get_tool_schema"] == nil {
+		t.Error("expected get_tool_schema meta-tool to be registered")
+	}
+
+	// Verify backend tools have DeferLoading set and stripped schemas.
+	for name, st := range allTools {
+		if name == "search_tools" || name == "get_tool_schema" {
+			continue
+		}
+		if !st.Tool.DeferLoading {
+			t.Errorf("tool %q should have DeferLoading=true", name)
+		}
+		if len(st.Tool.RawInputSchema) > 0 && string(st.Tool.RawInputSchema) != "{}" {
+			t.Errorf("tool %q should have stripped input schema, got %s", name, string(st.Tool.RawInputSchema))
+		}
+	}
+}
+
+func TestSyncMCPToolsProgressiveDiscoveryDisabled(t *testing.T) {
+	t.Parallel()
+
+	mcpSrv := mcpserver.NewMCPServer("backend-no-disc", "1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("echo", mcp.WithDescription("echo input"), mcp.WithString("message", mcp.Required())),
+		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			msg, _ := req.RequireString("message")
+			return mcp.NewToolResultText(msg), nil
+		},
+	)
+
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	backendSrv := httptest.NewTLSServer(mux)
+	defer backendSrv.Close()
+
+	record := recordFromServerURL(t, backendSrv.URL)
+	record.ID = "backend-no-disc-1"
+	record.Name = "echo-server"
+	record.Status = types.StatusActive
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(backendSrv.Certificate())
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: rootPool}
+
+	capIdx := registration.NewCapabilityIndex()
+	record.Capabilities = types.Capability{Tools: []string{"echo"}}
+	capIdx.Add(record)
+
+	proxyServer := NewProxyServer(
+		capIdx,
+		&config.Config{ProgressiveDiscovery: false},
+		tlsCfg,
+		2*time.Second,
+		nil,
+	)
+	if err := proxyServer.SetupMCP(); err != nil {
+		t.Fatalf("setup mcp: %v", err)
+	}
+
+	if err := proxyServer.syncMCPTools(context.Background()); err != nil {
+		t.Fatalf("sync tools: %v", err)
+	}
+
+	if proxyServer.discoveryIndex != nil {
+		t.Error("expected discoveryIndex to be nil when progressive discovery disabled")
+	}
+
+	allTools := proxyServer.mcpServer.ListTools()
+	for name := range allTools {
+		if name == "search_tools" || name == "get_tool_schema" {
+			t.Errorf("meta-tool %q should not be registered when progressive discovery disabled", name)
+		}
+	}
+}
+
+func TestBuildSearchToolsMetaHandlers(t *testing.T) {
+	t.Parallel()
+
+	mcpSrv := mcpserver.NewMCPServer("backend-meta", "1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("create_issue", mcp.WithDescription("Create a new issue in a repository."), mcp.WithString("title", mcp.Required())),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("created"), nil
+		},
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("send_message", mcp.WithDescription("Send a Slack message."), mcp.WithString("text", mcp.Required())),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("sent"), nil
+		},
+	)
+
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	backendSrv := httptest.NewTLSServer(mux)
+	defer backendSrv.Close()
+
+	record := recordFromServerURL(t, backendSrv.URL)
+	record.ID = "backend-meta-1"
+	record.Name = "testsvr"
+	record.Status = types.StatusActive
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(backendSrv.Certificate())
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: rootPool}
+
+	capIdx := registration.NewCapabilityIndex()
+	record.Capabilities = types.Capability{Tools: []string{"create_issue", "send_message"}}
+	capIdx.Add(record)
+
+	proxyServer := NewProxyServer(
+		capIdx,
+		&config.Config{ProgressiveDiscovery: true},
+		tlsCfg,
+		2*time.Second,
+		nil,
+	)
+	if err := proxyServer.SetupMCP(); err != nil {
+		t.Fatalf("setup mcp: %v", err)
+	}
+	if err := proxyServer.syncMCPTools(context.Background()); err != nil {
+		t.Fatalf("sync tools: %v", err)
+	}
+
+	t.Run("search_tools handler returns results", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["search_tools"]
+		if st == nil {
+			t.Fatal("search_tools not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "search_tools",
+				Arguments: map[string]any{"query": "issue"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_tools handler: %v", err)
+		}
+		if result.IsError {
+			t.Fatal("expected non-error result")
+		}
+		if len(result.Content) == 0 {
+			t.Fatal("expected content in result")
+		}
+
+		var resp struct {
+			Tools        []json.RawMessage `json:"tools"`
+			TotalMatches int               `json:"total_matches"`
+			Showing      int               `json:"showing"`
+		}
+		text := result.Content[0].(mcp.TextContent).Text
+		if err := json.Unmarshal([]byte(text), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.TotalMatches == 0 {
+			t.Error("expected at least one match for 'issue'")
+		}
+		if resp.Showing != len(resp.Tools) {
+			t.Errorf("showing=%d does not match tools length=%d", resp.Showing, len(resp.Tools))
+		}
+	})
+
+	t.Run("search_tools handler with category and limit", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["search_tools"]
+		if st == nil {
+			t.Fatal("search_tools not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "search_tools",
+				Arguments: map[string]any{"query": "message", "category": "testsvr", "limit": float64(1)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_tools handler: %v", err)
+		}
+
+		var resp struct {
+			TotalMatches int `json:"total_matches"`
+			Showing      int `json:"showing"`
+		}
+		text := result.Content[0].(mcp.TextContent).Text
+		if err := json.Unmarshal([]byte(text), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if resp.Showing > 1 {
+			t.Errorf("expected at most 1 result with limit=1, got %d", resp.Showing)
+		}
+	})
+
+	t.Run("get_tool_schema handler returns full definitions", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["get_tool_schema"]
+		if st == nil {
+			t.Fatal("get_tool_schema not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"mcp.testsvr.create_issue"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_tool_schema handler: %v", err)
+		}
+		if result.IsError {
+			t.Fatal("expected non-error result")
+		}
+
+		var tools []ToolDefinition
+		text := result.Content[0].(mcp.TextContent).Text
+		if err := json.Unmarshal([]byte(text), &tools); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if len(tools) != 1 {
+			t.Fatalf("expected 1 tool, got %d", len(tools))
+		}
+		if tools[0].Name != "mcp.testsvr.create_issue" {
+			t.Errorf("expected tool name mcp.testsvr.create_issue, got %q", tools[0].Name)
+		}
+		if string(tools[0].InputSchema) == "{}" {
+			t.Error("expected full input schema, got stripped version")
+		}
+	})
+
+	t.Run("get_tool_schema handler missing names", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["get_tool_schema"]
+		if st == nil {
+			t.Fatal("get_tool_schema not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{},
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_tool_schema handler: %v", err)
+		}
+		if !result.IsError {
+			t.Error("expected error result when names is missing")
+		}
+	})
+
+	t.Run("get_tool_schema handler invalid names type", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["get_tool_schema"]
+		if st == nil {
+			t.Fatal("get_tool_schema not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": "not-an-array"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_tool_schema handler: %v", err)
+		}
+		if !result.IsError {
+			t.Error("expected error result when names is not an array")
+		}
+	})
 }
