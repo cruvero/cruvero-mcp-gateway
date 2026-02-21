@@ -134,12 +134,12 @@ jobs:
         with:
           go-version: '1.25.7'
           cache: false
-      - name: Generate Coverage Report
-        run: go test -coverprofile=coverage.out -covermode=atomic ./...
-      - name: Generate Test Report
-        run: go test -json ./... > test-report.json || true
+      - name: Generate Coverage and Test Reports
+        run: go test -coverprofile=coverage.out -covermode=atomic -json ./... > test-report.json || true
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v5
+        with:
+          args: -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
