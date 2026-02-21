@@ -137,7 +137,7 @@ jobs:
       - name: Generate Coverage and Test Reports
         run: go test -coverprofile=coverage.out -covermode=atomic -json ./... > test-report.json || true
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@v7
         with:
           args: -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
         env:
