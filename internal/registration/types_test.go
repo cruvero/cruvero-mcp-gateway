@@ -150,6 +150,13 @@ func TestValidateHost(t *testing.T) {
 		{"unspecified IPv4", "0.0.0.0", true, "unspecified"},
 		{"unspecified IPv6", "::", true, "unspecified"},
 		{"link-local IPv4", "169.254.1.1", true, "link-local"},
+		// Canonicalization bypass variants.
+		{"trailing dot localhost", "localhost.", true, "localhost not allowed"},
+		{"trailing dot metadata", "metadata.google.internal.", true, "cloud metadata"},
+		{"bracketed IPv6 loopback", "[::1]", true, "loopback"},
+		{"bracketed IPv6 unspecified", "[::]", true, "unspecified"},
+		{"IPv4-mapped loopback", "::ffff:127.0.0.1", true, "loopback"},
+		{"IPv4-mapped metadata", "::ffff:169.254.169.254", true, "link-local"},
 	}
 
 	for _, tt := range tests {

@@ -85,7 +85,7 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		}
 
 		if strings.TrimSpace(csrfToken) == "" ||
-		subtle.ConstantTimeCompare([]byte(csrfToken), []byte(session.CSRFToken)) != 1 {
+			subtle.ConstantTimeCompare([]byte(csrfToken), []byte(session.CSRFToken)) != 1 {
 			http.Error(w, "invalid CSRF token", http.StatusForbidden)
 			return
 		}

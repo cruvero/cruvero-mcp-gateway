@@ -336,7 +336,8 @@ func TestCSVEscape(t *testing.T) {
 		{"formula minus", "-1-1", "'-1-1"},
 		{"formula at", "@SUM(A1:A10)", "'@SUM(A1:A10)"},
 		{"formula tab", "\tcmd", "'\tcmd"},
-		{"formula cr", "\rcmd", "'\rcmd"},
+		{"formula cr", "\rcmd", "\"'\rcmd\""},
+		{"mid-string cr", "a\rb", "\"a\rb\""},
 		// Formula char + comma triggers both prefix and quoting.
 		{"formula with comma", "=a,b", "\"'=a,b\""},
 	}

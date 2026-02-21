@@ -91,6 +91,12 @@ func (r RegistrationRequest) Validate() error {
 // localhost, and cloud metadata endpoints. Private RFC 1918 addresses are
 // intentionally allowed because MCP servers in Kubernetes use pod IPs.
 func validateHost(host string) error {
+	// Normalize: strip bracketed IPv6 (e.g. "[::1]") and trailing DNS dot.
+	if len(host) > 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
+	}
+	host = strings.TrimRight(host, ".")
+
 	lower := strings.ToLower(host)
 
 	metadataHosts := []string{
@@ -106,11 +112,19 @@ func validateHost(host string) error {
 
 	ip := net.ParseIP(host)
 	if ip != nil {
+		// Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to IPv4.
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
 		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return fmt.Errorf("loopback and link-local addresses not allowed")
 		}
 		if ip.IsUnspecified() {
 			return fmt.Errorf("unspecified address not allowed")
+		}
+		// Re-check metadata IP after normalization.
+		if ip.Equal(net.ParseIP("169.254.169.254")) {
+			return fmt.Errorf("cloud metadata endpoint not allowed")
 		}
 	}
 

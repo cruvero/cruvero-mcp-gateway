@@ -469,7 +469,7 @@ func csvEscape(s string) string {
 			s = "'" + s
 		}
 	}
-	if strings.ContainsAny(s, ",\"\n") {
+	if strings.ContainsAny(s, ",\"\n\r") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}
 	return s
