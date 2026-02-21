@@ -147,11 +147,24 @@ func (c *BackendClient) ListTools(ctx context.Context) ([]ToolDefinition, error)
 		if schemaErr != nil {
 			return nil, fmt.Errorf("list tools: encode schema for %s: %w", tool.Name, schemaErr)
 		}
-		tools = append(tools, ToolDefinition{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: schema,
-		})
+		def := ToolDefinition{
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  schema,
+			OutputSchema: toolOutputSchemaJSON(tool),
+			Annotations:  annotationsFromTool(tool),
+			DeferLoading: tool.DeferLoading,
+			Meta:         tool.Meta,
+		}
+		if len(tool.Icons) > 0 {
+			def.Icons = make([]mcp.Icon, len(tool.Icons))
+			copy(def.Icons, tool.Icons)
+		}
+		if tool.Execution != nil {
+			execCopy := *tool.Execution
+			def.Execution = &execCopy
+		}
+		tools = append(tools, def)
 	}
 	return tools, nil
 }
@@ -294,6 +307,33 @@ func toolInputSchemaJSON(tool mcp.Tool) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	}
 	return json.RawMessage(bytes), nil
+}
+
+func toolOutputSchemaJSON(tool mcp.Tool) json.RawMessage {
+	if len(tool.RawOutputSchema) > 0 {
+		out := make([]byte, len(tool.RawOutputSchema))
+		copy(out, tool.RawOutputSchema)
+		return out
+	}
+
+	if tool.OutputSchema.Type != "" {
+		bytes, err := json.Marshal(tool.OutputSchema)
+		if err != nil {
+			return nil
+		}
+		return json.RawMessage(bytes)
+	}
+	return nil
+}
+
+func annotationsFromTool(tool mcp.Tool) *mcp.ToolAnnotation {
+	a := tool.Annotations
+	if a.Title == "" && a.ReadOnlyHint == nil && a.DestructiveHint == nil &&
+		a.IdempotentHint == nil && a.OpenWorldHint == nil {
+		return nil
+	}
+	cp := a
+	return &cp
 }
 
 type tracingRoundTripper struct {

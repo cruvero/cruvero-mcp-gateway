@@ -289,11 +289,24 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 
 	serverTools := make([]server.ServerTool, 0, len(tools))
 	for _, tool := range tools {
-		tool := tool
 		mcpTool := mcp.Tool{
-			Name:           tool.Name,
-			Description:    tool.Description,
-			RawInputSchema: tool.InputSchema,
+			Name:            tool.Name,
+			Description:     tool.Description,
+			RawInputSchema:  tool.InputSchema,
+			RawOutputSchema: tool.OutputSchema,
+			DeferLoading:    tool.DeferLoading,
+			Meta:            tool.Meta,
+		}
+		if tool.Annotations != nil {
+			mcpTool.Annotations = *tool.Annotations
+		}
+		if len(tool.Icons) > 0 {
+			mcpTool.Icons = make([]mcp.Icon, len(tool.Icons))
+			copy(mcpTool.Icons, tool.Icons)
+		}
+		if tool.Execution != nil {
+			execCopy := *tool.Execution
+			mcpTool.Execution = &execCopy
 		}
 
 		serverTools = append(serverTools, server.ServerTool{
@@ -347,7 +360,6 @@ func (p *ProxyServer) syncMCPResources(ctx context.Context) error {
 
 	serverResources := make([]server.ServerResource, 0, len(resources))
 	for _, resourceDef := range resources {
-		resourceDef := resourceDef
 		resource := mcp.NewResource(
 			resourceDef.URI,
 			resourceDef.Name,
