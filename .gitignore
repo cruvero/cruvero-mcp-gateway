@@ -1,9 +1,3 @@
-# Ignore all phase planning/spec docs
-docs/phases/
-
-# Agent instruction docs
-LLM.md
-
 # Go build artifacts
 bin/
 /mcpgw
