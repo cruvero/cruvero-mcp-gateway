@@ -22,6 +22,7 @@ var staticFS embed.FS
 // AdminDeps holds all dependencies required by the admin dashboard.
 type AdminDeps struct {
 	Auth                *AdminAuth
+	DevMode             bool
 	Logger              *slog.Logger
 	ServerStore         store.ServerStore
 	AuditStore          store.AuditStore
@@ -32,6 +33,10 @@ type AdminDeps struct {
 
 // NewRouter creates the admin dashboard chi router.
 func NewRouter(deps AdminDeps) chi.Router {
+	if deps.Auth == nil && !deps.DevMode {
+		panic("admin: Auth must not be nil when DevMode is false")
+	}
+
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
@@ -41,8 +46,17 @@ func NewRouter(deps AdminDeps) chi.Router {
 	r := chi.NewRouter()
 
 	// Unauthenticated routes.
-	r.Get("/login", deps.Auth.HandleLogin)
-	r.Get("/callback", deps.Auth.HandleCallback)
+	if deps.Auth != nil {
+		r.Get("/login", deps.Auth.HandleLogin)
+		r.Get("/callback", deps.Auth.HandleCallback)
+	} else {
+		r.Get("/login", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/", http.StatusFound)
+		})
+		r.Get("/callback", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/", http.StatusFound)
+		})
+	}
 
 	// Static files.
 	staticSub, _ := fs.Sub(staticFS, "static")
@@ -50,7 +64,7 @@ func NewRouter(deps AdminDeps) chi.Router {
 
 	// Authenticated routes.
 	r.Group(func(r chi.Router) {
-		r.Use(AdminAuthMiddleware(deps.Auth))
+		r.Use(AdminAuthMiddleware(deps.Auth, deps.DevMode))
 		r.Use(CSRFMiddleware)
 
 		r.Get("/", handler.HandleDashboard)

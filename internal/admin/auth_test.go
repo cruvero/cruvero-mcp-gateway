@@ -53,7 +53,7 @@ func TestAdminAuthMiddleware_NoSession(t *testing.T) {
 	aead := testAEAD(t)
 	auth := &AdminAuth{aead: aead, sessionTTL: time.Hour}
 
-	handler := AdminAuthMiddleware(auth)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := AdminAuthMiddleware(auth, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -83,7 +83,7 @@ func TestAdminAuthMiddleware_ValidSession(t *testing.T) {
 	cookieValue := encryptTestSession(t, aead, session)
 
 	var gotSession *AdminSession
-	handler := AdminAuthMiddleware(auth)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := AdminAuthMiddleware(auth, false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s, ok := SessionFromContext(r.Context())
 		if ok {
 			gotSession = s
@@ -117,7 +117,7 @@ func TestAdminAuthMiddleware_ExpiredSession(t *testing.T) {
 	}
 	cookieValue := encryptTestSession(t, aead, session)
 
-	handler := AdminAuthMiddleware(auth)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := AdminAuthMiddleware(auth, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -649,5 +649,59 @@ func TestDecryptSession_InvalidJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unmarshal session") {
 		t.Fatalf("expected 'unmarshal session' in error, got: %v", err)
+	}
+}
+
+func TestAdminAuthMiddleware_DevMode(t *testing.T) {
+	var gotSession *AdminSession
+	handler := AdminAuthMiddleware(nil, true)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s, ok := SessionFromContext(r.Context())
+		if ok {
+			gotSession = s
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if gotSession == nil {
+		t.Fatal("expected synthetic session in context")
+	}
+	if gotSession.Subject != "dev-user" {
+		t.Fatalf("expected subject dev-user, got %q", gotSession.Subject)
+	}
+	if gotSession.Email != "dev@localhost" {
+		t.Fatalf("expected email dev@localhost, got %q", gotSession.Email)
+	}
+	if len(gotSession.Scopes) != 1 || gotSession.Scopes[0] != "admin" {
+		t.Fatalf("expected scopes [admin], got %v", gotSession.Scopes)
+	}
+	if gotSession.CSRFToken != "dev-csrf-token" {
+		t.Fatalf("expected csrf token dev-csrf-token, got %q", gotSession.CSRFToken)
+	}
+	if gotSession.ExpiresAt.Before(time.Now()) {
+		t.Fatal("expected dev session to not be expired")
+	}
+}
+
+func TestCSRFMiddleware_DevMode_StaticToken(t *testing.T) {
+	session := &AdminSession{CSRFToken: "dev-csrf-token"}
+	handler := CSRFMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/tools/exec", strings.NewReader("_csrf=dev-csrf-token"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ctx := context.WithValue(req.Context(), sessionContextKey, session)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req.WithContext(ctx))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for dev mode CSRF token, got %d", w.Code)
 	}
 }

@@ -82,6 +82,7 @@ type Config struct {
 	AdminRequiredScope     string        `json:"admin_required_scope"`
 	AdminSessionKey        [32]byte      `json:"-"`
 	AdminSessionTTL        time.Duration `json:"admin_session_ttl"`
+	AdminDevMode           bool          `json:"admin_dev_mode"`
 }
 
 // Load reads all MCPGW_* environment variables into Config and validates them.
@@ -186,6 +187,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	adminDevMode, err := parseBool("MCPGW_ADMIN_DEV_MODE", false)
+	if err != nil {
+		return nil, err
+	}
+
 	var adminSessionKey [32]byte
 	if rawKey := strings.TrimSpace(os.Getenv("MCPGW_ADMIN_SESSION_KEY")); rawKey != "" {
 		decoded, decodeErr := hex.DecodeString(rawKey)
@@ -246,6 +252,7 @@ func Load() (*Config, error) {
 		AdminRequiredScope:     getEnv("MCPGW_ADMIN_REQUIRED_SCOPE", "admin"),
 		AdminSessionKey:        adminSessionKey,
 		AdminSessionTTL:        adminSessionTTL,
+		AdminDevMode:           adminDevMode,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -340,7 +347,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("validate config: MCPGW_CRUVERO_ENABLED must be true when MCPGW_RATE_LIMIT_BACKEND is nats")
 	}
 
-	if c.AdminEnabled {
+	if c.AdminDevMode && !c.AdminEnabled {
+		return fmt.Errorf("validate config: MCPGW_ADMIN_ENABLED must be true when MCPGW_ADMIN_DEV_MODE is true")
+	}
+
+	if c.AdminEnabled && !c.AdminDevMode {
 		if strings.TrimSpace(c.AdminOIDCClientID) == "" {
 			return fmt.Errorf("validate config: MCPGW_ADMIN_OIDC_CLIENT_ID is required when MCPGW_ADMIN_ENABLED is true")
 		}
