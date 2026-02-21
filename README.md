@@ -1,204 +1,399 @@
 # cruvero-mcp-gateway
 
-A pure-Go mTLS reverse proxy that acts as a gateway for MCP (Model Context Protocol) servers running on Kubernetes. The gateway auto-discovers MCP server deployments, registers them via a handshake protocol, and exposes their combined tool catalogs through a single MCP-compliant endpoint. Clients -- whether standalone CLI tools like Claude Code or integrated platforms like Cruvero -- connect to the gateway instead of individual backends.
+A pure-Go mTLS reverse proxy that acts as a unified gateway for MCP (Model Context Protocol) servers on Kubernetes. The gateway auto-discovers backend MCP servers via a registration handshake, aggregates their tool catalogs into a single MCP-compliant endpoint, and proxies requests with rate limiting, circuit breakers, and per-tool policy enforcement. Clients connect to one gateway instead of managing individual backends.
 
-The gateway is a standard MCP server itself. It proxies `tools/call` requests to the appropriate registered backend based on tool name, enforcing per-client rate limits, tool-level allow/deny policies, and circuit breakers on unhealthy backends. Authentication supports both API keys (for CLI usage) and OIDC tokens (for service-to-service flows), with mTLS providing transport-layer identity via SPIFFE IDs.
-
-When paired with Cruvero, the gateway becomes a managed component: Cruvero's UI surfaces server health, connection status, and policy configuration, while a NATS event bus synchronizes state between the gateway and Cruvero's control plane. The gateway runs independently of Cruvero -- it maintains its own Postgres database and can operate in standalone mode with no NATS dependency.
+The gateway operates in two modes: **standalone** with only PostgreSQL as a dependency, or **Cruvero-integrated** where a NATS event bus synchronizes state with the Cruvero control plane. Both modes use the same binary and configuration surface -- Cruvero features activate only when `MCPGW_CRUVERO_ENABLED=true`.
 
 ## Key Features
 
-- **MCP-native proxy** -- presents a unified tool catalog from multiple backend MCP servers
-- **mTLS with SPIFFE** -- client and server identity via X.509 certificates and SPIFFE URI SANs
-- **Auto-registration** -- backend MCP servers register via handshake with heartbeat keepalive
-- **Dual auth modes** -- API key authentication for CLI tools, OIDC for service-to-service
-- **Device Code flow** -- OAuth2 Device Authorization Grant for IDE/CLI authentication without API keys
-- **Admin dashboard** -- web UI for tool management, audit logs, server monitoring, and rate limit inspection
-- **Policy enforcement** -- per-tool and per-client allow/deny lists with risk classification
-- **Rate limiting** -- token-bucket rate limiter with per-identity configuration
-- **Circuit breakers** -- automatic backend isolation on repeated failures with configurable recovery
-- **Cruvero integration** -- optional NATS-based event sync for centralized management
-- **Kubernetes-native** -- Helm chart, health probes, Prometheus metrics, OTel tracing
-- **MCP proxy bridge** -- stdio-to-HTTP bridge (`mcpgw mcp-proxy`) for IDE integration
-- **Single binary** -- one `mcpgw` binary with subcommands (serve, migrate, auth, mcp-proxy, health)
+**Core**
+- MCP-native reverse proxy with unified tool catalog aggregation
+- Auto-registration with heartbeat keepalive and server state machine
+- Federated tool routing (`mcp.<server>.<tool>`) with round-robin load balancing
+- Resource routing by URI prefix across backends
+
+**Security**
+- mTLS with SPIFFE identity extraction
+- Dual auth: API keys (CLI/headless) + OIDC JWT (service-to-service)
+- OAuth2 Device Code flow for IDE authentication
+- Per-tool allow/deny policies with risk classification (read_only, write, destructive)
+- SSRF-protected server registration
+- Security headers, constant-time CSRF protection, AES-GCM encrypted sessions
+
+**Resilience**
+- Token-bucket rate limiting with three backends (memory, DragonflyDB, NATS)
+- Circuit breakers with configurable failure threshold and recovery timeout
+- Automatic retry with backoff on transient failures
+- Graceful degradation when NATS is unavailable
+
+**Operations**
+- Admin dashboard (HTMX web UI) for server, tool, audit, and rate limit management
+- Prometheus metrics + OpenTelemetry distributed tracing
+- Helm chart with four environment overlays (base, dev, staging, prod)
+- ArgoCD GitOps deployment with ApplicationSet
+- Single static binary, distroless nonroot container image
+- Audit log with configurable retention and CSV export
+
+**Integration**
+- Standalone mode (Postgres only) or Cruvero platform integration (NATS event bus)
+- stdio-to-HTTP bridge (`mcpgw mcp-proxy`) for IDE integration
+- Device Code flow for browser-based CLI/IDE authentication
+
+## Architecture Overview
+
+```
+┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+│  Claude Code │   │  Cruvero UI │   │  Other MCP  │
+│    (IDE)     │   │  (Platform) │   │   Clients   │
+└──────┬───────┘   └──────┬───────┘   └──────┬───────┘
+       │ stdio            │ HTTPS            │ HTTPS
+       ▼                  ▼                  ▼
+┌──────────────────────────────────────────────────┐
+│                  MCP Gateway                      │
+│  ┌──────────────────────────────────────────┐    │
+│  │  mTLS → Identity → Auth → Rate Limit →   │    │
+│  │  Policy → Circuit Breaker → Proxy/Route   │    │
+│  └──────────────────────────────────────────┘    │
+│  ┌────────────┐  ┌───────────┐  ┌────────────┐  │
+│  │  Postgres   │  │   NATS    │  │ Prometheus  │  │
+│  │  (required) │  │ (optional)│  │  + OTel     │  │
+│  └────────────┘  └───────────┘  └────────────┘  │
+└──────┬──────────────┬──────────────┬─────────────┘
+       │              │              │
+       ▼              ▼              ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│ MCP Server │ │ MCP Server │ │ MCP Server │
+│ (SonarQube)│ │ (K8s)      │ │ (GitHub)   │
+└────────────┘ └────────────┘ └────────────┘
+```
+
+For the full architecture reference including sequence diagrams, protocol details, and database schema, see [docs/OVERVIEW.md](docs/OVERVIEW.md).
+
+## Prerequisites
+
+| Component | Required | Purpose | Notes |
+|-----------|----------|---------|-------|
+| Go 1.25.7 | Build only | Compile from source | Not needed for container deployment |
+| PostgreSQL 16+ | **Yes** | Server registry, API keys, audit log, config | Single required runtime dependency |
+| Vault + Vault Operator | K8s only | Secret management (DB creds, TLS keys, session keys) | `VaultAuth` + `VaultStaticSecret` resources |
+| cert-manager | K8s only | TLS certificate provisioning | Gateway server cert + client CA |
+| NATS JetStream | Cruvero mode | Event bus for control plane sync | Not needed in standalone mode |
+| DragonflyDB | Optional | Distributed rate limiting backend | Redis-compatible; alternative to memory or NATS backends |
+| OTel Collector | Optional | Distributed tracing | Receives OTLP gRPC/HTTP exports |
+| Prometheus | Optional | Metrics collection | Scrapes `/metrics` on metrics port (default `:9090`) |
 
 ## Quick Start
 
 ```bash
-# Build
+# 1. Build
 go build -o mcpgw ./cmd/mcpgw
 
-# Run migrations
+# 2. Start Postgres and run migrations
 export MCPGW_DB_URL="postgres://user:pass@localhost:5432/mcpgw?sslmode=disable"
-./mcpgw migrate up
+./mcpgw migrate
 
-# Generate TLS certs (dev only)
+# 3. Generate TLS certificates (development only)
 ./scripts/gen-dev-certs.sh
 
-# Start the gateway
+# 4. Start the gateway
 export MCPGW_TLS_CERT=certs/server.crt
 export MCPGW_TLS_KEY=certs/server.key
 export MCPGW_TLS_CA=certs/ca.crt
 ./mcpgw serve
 ```
 
-## Development Requirements
-
-- Go `1.25.7` (pinned in `go.mod` and CI)
-- `golangci-lint`, `staticcheck`, `govulncheck`, `gosec`, and `dupl` for local quality checks
-
-Run the full local quality profile before opening a PR:
+Verify the gateway is running:
 
 ```bash
-go test -race ./...
-go vet ./...
-golangci-lint run ./...
-staticcheck ./...
-govulncheck ./...
-./scripts/check-gosec.sh
-./scripts/check-dupl.sh
-./scripts/check-godoc.sh
-./scripts/check-coverage.sh
+./mcpgw health --url https://localhost:8443
 ```
 
-## Local Devcontainer Workflow
+The dev certificate script generates a CA, server certificate (with localhost SANs), and a client certificate with a SPIFFE identity for testing.
 
-Use a repository `.devcontainer` so development and verification run in a reproducible environment before any Kubernetes deployment.
+## Kubernetes Deployment
 
-1. Create `.devcontainer/devcontainer.json` with Go, Helm, `kubectl`, and Argo CD CLI tooling.
-2. Open the repository in the devcontainer and run all quality gates there.
-3. Validate locally before cluster sync:
-   - `go test ./...`
-   - `go vet ./...`
-   - `golangci-lint run ./...`
-   - `make chart-validate`
+### Helm Chart
 
-Local-first validation in the devcontainer is required before Argo CD sync or deployment PRs.
+The Helm chart is in `charts/mcpgateway/`. Install with environment-specific values:
 
-### Helm Validation Matrix
+```bash
+# Dev
+helm install mcpgateway charts/mcpgateway -n cruvero-dev \
+  -f charts/mcpgateway/values.yaml \
+  -f charts/mcpgateway/values-dev.yaml
 
-Use these targets for environment render checks:
+# Staging
+helm install mcpgateway charts/mcpgateway -n cruvero-staging \
+  -f charts/mcpgateway/values.yaml \
+  -f charts/mcpgateway/values-staging.yaml
 
-- `make chart-lint`
-- `make chart-render-base`
-- `make chart-render-dev`
-- `make chart-render-staging`
-- `make chart-render-prod`
-- `make chart-validate`
-
-## GitOps Operations
-
-For rollout validation and rollback steps, use:
-
-- [docs/GITOPS-ROLLOUT.md](docs/GITOPS-ROLLOUT.md)
-
-## GitHub Actions Standards
-
-Any GitHub Actions workflow in this repository must follow these rules:
-
-- Use `cruvero-org-runners` for `runs-on`.
-- Publish/pull container images from Harbor using org secrets:
-  - `HARBOR_URL`
-  - `HARBOR_TOKEN`
-- Sonar workflows must use org secrets:
-  - `SONAR_HOST_URL`
-  - `SONAR_TOKEN`
-- Sonar workflows must use repo secret:
-  - `SONAR_PROJECT_KEY`
-
-## MCP Server Fleet Spec
-
-For migrating standalone MCP servers to optional gateway integration (registration, heartbeat, Cruvero registry-managed non-secret settings, minimal containers, Vault-managed secrets, Helm/Argo GitOps), use:
-
-- [docs/MCP-SERVER-FLEET-GATEWAY-INTEGRATION.md](docs/MCP-SERVER-FLEET-GATEWAY-INTEGRATION.md)
-
-## Contributing
-
-Contribution process, branch rules, and required local quality gates are documented in:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## Repository Layout
-
-```
-cruvero-mcp-gateway/
-├── .devcontainer/          Local reproducible development environment
-├── cmd/
-│   └── mcpgw/              Single binary with subcommands
-├── internal/
-│   ├── admin/              Admin dashboard (OIDC auth, HTMX templates, handlers)
-│   ├── auth/               API key + OIDC + Device Code flow authentication
-│   ├── config/             Environment-based configuration
-│   ├── events/             NATS client, event types, pub/sub
-│   ├── identity/           mTLS, SPIFFE ID, cert validation
-│   ├── policy/             Tool safety, allowlist/denylist
-│   ├── proxy/              MCP protocol handler, tool routing
-│   ├── ratelimit/          Token bucket, per-identity limits
-│   ├── registration/       Server registration, handshake, heartbeat
-│   ├── resilience/         Circuit breaker, retry, connection pool
-│   ├── server/             HTTP server, router, middleware
-│   ├── store/              Postgres store interfaces + implementations
-│   ├── testutil/           Test helpers
-│   └── types/              Shared types (ServerRecord, Capability, etc.)
-├── migrations/             SQL migrations (0001_*.up.sql / .down.sql)
-├── charts/
-│   └── mcpgateway/         Helm chart
-├── deploy/
-│   └── argocd/             GitOps manifests (AppProject, ApplicationSet)
-├── docs/
-│   ├── OVERVIEW.md          Architecture reference
-│   └── phases/             Phase documentation
-├── scripts/                CI/CD, coverage checks
-├── Dockerfile
-├── Makefile
-├── README.md
-├── LLM.md
-├── CLAUDE.md
-├── go.mod
-└── go.sum
+# Production
+helm install mcpgateway charts/mcpgateway -n cruvero-prod \
+  -f charts/mcpgateway/values.yaml \
+  -f charts/mcpgateway/values-prod.yaml
 ```
 
-## Environment Variables
+### Environment Overlays
+
+| File | Replicas | Autoscaling | Rate Limit Backend | Image Tag | Key Differences |
+|------|----------|-------------|-------------------|-----------|-----------------|
+| `values.yaml` (base) | 2 | 2–10 | memory | latest | Base defaults |
+| `values-dev.yaml` | 1 | disabled | memory | dev | Tracing enabled, ingress enabled |
+| `values-staging.yaml` | 2 | 2–5 | memory | staging-latest | ServiceMonitor + PrometheusRule |
+| `values-prod.yaml` | 3 | 3–20 | dragonfly | v1.0.0 | DragonflyDB, NATS TLS, increased resources |
+
+### Secret Management
+
+Secrets are managed via HashiCorp Vault Operator:
+
+1. **VaultAuth** -- authenticates the gateway ServiceAccount with Vault
+2. **VaultStaticSecret** -- syncs secrets (DB URL, TLS keys, session key, NATS creds) to a Kubernetes Secret
+3. **Helm reference** -- `secrets.existingSecret` in values points to the synced Secret name
+
+The Helm chart renders `vault-auth.yaml` and `vault-secrets.yaml` templates when `vault.enabled=true`.
+
+### TLS with cert-manager
+
+When `tls.certManager.enabled=true`, the chart creates a `Certificate` resource:
+
+- **Issuer**: configurable `ClusterIssuer` (e.g. `vault-mcp-gateway-server`)
+- **DNS names**: service FQDN within the cluster namespace
+- **Secret**: `tls.secretName` (default: `mcpgw-tls`)
+
+Client CA for mTLS verification is provided separately via Vault or manual Secret.
+
+### GitOps with ArgoCD
+
+The `deploy/argocd/` directory contains:
+
+| File | Purpose |
+|------|---------|
+| `project.yaml` | AppProject scoping allowed namespaces and resource types |
+| `applicationset.yaml` | ApplicationSet with list generator for dev, staging, prod |
+| `image-updater-mcpgateway-dev.yaml` | ArgoCD Image Updater config for dev auto-deploy |
+| `image-updater-rbac.yaml` | RBAC for Image Updater to read Harbor pull secrets |
+
+Sync policies:
+- **Dev**: automated sync with prune and self-heal, image updater auto-deploys on push to `dev`
+- **Staging**: automated sync, tracks `main` branch, image updater with `staging-*` tag filter
+- **Prod**: manual sync (automated sync disabled), tracks `main` branch with explicit version tags
+
+### Security Posture
+
+- **Image**: `distroless/static-debian12:nonroot` -- no shell, no package manager
+- **SecurityContext**: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, all capabilities dropped
+- **NetworkPolicy**: default-deny with explicit ingress/egress rules for Postgres, NATS, OTel, DNS, and backend servers
+- **PodDisruptionBudget**: `minAvailable: 1` (base), scales with environment
+- **HPA**: CPU-based autoscaling (target 70%)
+- **Trivy scanning**: CI pipeline scans images for CRITICAL and HIGH CVEs before push
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `mcpgw serve` | Start the gateway server (default command) |
+| `mcpgw migrate` | Run database migrations |
+| `mcpgw server list` | List registered MCP servers |
+| `mcpgw server inspect <id-or-name>` | Show server details |
+| `mcpgw server deregister <id-or-name>` | Remove a server |
+| `mcpgw apikey create` | Create a new API key |
+| `mcpgw apikey list` | List API keys |
+| `mcpgw apikey revoke <id>` | Revoke an API key |
+| `mcpgw policy list` | List policy profiles |
+| `mcpgw policy set <name>` | Update a policy profile |
+| `mcpgw policy reset <name>` | Reset a policy to defaults |
+| `mcpgw tool list` | List known tools |
+| `mcpgw tool classify <name>` | Set tool risk classification |
+| `mcpgw tool auto-classify` | Auto-classify tools by pattern |
+| `mcpgw auth login` | Device Code flow login |
+| `mcpgw auth status` | Check auth status |
+| `mcpgw auth logout` | Clear stored tokens |
+| `mcpgw mcp-proxy` | stdio-to-HTTP bridge for IDEs |
+| `mcpgw health` | Check gateway health |
+| `mcpgw version` | Print build version |
+
+Global flags: `--log-level`, `--log-format`, `--config` (reserved for future use; currently no config file is loaded)
+
+Default policy profiles: `default` (10 req/s, burst 20), `premium` (50 req/s, burst 100), `admin` (100 req/s, burst 200).
+
+## Configuration
 
 All configuration is via environment variables with the `MCPGW_` prefix. No config files.
 
-Canonical Go module path: `github.com/cruvero/mcp-gateway` (defined in `go.mod`).
+### Core
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCPGW_LISTEN_ADDR` | `:8443` | Server listen address |
-| `MCPGW_TLS_CERT` | -- | Server TLS certificate path |
-| `MCPGW_TLS_KEY` | -- | Server TLS key path |
-| `MCPGW_TLS_CA` | -- | Client CA bundle path |
-| `MCPGW_DB_URL` | -- | Postgres connection string |
-| `MCPGW_NATS_URL` | -- | NATS server URL (optional) |
-| `MCPGW_OIDC_ISSUER` | -- | OIDC issuer URL (optional) |
-| `MCPGW_OIDC_AUDIENCE` | -- | OIDC audience |
-| `MCPGW_HEARTBEAT_TTL` | `30s` | Heartbeat timeout |
-| `MCPGW_RATE_DEFAULT` | `10` | Default requests/sec per client |
-| `MCPGW_RATE_BURST` | `20` | Default burst size |
-| `MCPGW_CIRCUIT_THRESHOLD` | `5` | Failures before circuit opens |
-| `MCPGW_CIRCUIT_TIMEOUT` | `30s` | Circuit breaker reset timeout |
-| `MCPGW_RETRY_MAX` | `3` | Max retry attempts |
-| `MCPGW_SPIFFE_ALLOW_PREFIX` | -- | Allowed SPIFFE ID prefixes (comma-separated) |
-| `MCPGW_LOG_FORMAT` | `json` | Log format (`json` or `text`) |
-| `MCPGW_LOG_LEVEL` | `info` | Log level |
-| `MCPGW_METRICS_ADDR` | `:9090` | Prometheus metrics listen address |
-| `MCPGW_CRUVERO_ENABLED` | `false` | Enable Cruvero integration |
-| `MCPGW_GATEWAY_ID` | `auto` | Gateway instance ID (for NATS subjects) |
-| `MCPGW_DEVICE_FLOW_ENABLED` | `false` | Enable OAuth2 Device Code flow |
-| `MCPGW_DEVICE_FLOW_IDP_DEVICE_URL` | -- | IdP device authorization endpoint |
-| `MCPGW_DEVICE_FLOW_IDP_TOKEN_URL` | -- | IdP token endpoint for device flow |
-| `MCPGW_DEVICE_FLOW_CLIENT_ID` | -- | OAuth2 client ID for device flow |
-| `MCPGW_DEVICE_FLOW_CLIENT_SECRET` | -- | OAuth2 client secret (optional) |
-| `MCPGW_ADMIN_ENABLED` | `false` | Enable admin dashboard |
-| `MCPGW_ADMIN_OIDC_CLIENT_ID` | -- | OIDC client ID for admin auth |
-| `MCPGW_ADMIN_OIDC_CLIENT_SECRET` | -- | OIDC client secret for admin auth |
-| `MCPGW_ADMIN_REQUIRED_SCOPE` | `admin` | Required OIDC scope for admin access |
-| `MCPGW_ADMIN_SESSION_KEY` | -- | 64-char hex string (32-byte AES-256-GCM key) |
-| `MCPGW_ADMIN_SESSION_TTL` | `8h` | Admin session duration |
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_DB_URL` | -- | **Yes** | Postgres connection string |
+| `MCPGW_LISTEN_ADDR` | `:8443` | No | Server listen address |
+| `MCPGW_TLS_CERT` | -- | No | Server TLS certificate path (must pair with TLS_KEY) |
+| `MCPGW_TLS_KEY` | -- | No | Server TLS private key path (must pair with TLS_CERT) |
+| `MCPGW_TLS_CA` | -- | Yes (with TLS) | Client CA bundle for TLS/mTLS verification; required when `MCPGW_TLS_CERT` and `MCPGW_TLS_KEY` are set |
+| `MCPGW_DB_MAX_OPEN_CONNS` | `25` | No | Max open database connections |
+| `MCPGW_DB_MAX_IDLE_CONNS` | `10` | No | Max idle database connections |
+| `MCPGW_DB_CONN_MAX_LIFETIME` | `5m` | No | Max connection lifetime |
+| `MCPGW_SHUTDOWN_TIMEOUT` | `30s` | No | Graceful shutdown timeout (max 120s) |
 
-## IDE Configuration
+### Authentication
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_OIDC_ISSUER` | -- | No | OIDC issuer URL |
+| `MCPGW_OIDC_AUDIENCE` | -- | No | OIDC expected audience |
+| `MCPGW_SPIFFE_ALLOW_PREFIX` | -- | No | Comma-separated allowed SPIFFE ID prefixes |
+
+### Device Code Flow
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_DEVICE_FLOW_ENABLED` | `false` | No | Enable OAuth2 Device Code flow |
+| `MCPGW_DEVICE_FLOW_IDP_DEVICE_URL` | -- | If device flow | IdP device authorization endpoint |
+| `MCPGW_DEVICE_FLOW_IDP_TOKEN_URL` | -- | If device flow | IdP token endpoint |
+| `MCPGW_DEVICE_FLOW_CLIENT_ID` | -- | If device flow | OAuth2 client ID |
+| `MCPGW_DEVICE_FLOW_CLIENT_SECRET` | -- | No | OAuth2 client secret (optional) |
+
+### Admin Dashboard
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_ADMIN_ENABLED` | `false` | No | Enable admin dashboard |
+| `MCPGW_ADMIN_OIDC_CLIENT_ID` | -- | If admin (non-dev) | OIDC client ID for admin auth |
+| `MCPGW_ADMIN_OIDC_CLIENT_SECRET` | -- | No | OIDC client secret for admin auth |
+| `MCPGW_ADMIN_REQUIRED_SCOPE` | `admin` | No | Required OIDC scope for admin access |
+| `MCPGW_ADMIN_SESSION_KEY` | -- | If admin (non-dev) | 64-char hex string (32-byte AES-256-GCM key) |
+| `MCPGW_ADMIN_SESSION_TTL` | `8h` | No | Admin session duration |
+| `MCPGW_ADMIN_DEV_MODE` | `false` | No | Bypass auth for local development (requires admin enabled) |
+
+### Rate Limiting
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_RATE_DEFAULT` | `10` | No | Default requests/sec per client |
+| `MCPGW_RATE_BURST` | `20` | No | Default burst token bucket size |
+| `MCPGW_RATE_LIMIT_BACKEND` | `memory` | No | Backend: `memory`, `dragonfly`, or `nats` |
+| `MCPGW_DRAGONFLY_URL` | -- | If dragonfly | DragonflyDB connection URL |
+
+### Resilience
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_CIRCUIT_THRESHOLD` | `5` | No | Failures before circuit opens |
+| `MCPGW_CIRCUIT_TIMEOUT` | `30s` | No | Circuit breaker recovery timeout |
+| `MCPGW_RETRY_MAX` | `3` | No | Max retry attempts |
+| `MCPGW_HEARTBEAT_TTL` | `30s` | No | Server heartbeat timeout |
+
+### Cruvero Integration
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_CRUVERO_ENABLED` | `false` | No | Enable Cruvero platform integration |
+| `MCPGW_GATEWAY_ID` | `auto` | No | Gateway instance ID (`auto` = random UUID) |
+| `MCPGW_NATS_URL` | -- | If Cruvero | NATS server URL |
+| `MCPGW_NATS_TLS_ENABLED` | `false` | No | Enable mTLS for NATS connections |
+| `MCPGW_NATS_TLS_CERT` | -- | If NATS TLS | NATS client certificate path |
+| `MCPGW_NATS_TLS_KEY` | -- | If NATS TLS | NATS client private key path |
+| `MCPGW_NATS_TLS_CA` | -- | If NATS TLS | NATS CA certificate path |
+
+### Observability
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_LOG_FORMAT` | `json` | No | Log format: `json` or `text` |
+| `MCPGW_LOG_LEVEL` | `info` | No | Log level: `debug`, `info`, `warn`, `error` |
+| `MCPGW_METRICS_ADDR` | `:9090` | No | Prometheus metrics listen address |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | -- | No | OpenTelemetry collector endpoint |
+| `OTEL_SERVICE_NAME` | `mcpgw` | No | OpenTelemetry service name |
+
+### Operations
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_CORS_ENABLED` | `false` | No | Enable CORS headers |
+| `MCPGW_CORS_ALLOWED_ORIGINS` | -- | If CORS | Comma-separated allowed origins |
+| `MCPGW_AUDIT_RETENTION_DAYS` | `90` | No | Days to retain audit log entries |
+| `MCPGW_AUDIT_CLEANUP_INTERVAL` | `1h` | No | Interval between retention cleanup runs |
+
+## Authentication
+
+The gateway supports three authentication methods, evaluated in order:
+
+1. **mTLS with SPIFFE** -- if the request presents a verified client certificate with a SPIFFE URI SAN, the gateway extracts the SPIFFE identity. Allowed prefixes are configured via `MCPGW_SPIFFE_ALLOW_PREFIX`.
+
+2. **API Keys** -- clients send `X-API-Key` or `Authorization: Bearer <key>` headers. Keys are stored with SHA-256 lookup hashes and verified with bcrypt. Create and manage keys via `mcpgw apikey` CLI commands.
+
+3. **OIDC JWT** -- Bearer tokens with three dot-separated segments are validated against the configured OIDC issuer. Used for service-to-service authentication.
+
+### Device Code Flow
+
+For IDE and CLI environments where browser-based login is preferred over static API keys:
+
+```bash
+mcpgw auth login --gateway-url https://gateway.example.com
+```
+
+The gateway presents a verification URL and code. After browser authorization, the CLI receives tokens and stores them locally with automatic refresh. See [IDE Integration](#ide-integration) for full setup.
+
+## Admin Dashboard
+
+Enable the admin dashboard with `MCPGW_ADMIN_ENABLED=true`. The dashboard provides:
+
+- **Server management** -- view registered servers, deregister unhealthy backends
+- **Tool classification** -- search, filter, and set risk levels (read_only, write, destructive)
+- **Audit log viewer** -- paginated logs with filters by client, tool, decision, and date range
+- **CSV export** -- export up to 10,000 audit records with CSV injection prevention
+- **Rate limit inspection** -- view current rate limit state (when backend supports inspection)
+
+### Production Setup
+
+The dashboard requires OIDC authentication in production:
+
+```bash
+export MCPGW_ADMIN_ENABLED=true
+export MCPGW_ADMIN_OIDC_CLIENT_ID=mcpgw-admin
+export MCPGW_ADMIN_OIDC_CLIENT_SECRET=<secret>
+export MCPGW_ADMIN_REQUIRED_SCOPE=admin
+export MCPGW_ADMIN_SESSION_KEY=$(openssl rand -hex 32)  # 64-char hex string
+export MCPGW_OIDC_ISSUER=https://idp.example.com
+```
+
+### Development Mode
+
+For local development, bypass OIDC authentication:
+
+```bash
+export MCPGW_ADMIN_ENABLED=true
+export MCPGW_ADMIN_DEV_MODE=true
+```
+
+## Rate Limiting
+
+Token-bucket rate limiting with three interchangeable backends:
+
+| Backend | Config Value | Dependency | Use Case |
+|---------|-------------|------------|----------|
+| Memory | `memory` (default) | None | Single-instance deployments |
+| DragonflyDB | `dragonfly` | DragonflyDB (Redis-compatible) | Multi-replica coordination in production |
+| NATS | `nats` | NATS JetStream | Environments already running NATS |
+
+Set via `MCPGW_RATE_LIMIT_BACKEND`. DragonflyDB additionally requires `MCPGW_DRAGONFLY_URL`. The NATS backend requires `MCPGW_CRUVERO_ENABLED=true`.
+
+Both DragonflyDB and NATS backends fall back to in-memory limiting when their backing service is unavailable. Policy profiles control per-client rate and burst limits -- manage profiles via `mcpgw policy set`.
+
+## Observability
+
+### Prometheus Metrics
+
+The gateway exposes metrics on `MCPGW_METRICS_ADDR` (default `:9090`). The Helm chart includes optional `ServiceMonitor` and `PrometheusRule` resources (enable via `monitoring.serviceMonitor.enabled` and `monitoring.prometheusRule.enabled`).
+
+### OpenTelemetry Tracing
+
+Configure distributed tracing by setting `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector address. The Helm chart can deploy a dedicated OTel Collector Deployment/Service and a Tempo instance when `tracing.enabled=true`.
+
+### Structured Logging
+
+All logs use Go's `slog` package. Configure format (`json`/`text`) via `MCPGW_LOG_FORMAT` and level via `MCPGW_LOG_LEVEL`.
+
+## IDE Integration
 
 The gateway supports two authentication modes for IDE integration: Device Code flow (browser-based) and API key (static credential).
 
@@ -244,18 +439,12 @@ Tools are namespaced using the pattern `mcp.<server-name>.<tool-name>`. When the
 |----------------------|--------|-------------|
 | `mcp.sonarqube.search_issues` | SonarQube | Search for code quality issues |
 | `mcp.sonarqube.get_quality_gate` | SonarQube | Get project quality gate status |
-| `mcp.sonarqube.get_hotspots` | SonarQube | List security hotspots |
 | `mcp.k8s.list_pods` | Kubernetes | List pods in a namespace |
 | `mcp.k8s.get_logs` | Kubernetes | Stream container logs |
-| `mcp.k8s.describe_resource` | Kubernetes | Describe any K8s resource |
-| `mcp.k8s.apply_manifest` | Kubernetes | Apply a YAML manifest |
 | `mcp.argocd.list_applications` | Argo CD | List Argo CD applications |
 | `mcp.argocd.sync_application` | Argo CD | Trigger an application sync |
-| `mcp.argocd.get_app_health` | Argo CD | Get application health status |
 | `mcp.github.search_code` | GitHub | Search code across repositories |
 | `mcp.github.list_pull_requests` | GitHub | List PRs for a repository |
-| `mcp.github.create_issue` | GitHub | Create a new issue |
-| `mcp.github.get_workflow_runs` | GitHub | List CI workflow runs |
 
 The gateway handles authentication, rate limiting, policy enforcement, and circuit breaking for all backends transparently. Backend servers must be registered and have `active` status to be routable -- manage server status via the admin dashboard or CLI (`mcpgw server list`).
 
@@ -278,42 +467,128 @@ For environments without browser access:
 }
 ```
 
-## Dependencies
+## Database Migrations
 
-Dependency versions are pinned in `go.mod` / `go.sum` and should be treated as the source of truth.
+The gateway ships SQL migration files (copied into the image) and applies them via `golang-migrate` from the filesystem:
 
-| Module | Purpose |
-|--------|---------|
-| `github.com/go-chi/chi/v5` | HTTP router |
-| `github.com/mark3labs/mcp-go` | MCP protocol library |
-| `github.com/lib/pq` | Postgres driver |
-| `github.com/golang-migrate/migrate/v4` | Database migrations |
-| `github.com/nats-io/nats.go` | NATS client |
-| `golang.org/x/time` | Token bucket rate limiter |
-| `github.com/coreos/go-oidc/v3` | OIDC token validation |
-| `github.com/prometheus/client_golang` | Prometheus metrics |
-| `go.opentelemetry.io/otel` | OTel tracing |
-| `golang.org/x/crypto` | bcrypt verification for API keys (with deterministic lookup hash) |
-| `golang.org/x/oauth2` | OIDC authorization code exchange for admin dashboard |
+```bash
+# Run all pending migrations (default direction: up)
+mcpgw migrate
 
-## Phase Roadmap
+# Run a specific number of steps
+mcpgw migrate --steps 1
 
-Development is organized into nine sequential phases. See [docs/phases/INDEX.md](docs/phases/INDEX.md) for detailed specifications and implementation prompts.
+# Roll back all migrations
+mcpgw migrate --direction down
+```
 
-| Phase | Scope |
-|-------|-------|
-| 1 | Core Foundation -- config, types, store, server skeleton, migrations |
-| 2 | Identity and Auth -- mTLS, SPIFFE validation, API keys, OIDC |
-| 3 | Registration Protocol -- server handshake, heartbeat, capability sync |
-| 4 | MCP Proxy and Routing -- protocol handling, tool dispatch, catalog merge |
-| 5 | Policy and Rate Limiting -- allow/deny lists, risk levels, token bucket |
-| 6 | NATS and Cruvero Integration -- event bus, state sync, management API |
-| 7 | Kubernetes and Observability -- Helm chart, probes, metrics, tracing |
-| 8 | CLI and Testing -- subcommands, integration tests, coverage gates |
-| 9 | GitOps Deployment -- devcontainer baseline, Helm env overlays, Argo ApplicationSet, Vault-managed secrets |
-| 10 | Production Hardening -- tool risk classification, audit retention, shutdown timeout |
-| 11 | Distributed Rate Limiting -- DragonflyDB/NATS backends, multi-gateway sync |
-| 12 | Device Code Flow + Admin Dashboard -- OAuth2 device auth, admin UI, HTMX templates |
+Migration files follow the convention `NNNN_description.{up,down}.sql` in the `migrations/` directory. Current migrations:
+
+| Migration | Description |
+|-----------|-------------|
+| 0001 | MCP servers table |
+| 0002 | API keys table |
+| 0003 | Audit log table |
+| 0004 | Config cache table |
+| 0005 | Server protocol fields |
+| 0006 | Registration leases |
+| 0007 | Audit log retention index |
+| 0008 | API key policy profile |
+| 0009 | Tool classifications |
+
+## Development
+
+### Requirements
+
+- Go `1.25.7` (pinned in `go.mod` and CI)
+- `golangci-lint`, `staticcheck`, `govulncheck`, `gosec`, `dupl` for quality gates
+
+### Quality Gates
+
+Run the full suite before opening a PR:
+
+```bash
+go build ./cmd/mcpgw
+go test -race ./...
+make quality    # vet → lint → staticcheck → govulncheck → gosec → dupl → godoc-check → coverage-check
+```
+
+Individual checks:
+
+| Command | Purpose |
+|---------|---------|
+| `go vet ./...` | Suspicious constructs |
+| `golangci-lint run ./...` | Aggregated linting |
+| `staticcheck ./...` | Advanced static analysis |
+| `govulncheck ./...` | Known vulnerability scan |
+| `./scripts/check-gosec.sh` | Security-focused scan |
+| `./scripts/check-dupl.sh` | Duplicate code detection |
+| `./scripts/check-godoc.sh` | Exported symbols documented |
+| `./scripts/check-coverage.sh` | Per-package coverage ≥ threshold |
+
+Coverage thresholds are enforced per-package via `coverage-thresholds.json` (minimum 80%).
+
+### Devcontainer
+
+The repository includes a `.devcontainer` configuration with Go, Helm, `kubectl`, and Argo CD CLI tooling for a reproducible development environment.
+
+### Helm Validation
+
+Validate chart rendering for all environments before deployment PRs:
+
+```bash
+make chart-lint
+make chart-render-base
+make chart-render-dev
+make chart-render-staging
+make chart-render-prod
+make chart-validate
+```
+
+### Development Phases
+
+The gateway was developed across 18 sequential phases covering core infrastructure through production hardening. See [docs/phases/INDEX.md](docs/phases/INDEX.md) for specifications.
+
+## Repository Layout
+
+```
+cruvero-mcp-gateway/
+├── .devcontainer/          Reproducible development environment
+├── cmd/
+│   └── mcpgw/              Single binary with subcommands
+├── internal/
+│   ├── admin/              Admin dashboard (OIDC auth, HTMX templates, handlers)
+│   ├── auth/               API key + OIDC + Device Code flow authentication
+│   ├── config/             Environment-based configuration
+│   ├── events/             NATS client, event types, pub/sub
+│   ├── identity/           mTLS, SPIFFE ID, cert validation
+│   ├── policy/             Tool safety, allowlist/denylist, risk classification
+│   ├── proxy/              MCP protocol handler, tool/resource routing
+│   ├── ratelimit/          Token bucket with memory/dragonfly/NATS backends
+│   ├── registration/       Server registration, handshake, heartbeat
+│   ├── resilience/         Circuit breaker, retry, connection pool
+│   ├── server/             HTTP server, router, middleware
+│   ├── store/              Postgres store interfaces + implementations
+│   ├── testutil/           Integration, security, and load test suites
+│   └── types/              Shared domain types
+├── migrations/             SQL migrations (0001–0009)
+├── charts/
+│   └── mcpgateway/         Helm chart + environment overlays
+├── deploy/
+│   └── argocd/             GitOps manifests (AppProject, ApplicationSet)
+├── docs/
+│   ├── OVERVIEW.md          Architecture reference
+│   └── phases/             Phase specifications
+├── scripts/                Quality gate and CI helper scripts
+├── Dockerfile
+├── Makefile
+├── go.mod
+└── go.sum
+```
+
+## Contributing
+
+Contribution process, branch rules, and required local quality gates are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
