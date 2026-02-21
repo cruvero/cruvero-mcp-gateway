@@ -1282,6 +1282,16 @@ func TestRender_WithoutSession(t *testing.T) {
 	}
 }
 
+func TestNewRouter_NilAuthWithoutDevMode_Panics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil Auth without DevMode")
+		}
+	}()
+
+	NewRouter(AdminDeps{Auth: nil, DevMode: false})
+}
+
 func TestNewRouter_DevMode(t *testing.T) {
 	mb := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
 	defer func() { _ = mb.Close() }()

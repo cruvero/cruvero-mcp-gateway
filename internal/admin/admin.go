@@ -33,6 +33,10 @@ type AdminDeps struct {
 
 // NewRouter creates the admin dashboard chi router.
 func NewRouter(deps AdminDeps) chi.Router {
+	if deps.Auth == nil && !deps.DevMode {
+		panic("admin: Auth must not be nil when DevMode is false")
+	}
+
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
