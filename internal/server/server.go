@@ -306,7 +306,7 @@ func buildNATSTLSConfig(certPath, keyPath, caPath string) (*tls.Config, error) {
 
 	caPool := x509.NewCertPool()
 	if !caPool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("failed to parse nats tls ca")
+		return nil, fmt.Errorf("parse nats tls ca")
 	}
 
 	return &tls.Config{
