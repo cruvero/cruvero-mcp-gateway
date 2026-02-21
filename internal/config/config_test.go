@@ -90,6 +90,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.NATSTLSCa != "" {
 		t.Fatalf("expected empty nats tls ca by default, got %q", cfg.NATSTLSCa)
 	}
+	if cfg.AdminDevMode {
+		t.Fatal("expected default admin dev mode false")
+	}
 }
 
 func TestLoadAllEnvVars(t *testing.T) {
@@ -169,6 +172,7 @@ func TestLoadParseErrors(t *testing.T) {
 		{name: "invalid audit retention days", key: "MCPGW_AUDIT_RETENTION_DAYS", value: "not-int"},
 		{name: "invalid audit cleanup interval", key: "MCPGW_AUDIT_CLEANUP_INTERVAL", value: "not-duration"},
 		{name: "invalid shutdown timeout", key: "MCPGW_SHUTDOWN_TIMEOUT", value: "not-duration"},
+		{name: "invalid admin dev mode", key: "MCPGW_ADMIN_DEV_MODE", value: "not-bool"},
 	}
 
 	for _, tt := range tests {
@@ -331,6 +335,25 @@ func TestValidateErrors(t *testing.T) {
 			errText: "MCPGW_CRUVERO_ENABLED",
 		},
 		{
+			name: "admin dev mode without admin enabled",
+			cfg: Config{
+				DBURL:                "postgres://db",
+				RateDefault:          1,
+				RateBurst:            1,
+				CircuitThreshold:     1,
+				RetryMax:             1,
+				DBMaxOpenConns:       25,
+				DBMaxIdleConns:       10,
+				DBConnMaxLifetime:    5 * time.Minute,
+				AuditRetentionDays:   90,
+				AuditCleanupInterval: time.Hour,
+				ShutdownTimeout:      30 * time.Second,
+				AdminDevMode:         true,
+				AdminEnabled:         false,
+			},
+			errText: "MCPGW_ADMIN_ENABLED",
+		},
+		{
 			name: "nats tls enabled without cert",
 			cfg: Config{
 				DBURL:            "postgres://db",
@@ -431,6 +454,20 @@ func clearKnownEnv(t *testing.T) {
 		"MCPGW_NATS_TLS_CERT",
 		"MCPGW_NATS_TLS_KEY",
 		"MCPGW_NATS_TLS_CA",
+		"MCPGW_ADMIN_ENABLED",
+		"MCPGW_ADMIN_DEV_MODE",
+		"MCPGW_ADMIN_OIDC_CLIENT_ID",
+		"MCPGW_ADMIN_OIDC_CLIENT_SECRET",
+		"MCPGW_ADMIN_SESSION_KEY",
+		"MCPGW_ADMIN_SESSION_TTL",
+		"MCPGW_ADMIN_REQUIRED_SCOPE",
+		"MCPGW_DEVICE_FLOW_ENABLED",
+		"MCPGW_DEVICE_FLOW_CLIENT_ID",
+		"MCPGW_DEVICE_FLOW_CLIENT_SECRET",
+		"MCPGW_DEVICE_FLOW_IDP_DEVICE_URL",
+		"MCPGW_DEVICE_FLOW_IDP_TOKEN_URL",
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_SERVICE_NAME",
 	}
 
 	for _, key := range keys {
@@ -531,5 +568,45 @@ func TestConfig_NATSTLSFields(t *testing.T) {
 				tt.checkCfg(t, cfg)
 			}
 		})
+	}
+}
+
+func TestLoadAdminDevMode(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+	t.Setenv("MCPGW_ADMIN_ENABLED", "true")
+	t.Setenv("MCPGW_ADMIN_DEV_MODE", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed with admin dev mode, got: %v", err)
+	}
+	if !cfg.AdminEnabled {
+		t.Fatal("expected admin enabled true")
+	}
+	if !cfg.AdminDevMode {
+		t.Fatal("expected admin dev mode true")
+	}
+}
+
+func TestValidate_AdminDevMode_SkipsOIDCRequirements(t *testing.T) {
+	cfg := Config{
+		DBURL:                "postgres://db",
+		RateDefault:          10,
+		RateBurst:            20,
+		CircuitThreshold:     5,
+		RetryMax:             3,
+		DBMaxOpenConns:       25,
+		DBMaxIdleConns:       10,
+		DBConnMaxLifetime:    5 * time.Minute,
+		AuditRetentionDays:   90,
+		AuditCleanupInterval: time.Hour,
+		ShutdownTimeout:      30 * time.Second,
+		AdminEnabled:         true,
+		AdminDevMode:         true,
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass with admin dev mode, got: %v", err)
 	}
 }
