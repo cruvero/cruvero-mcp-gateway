@@ -77,21 +77,21 @@ type registrationAckUpdater interface {
 
 // PolicyConfigHandler applies policy profile updates.
 type PolicyConfigHandler struct {
-	engine       policyEngineUpdater
-	limiterStore *ratelimit.LimiterStore
-	logger       *slog.Logger
-	configStore  ConfigStore
+	engine      policyEngineUpdater
+	backend     ratelimit.LimiterBackend
+	logger      *slog.Logger
+	configStore ConfigStore
 }
 
 // NewPolicyConfigHandler creates a policy config handler.
-func NewPolicyConfigHandler(engine *policy.Engine, limiterStore *ratelimit.LimiterStore, logger *slog.Logger) *PolicyConfigHandler {
+func NewPolicyConfigHandler(engine *policy.Engine, backend ratelimit.LimiterBackend, logger *slog.Logger) *PolicyConfigHandler {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
 	return &PolicyConfigHandler{
-		engine:       engine,
-		limiterStore: limiterStore,
-		logger:       logger,
+		engine:  engine,
+		backend: backend,
+		logger:  logger,
 	}
 }
 
@@ -134,8 +134,8 @@ func (h *PolicyConfigHandler) Handle(ctx context.Context, data []byte) error {
 	if h.engine != nil {
 		h.engine.ReplaceProfiles(profiles)
 	}
-	if h.limiterStore != nil {
-		h.limiterStore.SetDefaults(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
+	if mb, ok := h.backend.(*ratelimit.MemoryBackend); ok && mb != nil {
+		mb.SetDefaults(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
 	}
 	if h.configStore != nil {
 		if err := h.configStore.Save(ctx, configCachePolicyKey, data); err != nil {

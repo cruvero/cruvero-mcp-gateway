@@ -145,6 +145,7 @@ type APIKey struct {
 	Name          string     `json:"name"`
 	Scopes        []string   `json:"scopes"`
 	ClientID      string     `json:"client_id"`
+	PolicyProfile string     `json:"policy_profile"`
 	ExpiresAt     *time.Time `json:"expires_at"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
@@ -165,6 +166,44 @@ type ServerFilter struct {
 	NamePattern string        `json:"name_pattern"`
 	Limit       int           `json:"limit"`
 	Offset      int           `json:"offset"`
+}
+
+// RiskLevel classifies the risk associated with a tool.
+type RiskLevel string
+
+const (
+	// RiskReadOnly indicates a tool that only reads data.
+	RiskReadOnly RiskLevel = "read_only"
+	// RiskWrite indicates a tool that creates or modifies data.
+	RiskWrite RiskLevel = "write"
+	// RiskDestructive indicates a tool that deletes or destroys data.
+	RiskDestructive RiskLevel = "destructive"
+	// RiskUnknown indicates a tool whose risk has not been classified.
+	RiskUnknown RiskLevel = "unknown"
+)
+
+// String returns the string value of the risk level.
+func (r RiskLevel) String() string {
+	return string(r)
+}
+
+// IsValid reports whether the risk level is a recognized value.
+func (r RiskLevel) IsValid() bool {
+	switch r {
+	case RiskReadOnly, RiskWrite, RiskDestructive, RiskUnknown:
+		return true
+	}
+	return false
+}
+
+// ToolClassification is the persisted risk classification of a tool.
+type ToolClassification struct {
+	ToolName       string    `json:"tool_name"`
+	RiskLevel      RiskLevel `json:"risk_level"`
+	Reason         string    `json:"reason"`
+	AutoClassified bool      `json:"auto_classified"`
+	UpdatedBy      string    `json:"updated_by"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // AuditFilter defines optional filtering for audit log queries.

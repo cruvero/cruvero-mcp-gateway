@@ -17,12 +17,14 @@ import (
 
 // Engine evaluates tool requests against configured policy profiles.
 type Engine struct {
-	mu                sync.RWMutex
-	profiles          map[string]*types.PolicyProfile
-	dangerousPatterns []*regexp.Regexp
-	auditStore        store.AuditStore
-	logger            *slog.Logger
-	publisher         ViolationEventPublisher
+	mu                  sync.RWMutex
+	profiles            map[string]*types.PolicyProfile
+	dangerousPatterns   []*regexp.Regexp
+	auditStore          store.AuditStore
+	classificationStore store.ToolClassificationStore
+	classificationCache *ClassificationCache
+	logger              *slog.Logger
+	publisher           ViolationEventPublisher
 }
 
 // ViolationEventPublisher publishes policy violation events.
@@ -65,12 +67,43 @@ func NewEngine(
 	}
 }
 
+// SetAuditStore replaces the engine's audit store at runtime.
+func (e *Engine) SetAuditStore(auditStore store.AuditStore) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.auditStore = auditStore
+}
+
+// SetClassificationStore wires a tool classification store and initializes the cache.
+func (e *Engine) SetClassificationStore(classificationStore store.ToolClassificationStore) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.classificationStore = classificationStore
+	e.classificationCache = NewClassificationCache(defaultClassificationCacheTTL)
+}
+
 // SetViolationEventPublisher sets an optional policy-violation event publisher.
 func (e *Engine) SetViolationEventPublisher(publisher ViolationEventPublisher) {
 	if e == nil {
 		return
 	}
 	e.publisher = publisher
+}
+
+// ClassificationCache returns the engine's classification cache, if initialized.
+func (e *Engine) ClassificationCache() *ClassificationCache {
+	if e == nil {
+		return nil
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.classificationCache
 }
 
 // ReplaceProfiles replaces all in-memory policy profiles with validated values.
@@ -107,13 +140,51 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 	defer span.End()
 	span.SetAttributes(attribute.String("tool.name", strings.TrimSpace(req.ToolName)))
 
+	e.mu.RLock()
+	auditStore := e.auditStore
+	classificationStore := e.classificationStore
+	classificationCache := e.classificationCache
+	e.mu.RUnlock()
+
+	toolName := strings.TrimSpace(req.ToolName)
+
+	// Step 0: tool risk classification check.
+	// Destructive tools are ALWAYS blocked regardless of profile mode.
+	if classificationStore != nil {
+		riskLevel := e.resolveRiskLevel(ctx, toolName, classificationStore, classificationCache)
+		if riskLevel == types.RiskDestructive {
+			decision := &PolicyDecision{
+				Allowed: false,
+				Reason:  "tool classified as destructive",
+				Violations: []Violation{{
+					Type:     ViolationDestructive,
+					Detail:   fmt.Sprintf("tool %q is classified as destructive and is blocked", toolName),
+					Severity: SeverityCritical,
+				}},
+				EnforcementMode: types.ModeEnforce,
+			}
+			span.SetAttributes(
+				attribute.Bool("policy.allowed", false),
+				attribute.String("policy.reason", decision.Reason),
+			)
+			if err := LogDecision(ctx, auditStore, req, decision); err != nil {
+				e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
+			}
+			return decision, nil
+		}
+		if riskLevel == types.RiskUnknown {
+			e.logger.WarnContext(ctx, "tool has unknown risk classification",
+				slog.String("tool", toolName),
+			)
+		}
+	}
+
 	profile := e.resolveProfile(req.ProfileName)
 	mode := profile.EnforcementMode
 	if mode == "" {
 		mode = types.ModeEnforce
 	}
 
-	toolName := strings.TrimSpace(req.ToolName)
 	violations := make([]Violation, 0)
 
 	if len(profile.ToolAllowlist) > 0 && !contains(profile.ToolAllowlist, toolName) {
@@ -156,7 +227,7 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 		attribute.String("policy.reason", decision.Reason),
 	)
 
-	if err := LogDecision(ctx, e.auditStore, req, decision); err != nil {
+	if err := LogDecision(ctx, auditStore, req, decision); err != nil {
 		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
 	}
 	if len(violations) > 0 && e.publisher != nil {
@@ -193,6 +264,38 @@ func (e *Engine) resolveProfile(name string) *types.PolicyProfile {
 		Name:            "default",
 		EnforcementMode: types.ModeEnforce,
 	}
+}
+
+func (e *Engine) resolveRiskLevel(
+	ctx context.Context,
+	toolName string,
+	classificationStore store.ToolClassificationStore,
+	cache *ClassificationCache,
+) types.RiskLevel {
+	if cache != nil {
+		if cached := cache.Get(toolName); cached != nil {
+			return cached.RiskLevel
+		}
+	}
+
+	tc, err := classificationStore.Get(ctx, toolName)
+	if err != nil {
+		e.logger.ErrorContext(ctx, "classification store lookup failed",
+			slog.String("tool", toolName),
+			slog.String("error", err.Error()),
+		)
+		return types.RiskUnknown
+	}
+
+	if tc == nil {
+		return types.RiskUnknown
+	}
+
+	if cache != nil {
+		cache.Set(toolName, tc)
+	}
+
+	return tc.RiskLevel
 }
 
 func contains(values []string, expected string) bool {

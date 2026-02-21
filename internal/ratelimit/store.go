@@ -21,6 +21,11 @@ type LimiterKey struct {
 	Route    string `json:"route"`
 }
 
+// String returns a composite key suitable for map lookups.
+func (k LimiterKey) String() string {
+	return k.ClientID + ":" + k.Route
+}
+
 type entry struct {
 	limiter  *rate.Limiter
 	lastUsed time.Time

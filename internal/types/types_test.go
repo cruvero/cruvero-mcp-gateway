@@ -166,3 +166,79 @@ func TestAPIKeyAuditAndFilterJSON(t *testing.T) {
 		t.Fatalf("marshal audit filter: %v", err)
 	}
 }
+
+func TestRegistrationSyncStateString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		state RegistrationSyncState
+		want  string
+	}{
+		{name: "unacked", state: SyncStateUnacked, want: "unacked"},
+		{name: "acked", state: SyncStateAcked, want: "acked"},
+		{name: "stale", state: SyncStateStale, want: "stale"},
+		{name: "custom value", state: RegistrationSyncState("custom"), want: "custom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.state.String(); got != tt.want {
+				t.Fatalf("RegistrationSyncState.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRiskLevelString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level RiskLevel
+		want  string
+	}{
+		{name: "read_only", level: RiskReadOnly, want: "read_only"},
+		{name: "write", level: RiskWrite, want: "write"},
+		{name: "destructive", level: RiskDestructive, want: "destructive"},
+		{name: "unknown", level: RiskUnknown, want: "unknown"},
+		{name: "custom value", level: RiskLevel("custom"), want: "custom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.level.String(); got != tt.want {
+				t.Fatalf("RiskLevel.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRiskLevelIsValid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level RiskLevel
+		want  bool
+	}{
+		{name: "read_only is valid", level: RiskReadOnly, want: true},
+		{name: "write is valid", level: RiskWrite, want: true},
+		{name: "destructive is valid", level: RiskDestructive, want: true},
+		{name: "unknown is valid", level: RiskUnknown, want: true},
+		{name: "empty string is invalid", level: RiskLevel(""), want: false},
+		{name: "arbitrary string is invalid", level: RiskLevel("not_a_level"), want: false},
+		{name: "uppercase variant is invalid", level: RiskLevel("READ_ONLY"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.level.IsValid(); got != tt.want {
+				t.Fatalf("RiskLevel(%q).IsValid() = %v, want %v", tt.level, got, tt.want)
+			}
+		})
+	}
+}

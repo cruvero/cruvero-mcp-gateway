@@ -18,6 +18,7 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	identitypkg "github.com/cruvero/mcp-gateway/internal/identity"
+	"github.com/cruvero/mcp-gateway/internal/policy"
 	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
@@ -36,11 +37,13 @@ var (
 
 // Service implements registration business logic.
 type Service struct {
-	serverStore store.ServerStore
-	auditStore  store.AuditStore
-	config      *config.Config
-	logger      *slog.Logger
-	publisher   LifecycleEventPublisher
+	serverStore         store.ServerStore
+	auditStore          store.AuditStore
+	classificationStore store.ToolClassificationStore
+	config              *config.Config
+	logger              *slog.Logger
+	publisher           LifecycleEventPublisher
+	broadcaster         Broadcaster
 
 	mu                sync.RWMutex
 	spiffeAllowList   []string
@@ -87,6 +90,22 @@ func (s *Service) SetLifecycleEventPublisher(publisher LifecycleEventPublisher) 
 		return
 	}
 	s.publisher = publisher
+}
+
+// SetBroadcaster sets an optional cross-pod broadcaster for registration events.
+func (s *Service) SetBroadcaster(b Broadcaster) {
+	if s == nil {
+		return
+	}
+	s.broadcaster = b
+}
+
+// SetClassificationStore wires a tool classification store for auto-classification.
+func (s *Service) SetClassificationStore(classificationStore store.ToolClassificationStore) {
+	if s == nil {
+		return
+	}
+	s.classificationStore = classificationStore
 }
 
 // UpdateSPIFFEAllowList replaces the registration SPIFFE prefix allowlist.
@@ -207,6 +226,9 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 			s.logger.ErrorContext(ctx, "publish server registered event failed", slog.String("error", err.Error()))
 		}
 	}
+	s.publishBroadcast("registered", record.ID)
+
+	s.classifyNewTools(ctx, req.Capabilities, caller.ID)
 
 	heartbeatIntervalSeconds := heartbeatIntervalSeconds(s.config)
 	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
@@ -313,8 +335,72 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 			s.logger.ErrorContext(ctx, "publish server deregistered event failed", slog.String("error", err.Error()))
 		}
 	}
+	s.publishBroadcast("deregistered", record.ID)
 
 	return nil
+}
+
+func (s *Service) classifyNewTools(ctx context.Context, cap types.Capability, callerID string) {
+	if s.classificationStore == nil || len(cap.Tools) == 0 {
+		return
+	}
+
+	for _, toolName := range cap.Tools {
+		name := strings.TrimSpace(toolName)
+		if name == "" {
+			continue
+		}
+
+		existing, err := s.classificationStore.Get(ctx, name)
+		if err != nil {
+			s.logger.ErrorContext(ctx, "classification lookup failed",
+				slog.String("tool", name),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+
+		if existing != nil && !existing.AutoClassified {
+			continue
+		}
+
+		riskLevel, reason := policy.AutoClassify(name, "")
+		tc := &types.ToolClassification{
+			ToolName:       name,
+			RiskLevel:      riskLevel,
+			Reason:         reason,
+			AutoClassified: true,
+			UpdatedBy:      callerID,
+			UpdatedAt:      time.Now().UTC(),
+		}
+
+		if err := s.classificationStore.Upsert(ctx, tc); err != nil {
+			s.logger.ErrorContext(ctx, "auto-classify tool failed",
+				slog.String("tool", name),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+}
+
+func (s *Service) publishBroadcast(eventType, serverID string) {
+	if s.broadcaster == nil {
+		return
+	}
+
+	evt := NewRegistrationEvent(eventType, serverID)
+	data, err := json.Marshal(evt)
+	if err != nil {
+		s.logger.Error("marshal broadcast event failed", slog.String("error", err.Error()))
+		return
+	}
+	if err := s.broadcaster.Publish(SubjectRegistryUpdated, data); err != nil {
+		s.logger.Error("publish broadcast event failed",
+			slog.String("event_type", eventType),
+			slog.String("server_id", serverID),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 func (s *Service) logAudit(ctx context.Context, entry *types.AuditEntry) {

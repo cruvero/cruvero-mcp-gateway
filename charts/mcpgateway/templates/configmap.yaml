@@ -22,5 +22,9 @@ data:
   MCPGW_CRUVERO_ENABLED: {{ .Values.config.MCPGW_CRUVERO_ENABLED | quote }}
   MCPGW_GATEWAY_ID: {{ .Values.config.MCPGW_GATEWAY_ID | quote }}
   MCPGW_CORS_ENABLED: {{ .Values.config.MCPGW_CORS_ENABLED | quote }}
+  MCPGW_RATE_LIMIT_BACKEND: {{ .Values.config.MCPGW_RATE_LIMIT_BACKEND | quote }}
+  {{- if .Values.dragonfly.enabled }}
+  MCPGW_DRAGONFLY_URL: {{ .Values.dragonfly.url | quote }}
+  {{- end }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.OTEL_SERVICE_NAME | quote }}

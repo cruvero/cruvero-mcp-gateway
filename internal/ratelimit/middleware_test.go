@@ -7,20 +7,22 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/types"
-	"golang.org/x/time/rate"
 )
 
 func TestRateLimitMiddlewareAllowsWithinLimit(t *testing.T) {
 	t.Parallel()
 
-	store := NewLimiterStore(10, 20)
-	handler := RateLimitMiddleware(store, nil, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer backend.Close()
+	backend.SetDefaults(10, 20)
+
+	handler := RateLimitMiddleware(backend, nil, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -47,8 +49,11 @@ func TestRateLimitMiddlewareAllowsWithinLimit(t *testing.T) {
 func TestRateLimitMiddlewareReturns429WhenExceeded(t *testing.T) {
 	t.Parallel()
 
-	store := NewLimiterStore(1, 1)
-	handler := RateLimitMiddleware(store, nil, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer backend.Close()
+	backend.SetDefaults(1, 1)
+
+	handler := RateLimitMiddleware(backend, nil, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -96,8 +101,11 @@ func TestRateLimitMiddlewareUsesResolvedProfile(t *testing.T) {
 		"premium": premiumProfile,
 	}, defaultProfile)
 
-	store := NewLimiterStore(1, 1)
-	handler := RateLimitMiddleware(store, resolver, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer backend.Close()
+	backend.SetDefaults(1, 1)
+
+	handler := RateLimitMiddleware(backend, resolver, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -154,27 +162,13 @@ func TestReadMCPMethodNonJSONOrInvalidReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestRateLimitHelpers(t *testing.T) {
+func TestBackendHeaders(t *testing.T) {
 	t.Parallel()
 
-	limiter := rate.NewLimiter(rate.Limit(2), 1)
 	headers := make(http.Header)
-	setRateLimitHeaders(headers, limiter)
-	if headers.Get(headerRateLimitLimit) != "2" {
-		t.Fatalf("expected limit header 2, got %q", headers.Get(headerRateLimitLimit))
-	}
-	if _, err := strconv.Atoi(headers.Get(headerRateLimitRemaining)); err != nil {
-		t.Fatalf("expected numeric remaining header, got %q", headers.Get(headerRateLimitRemaining))
-	}
-	if _, err := strconv.ParseInt(headers.Get(headerRateLimitReset), 10, 64); err != nil {
-		t.Fatalf("expected unix reset header, got %q", headers.Get(headerRateLimitReset))
-	}
-
-	if retryAfter := retryAfterSeconds(nil); retryAfter != 1 {
-		t.Fatalf("expected nil limiter retry-after 1, got %d", retryAfter)
-	}
-	if retryAfter := retryAfterSeconds(rate.NewLimiter(0, 1)); retryAfter != 1 {
-		t.Fatalf("expected zero-limit retry-after 1, got %d", retryAfter)
+	setBackendHeaders(headers, 10, 5)
+	if headers.Get(headerRateLimitLimit) != "10" {
+		t.Fatalf("expected limit header 10, got %q", headers.Get(headerRateLimitLimit))
 	}
 }
 

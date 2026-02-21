@@ -384,23 +384,73 @@ func TestBuildInboundTLSConfig(t *testing.T) {
 	})
 }
 
-func TestCORSMiddlewareWhenEnabled(t *testing.T) {
+func TestCORSMiddlewareAllowlistedOrigin(t *testing.T) {
 	t.Parallel()
 
 	cfg := baseConfig()
 	cfg.CORSEnabled = true
+	cfg.CORSAllowedOrigins = []string{"https://example.com", "https://other.com"}
 	srv := New(cfg, testLogger())
 
-	req := httptest.NewRequest(http.MethodOptions, "/healthz", nil)
-	rec := httptest.NewRecorder()
-	srv.router.ServeHTTP(rec, req)
+	t.Run("allowlisted origin echoed", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Header.Set("Origin", "https://example.com")
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204, got %d", rec.Code)
-	}
-	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Fatalf("expected CORS origin header to be set")
-	}
+		if rec.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
+			t.Fatalf("expected origin echoed, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+		}
+		if rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+			t.Fatal("expected Allow-Credentials: true")
+		}
+		if rec.Header().Get("Vary") != "Origin" {
+			t.Fatalf("expected Vary: Origin, got %q", rec.Header().Get("Vary"))
+		}
+	})
+
+	t.Run("non-allowlisted origin gets no ACAO", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Header.Set("Origin", "https://evil.com")
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, req)
+
+		if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Fatalf("expected no ACAO header for non-allowlisted origin, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+		}
+		if rec.Header().Get("Vary") != "Origin" {
+			t.Fatalf("expected Vary: Origin always present, got %q", rec.Header().Get("Vary"))
+		}
+	})
+
+	t.Run("case insensitive origin match", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Header.Set("Origin", "HTTPS://EXAMPLE.COM")
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, req)
+
+		if rec.Header().Get("Access-Control-Allow-Origin") != "HTTPS://EXAMPLE.COM" {
+			t.Fatalf("expected case-insensitive match, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+		}
+	})
+
+	t.Run("OPTIONS preflight returns 204", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodOptions, "/healthz", nil)
+		req.Header.Set("Origin", "https://example.com")
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected status 204, got %d", rec.Code)
+		}
+		if rec.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
+			t.Fatalf("expected origin echoed on preflight, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+		}
+	})
 }
 
 func TestRequestIDFromContextMissing(t *testing.T) {
@@ -457,13 +507,19 @@ func TestWriteJSONEncodeErrorPath(t *testing.T) {
 
 func baseConfig() *config.Config {
 	return &config.Config{
-		ListenAddr:       ":0",
-		MetricsAddr:      "127.0.0.1:0",
-		DBURL:            "postgres://db",
-		RateDefault:      10,
-		RateBurst:        20,
-		CircuitThreshold: 5,
-		RetryMax:         3,
+		ListenAddr:        ":0",
+		MetricsAddr:       "127.0.0.1:0",
+		DBURL:             "postgres://db",
+		RateDefault:       10,
+		RateBurst:         20,
+		CircuitThreshold:  5,
+		RetryMax:          3,
+		DBMaxOpenConns:       25,
+		DBMaxIdleConns:       10,
+		DBConnMaxLifetime:    5 * time.Minute,
+		AuditRetentionDays:   90,
+		AuditCleanupInterval: time.Hour,
+		ShutdownTimeout:      30 * time.Second,
 	}
 }
 

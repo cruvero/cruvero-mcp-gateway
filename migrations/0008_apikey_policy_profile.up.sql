@@ -1,0 +1,1 @@
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS policy_profile TEXT NOT NULL DEFAULT 'default';

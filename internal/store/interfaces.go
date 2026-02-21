@@ -44,3 +44,12 @@ type AuditStore interface {
 	Log(ctx context.Context, entry *types.AuditEntry) error
 	Query(ctx context.Context, filter types.AuditFilter) ([]types.AuditEntry, error)
 }
+
+// ToolClassificationStore defines CRUD operations for tool risk classifications.
+type ToolClassificationStore interface {
+	Get(ctx context.Context, toolName string) (*types.ToolClassification, error)
+	GetAll(ctx context.Context) ([]types.ToolClassification, error)
+	GetByRiskLevel(ctx context.Context, level types.RiskLevel) ([]types.ToolClassification, error)
+	Upsert(ctx context.Context, classification *types.ToolClassification) error
+	Delete(ctx context.Context, toolName string) error
+}

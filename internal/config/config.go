@@ -24,6 +24,12 @@ const (
 	defaultGatewayID        = "auto"
 	defaultCORSEnabled      = false
 	defaultOTELServiceName  = "mcpgw"
+	defaultDBMaxOpenConns       = 25
+	defaultDBMaxIdleConns       = 10
+	defaultDBConnMaxLifetime    = 5 * time.Minute
+	defaultAuditRetentionDays   = 90
+	defaultAuditCleanupInterval = 1 * time.Hour
+	defaultShutdownTimeout      = 30 * time.Second
 )
 
 // Config contains all gateway runtime settings loaded from MCPGW_* env vars.
@@ -48,7 +54,16 @@ type Config struct {
 	MetricsAddr          string        `json:"metrics_addr"`
 	CruveroEnabled       bool          `json:"cruvero_enabled"`
 	GatewayID            string        `json:"gateway_id"`
-	CORSEnabled          bool          `json:"cors_enabled"`
+	CORSEnabled          bool     `json:"cors_enabled"`
+	CORSAllowedOrigins   []string `json:"cors_allowed_origins"`
+	DBMaxOpenConns       int           `json:"db_max_open_conns"`
+	DBMaxIdleConns       int           `json:"db_max_idle_conns"`
+	DBConnMaxLifetime    time.Duration `json:"db_conn_max_lifetime"`
+	AuditRetentionDays   int           `json:"audit_retention_days"`
+	AuditCleanupInterval time.Duration `json:"audit_cleanup_interval"`
+	ShutdownTimeout      time.Duration `json:"shutdown_timeout"`
+	RateLimitBackend     string        `json:"rate_limit_backend"`
+	DragonflyURL         string        `json:"dragonfly_url"`
 	OTLPExporterEndpoint string        `json:"otlp_exporter_endpoint"`
 	OTELServiceName      string        `json:"otel_service_name"`
 }
@@ -95,6 +110,36 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	dbMaxOpenConns, err := parseInt("MCPGW_DB_MAX_OPEN_CONNS", defaultDBMaxOpenConns)
+	if err != nil {
+		return nil, err
+	}
+
+	dbMaxIdleConns, err := parseInt("MCPGW_DB_MAX_IDLE_CONNS", defaultDBMaxIdleConns)
+	if err != nil {
+		return nil, err
+	}
+
+	dbConnMaxLifetime, err := parseDuration("MCPGW_DB_CONN_MAX_LIFETIME", defaultDBConnMaxLifetime)
+	if err != nil {
+		return nil, err
+	}
+
+	auditRetentionDays, err := parseInt("MCPGW_AUDIT_RETENTION_DAYS", defaultAuditRetentionDays)
+	if err != nil {
+		return nil, err
+	}
+
+	auditCleanupInterval, err := parseDuration("MCPGW_AUDIT_CLEANUP_INTERVAL", defaultAuditCleanupInterval)
+	if err != nil {
+		return nil, err
+	}
+
+	shutdownTimeout, err := parseDuration("MCPGW_SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
+	if err != nil {
+		return nil, err
+	}
+
 	gatewayID := getEnv("MCPGW_GATEWAY_ID", defaultGatewayID)
 	if gatewayID == "auto" {
 		gatewayID, err = generateUUID()
@@ -102,6 +147,8 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("generate gateway id: %w", err)
 		}
 	}
+
+	rateLimitBackend := getEnv("MCPGW_RATE_LIMIT_BACKEND", "memory")
 
 	cfg := &Config{
 		ListenAddr:           getEnv("MCPGW_LISTEN_ADDR", defaultListenAddr),
@@ -125,6 +172,15 @@ func Load() (*Config, error) {
 		CruveroEnabled:       cruveroEnabled,
 		GatewayID:            gatewayID,
 		CORSEnabled:          corsEnabled,
+		CORSAllowedOrigins:   parseCSV("MCPGW_CORS_ALLOWED_ORIGINS"),
+		DBMaxOpenConns:       dbMaxOpenConns,
+		DBMaxIdleConns:       dbMaxIdleConns,
+		DBConnMaxLifetime:    dbConnMaxLifetime,
+		AuditRetentionDays:   auditRetentionDays,
+		AuditCleanupInterval: auditCleanupInterval,
+		ShutdownTimeout:      shutdownTimeout,
+		RateLimitBackend:     rateLimitBackend,
+		DragonflyURL:         os.Getenv("MCPGW_DRAGONFLY_URL"),
 		OTLPExporterEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTELServiceName:      getEnv("OTEL_SERVICE_NAME", defaultOTELServiceName),
 	}
@@ -166,6 +222,53 @@ func (c *Config) Validate() error {
 
 	if c.CruveroEnabled && strings.TrimSpace(c.NATSURL) == "" {
 		return fmt.Errorf("validate config: MCPGW_NATS_URL is required when MCPGW_CRUVERO_ENABLED is true")
+	}
+
+	if c.CORSEnabled && len(c.CORSAllowedOrigins) == 0 {
+		return fmt.Errorf("validate config: MCPGW_CORS_ALLOWED_ORIGINS is required when MCPGW_CORS_ENABLED is true")
+	}
+
+	if c.DBMaxOpenConns <= 0 {
+		return fmt.Errorf("validate config: MCPGW_DB_MAX_OPEN_CONNS must be positive")
+	}
+
+	if c.DBMaxIdleConns <= 0 {
+		return fmt.Errorf("validate config: MCPGW_DB_MAX_IDLE_CONNS must be positive")
+	}
+
+	if c.DBConnMaxLifetime <= 0 {
+		return fmt.Errorf("validate config: MCPGW_DB_CONN_MAX_LIFETIME must be positive")
+	}
+
+	if c.AuditRetentionDays <= 0 {
+		return fmt.Errorf("validate config: MCPGW_AUDIT_RETENTION_DAYS must be positive")
+	}
+
+	if c.AuditCleanupInterval <= 0 {
+		return fmt.Errorf("validate config: MCPGW_AUDIT_CLEANUP_INTERVAL must be positive")
+	}
+
+	if c.ShutdownTimeout <= 0 {
+		return fmt.Errorf("validate config: MCPGW_SHUTDOWN_TIMEOUT must be positive")
+	}
+
+	if c.ShutdownTimeout > 120*time.Second {
+		return fmt.Errorf("validate config: MCPGW_SHUTDOWN_TIMEOUT must not exceed 120s")
+	}
+
+	switch c.RateLimitBackend {
+	case "memory", "dragonfly", "nats", "":
+		// valid
+	default:
+		return fmt.Errorf("validate config: MCPGW_RATE_LIMIT_BACKEND must be memory, dragonfly, or nats")
+	}
+
+	if c.RateLimitBackend == "dragonfly" && strings.TrimSpace(c.DragonflyURL) == "" {
+		return fmt.Errorf("validate config: MCPGW_DRAGONFLY_URL is required when MCPGW_RATE_LIMIT_BACKEND is dragonfly")
+	}
+
+	if c.RateLimitBackend == "nats" && !c.CruveroEnabled {
+		return fmt.Errorf("validate config: MCPGW_CRUVERO_ENABLED must be true when MCPGW_RATE_LIMIT_BACKEND is nats")
 	}
 
 	return nil

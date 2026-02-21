@@ -15,10 +15,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/time/rate"
 
 	"github.com/cruvero/mcp-gateway/internal/identity"
-	"github.com/cruvero/mcp-gateway/internal/types"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -42,9 +40,9 @@ func SetRateLimitedObserver(observer func(clientID string, route string)) {
 	rateLimitObserver = observer
 }
 
-// RateLimitMiddleware enforces per-(client,route) token bucket limits.
+// RateLimitMiddleware enforces per-(client,route) rate limits via the pluggable backend.
 func RateLimitMiddleware(
-	store *LimiterStore,
+	backend LimiterBackend,
 	resolver ProfileResolver,
 	logger *slog.Logger,
 ) func(http.Handler) http.Handler {
@@ -58,7 +56,7 @@ func RateLimitMiddleware(
 			defer span.End()
 			r = r.WithContext(ctx)
 
-			if store == nil {
+			if backend == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -69,9 +67,17 @@ func RateLimitMiddleware(
 				clientID = strings.TrimSpace(id.ID)
 			}
 
-			var profile *types.PolicyProfile
+			var limit float64
+			var burst int
 			if resolver != nil {
-				profile = resolver.Resolve(id)
+				if profile := resolver.Resolve(id); profile != nil {
+					if profile.RateLimit > 0 {
+						limit = float64(profile.RateLimit)
+					}
+					if profile.RateBurst > 0 {
+						burst = profile.RateBurst
+					}
+				}
 			}
 
 			key := LimiterKey{
@@ -83,9 +89,14 @@ func RateLimitMiddleware(
 				attribute.String("route", key.Route),
 			)
 
-			limiter := store.GetOrCreate(key, profile)
-			allowed := limiter.Allow()
-			setRateLimitHeaders(w.Header(), limiter)
+			allowed, remaining, retryAfter, err := backend.Allow(ctx, key, limit, burst)
+			if err != nil {
+				logger.ErrorContext(ctx, "rate limit backend error", slog.String("error", err.Error()))
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			setBackendHeaders(w.Header(), limit, remaining)
 
 			if allowed {
 				next.ServeHTTP(w, r)
@@ -93,16 +104,19 @@ func RateLimitMiddleware(
 			}
 			span.SetAttributes(attribute.Bool("rate_limited", true))
 
-			retryAfter := retryAfterSeconds(limiter)
-			w.Header().Set(headerRetryAfter, strconv.Itoa(retryAfter))
+			retryAfterSecs := int(math.Ceil(retryAfter.Seconds()))
+			if retryAfterSecs <= 0 {
+				retryAfterSecs = 1
+			}
+			w.Header().Set(headerRetryAfter, strconv.Itoa(retryAfterSecs))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			payload := map[string]any{
 				"error":       "rate limit exceeded",
-				"retry_after": retryAfter,
+				"retry_after": retryAfterSecs,
 			}
-			if err := json.NewEncoder(w).Encode(payload); err != nil {
-				logger.ErrorContext(r.Context(), "write ratelimit response failed", slog.String("error", err.Error()))
+			if encErr := json.NewEncoder(w).Encode(payload); encErr != nil {
+				logger.ErrorContext(r.Context(), "write ratelimit response failed", slog.String("error", encErr.Error()))
 			}
 			notifyRateLimited(clientID, key.Route)
 		})
@@ -164,17 +178,16 @@ func readMCPMethod(r *http.Request) string {
 	return strings.TrimSpace(envelope.Method)
 }
 
-func setRateLimitHeaders(headers http.Header, limiter *rate.Limiter) {
-	if headers == nil || limiter == nil {
+func setBackendHeaders(headers http.Header, limit float64, remaining int) {
+	if headers == nil {
 		return
 	}
 
-	limitPerSecond := float64(limiter.Limit())
+	limitPerSecond := limit
 	if limitPerSecond <= 0 {
-		limitPerSecond = 1
+		limitPerSecond = defaultRateLimit
 	}
 
-	remaining := int(math.Floor(limiter.Tokens()))
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -187,26 +200,4 @@ func setRateLimitHeaders(headers http.Header, limiter *rate.Limiter) {
 	headers.Set(headerRateLimitLimit, fmt.Sprintf("%.0f", limitPerSecond))
 	headers.Set(headerRateLimitRemaining, strconv.Itoa(remaining))
 	headers.Set(headerRateLimitReset, strconv.FormatInt(resetAt.Unix(), 10))
-}
-
-func retryAfterSeconds(limiter *rate.Limiter) int {
-	if limiter == nil {
-		return 1
-	}
-
-	limitPerSecond := float64(limiter.Limit())
-	if limitPerSecond <= 0 {
-		return 1
-	}
-
-	needed := 1 - limiter.Tokens()
-	if needed <= 0 {
-		return 1
-	}
-
-	seconds := int(math.Ceil(needed / limitPerSecond))
-	if seconds <= 0 {
-		return 1
-	}
-	return seconds
 }

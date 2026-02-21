@@ -167,6 +167,27 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// Conn returns the underlying NATS connection for direct use by subsystems
+// that need low-level access (e.g., pub/sub broadcasting).
+func (c *Client) Conn() *nats.Conn {
+	if c == nil {
+		return nil
+	}
+	return c.conn
+}
+
+// JetStream returns a JetStream context for KV and stream operations.
+func (c *Client) JetStream() (nats.JetStreamContext, error) {
+	if c == nil || c.conn == nil {
+		return nil, fmt.Errorf("jetstream: client is not initialized")
+	}
+	js, err := c.conn.JetStream()
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	return js, nil
+}
+
 // GatewayID returns the configured gateway identifier.
 func (c *Client) GatewayID() string {
 	if c == nil {

@@ -3,7 +3,9 @@ package registration
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -763,4 +765,147 @@ func (m *mockAuditStore) Query(ctx context.Context, filter types.AuditFilter) ([
 		return m.queryFn(ctx, filter)
 	}
 	return nil, nil
+}
+
+// mockBroadcaster records published events for testing.
+type mockBroadcaster struct {
+	mu       sync.Mutex
+	events   []broadcastRecord
+	failNext bool
+}
+
+type broadcastRecord struct {
+	subject string
+	data    []byte
+}
+
+func (b *mockBroadcaster) Publish(subject string, data []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failNext {
+		return errors.New("broadcast failed")
+	}
+	b.events = append(b.events, broadcastRecord{subject: subject, data: data})
+	return nil
+}
+
+func (b *mockBroadcaster) Subscribe(_ string, _ func(data []byte)) error { return nil }
+func (b *mockBroadcaster) Close() error                                  { return nil }
+
+func (b *mockBroadcaster) lastEvent() *broadcastRecord {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.events) == 0 {
+		return nil
+	}
+	return &b.events[len(b.events)-1]
+}
+
+func TestServiceRegisterPublishesBroadcast(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+
+	bc := &mockBroadcaster{}
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	svc.SetBroadcaster(bc)
+
+	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	evt := bc.lastEvent()
+	if evt == nil {
+		t.Fatal("expected broadcast event after register")
+	}
+	if evt.subject != SubjectRegistryUpdated {
+		t.Fatalf("expected subject %q, got %q", SubjectRegistryUpdated, evt.subject)
+	}
+
+	var decoded RegistrationEvent
+	if err := json.Unmarshal(evt.data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.EventType != "registered" {
+		t.Fatalf("expected event_type registered, got %q", decoded.EventType)
+	}
+}
+
+func TestServiceDeregisterPublishesBroadcast(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getFn: func(ctx context.Context, id string) (*types.ServerRecord, error) {
+			return &types.ServerRecord{
+				ID:       id,
+				Name:     "svc-alpha",
+				SPIFFEID: "spiffe://example.org/ns/default/sa/server",
+			}, nil
+		},
+	}
+
+	bc := &mockBroadcaster{}
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	svc.SetBroadcaster(bc)
+
+	err := svc.Deregister(context.Background(), &identitypkg.Identity{
+		Type:   identitypkg.IdentityAPIKey,
+		ID:     "admin-client",
+		Scopes: []string{identitypkg.ScopeAdmin},
+	}, "server-1")
+	if err != nil {
+		t.Fatalf("deregister: %v", err)
+	}
+
+	evt := bc.lastEvent()
+	if evt == nil {
+		t.Fatal("expected broadcast event after deregister")
+	}
+
+	var decoded RegistrationEvent
+	if err := json.Unmarshal(evt.data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.EventType != "deregistered" || decoded.ServerID != "server-1" {
+		t.Fatalf("unexpected event: %+v", decoded)
+	}
+}
+
+func TestServiceBroadcastFailureDoesNotFailRegister(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+
+	bc := &mockBroadcaster{failNext: true}
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, testRegistrationLogger())
+	svc.SetBroadcaster(bc)
+
+	// Registration should succeed even if broadcast fails.
+	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
+		t.Fatalf("register should succeed even if broadcast fails: %v", err)
+	}
+}
+
+func TestServiceNilBroadcasterSafety(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	// No broadcaster set — should not panic.
+	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
+		t.Fatalf("register with nil broadcaster: %v", err)
+	}
 }

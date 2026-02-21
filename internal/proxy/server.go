@@ -20,6 +20,7 @@ import (
 
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/registration"
+	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
@@ -33,6 +34,7 @@ type ProxyServer struct {
 
 	tlsConfig      *tls.Config
 	backendTimeout time.Duration
+	auditStore     store.AuditStore
 
 	mu                sync.Mutex
 	router            *Router
@@ -65,6 +67,14 @@ func NewProxyServer(
 		backendTimeout: backendTimeout,
 		router:         NewRouter(index, &RoundRobinStrategy{}, tlsConfig, backendTimeout, logger),
 	}
+}
+
+// SetAuditStore wires an audit store for tool call result auditing.
+func (p *ProxyServer) SetAuditStore(auditStore store.AuditStore) {
+	if p == nil {
+		return
+	}
+	p.auditStore = auditStore
 }
 
 // SetupMCP initializes the mcp-go server and streamable HTTP transport.
@@ -209,6 +219,33 @@ func rewriteLegacyToolCallName(body []byte, serverHint string) ([]byte, string, 
 	return rewritten, name, federated, true, nil
 }
 
+func (p *ProxyServer) auditToolCall(toolName string, responsePreview string, isError bool) {
+	if p.auditStore == nil {
+		return
+	}
+	go func() {
+		entry := &types.AuditEntry{
+			EventType:  "tool_call_result",
+			ServerName: toolName,
+			Details: map[string]any{
+				"tool":             toolName,
+				"response_preview": responsePreview,
+				"is_error":         isError,
+			},
+		}
+		if err := p.auditStore.Log(context.Background(), entry); err != nil {
+			p.logger.Error("tool call audit log failed", slog.String("error", err.Error()))
+		}
+	}()
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
 func (p *ProxyServer) getOrCreateClient(record types.ServerRecord) *BackendClient {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -265,8 +302,15 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 				args := req.GetArguments()
 				result, routeErr := p.router.Route(ctx, tool.Name, args)
 				if routeErr != nil {
+					p.auditToolCall(tool.Name, "", true)
 					return nil, fmt.Errorf("route tool %s: %w", tool.Name, routeErr)
 				}
+
+				preview := ""
+				if len(result.Content) > 0 {
+					preview = truncate(result.Content[0].Text, 1024)
+				}
+				p.auditToolCall(tool.Name, preview, result.IsError)
 
 				mcpContent := make([]mcp.Content, 0, len(result.Content))
 				for _, block := range result.Content {

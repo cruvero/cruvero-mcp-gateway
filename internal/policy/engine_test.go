@@ -217,6 +217,51 @@ func TestEngineAuditLoggingFailureDoesNotFailEvaluate(t *testing.T) {
 	}
 }
 
+func TestEngineSetAuditStoreNilSafety(t *testing.T) {
+	t.Parallel()
+
+	var nilEngine *Engine
+	nilEngine.SetAuditStore(&mockAuditStore{})
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {Name: "default", EnforcementMode: types.ModeEnforce},
+	}, nil, testPolicyLogger())
+	engine.SetAuditStore(nil)
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "safe.tool",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate policy: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("expected allowed decision, got %#v", decision)
+	}
+}
+
+func TestEngineSetAuditStoreWiresAuditEntries(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {Name: "default", EnforcementMode: types.ModeEnforce},
+	}, nil, testPolicyLogger())
+
+	auditStore := &mockAuditStore{}
+	engine.SetAuditStore(auditStore)
+
+	_, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "safe.tool",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate policy: %v", err)
+	}
+	if len(auditStore.entries) != 1 {
+		t.Fatalf("expected 1 audit entry after SetAuditStore, got %d", len(auditStore.entries))
+	}
+}
+
 func TestEnginePublishesPolicyViolationEvent(t *testing.T) {
 	t.Parallel()
 
@@ -252,6 +297,152 @@ func TestEnginePublishesPolicyViolationEvent(t *testing.T) {
 	if !published {
 		t.Fatal("expected policy violation event to be published")
 	}
+}
+
+func TestEngineDestructiveToolBlockedRegardlessOfMode(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {
+			Name:            "default",
+			EnforcementMode: types.ModeAudit,
+		},
+	}, nil, testPolicyLogger())
+
+	mockStore := &mockClassificationStore{
+		classifications: map[string]*types.ToolClassification{
+			"danger.delete_all": {
+				ToolName:  "danger.delete_all",
+				RiskLevel: types.RiskDestructive,
+				Reason:    "destructive keyword: delete",
+			},
+		},
+	}
+	engine.SetClassificationStore(mockStore)
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName:    "danger.delete_all",
+		ProfileName: "default",
+		ClientID:    "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("expected destructive tool to be BLOCKED even in audit mode")
+	}
+	if decision.EnforcementMode != types.ModeEnforce {
+		t.Fatalf("expected enforce mode override, got %s", decision.EnforcementMode)
+	}
+	if !hasViolationType(decision.Violations, ViolationDestructive) {
+		t.Fatalf("expected destructive_tool violation, got %+v", decision.Violations)
+	}
+}
+
+func TestEngineDestructiveToolBlockedWithAllowlist(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {
+			Name:            "default",
+			ToolAllowlist:   []string{"danger.delete_all"},
+			EnforcementMode: types.ModeEnforce,
+		},
+	}, nil, testPolicyLogger())
+
+	mockStore := &mockClassificationStore{
+		classifications: map[string]*types.ToolClassification{
+			"danger.delete_all": {
+				ToolName:  "danger.delete_all",
+				RiskLevel: types.RiskDestructive,
+			},
+		},
+	}
+	engine.SetClassificationStore(mockStore)
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName:    "danger.delete_all",
+		ProfileName: "default",
+	})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatal("expected destructive tool blocked even when allowlisted")
+	}
+}
+
+func TestEngineReadOnlyToolPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {Name: "default", EnforcementMode: types.ModeEnforce},
+	}, nil, testPolicyLogger())
+
+	mockStore := &mockClassificationStore{
+		classifications: map[string]*types.ToolClassification{
+			"k8s.get_pods": {ToolName: "k8s.get_pods", RiskLevel: types.RiskReadOnly},
+		},
+	}
+	engine.SetClassificationStore(mockStore)
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "k8s.get_pods",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatal("expected read_only tool to be allowed")
+	}
+}
+
+func TestEngineNilClassificationStoreSkipsCheck(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {Name: "default", EnforcementMode: types.ModeEnforce},
+	}, nil, testPolicyLogger())
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "anything",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatal("expected allowed when no classification store is wired")
+	}
+}
+
+type mockClassificationStore struct {
+	classifications map[string]*types.ToolClassification
+}
+
+func (m *mockClassificationStore) Get(_ context.Context, toolName string) (*types.ToolClassification, error) {
+	tc, ok := m.classifications[toolName]
+	if !ok {
+		return nil, nil
+	}
+	return tc, nil
+}
+
+func (m *mockClassificationStore) GetAll(_ context.Context) ([]types.ToolClassification, error) {
+	return nil, nil
+}
+
+func (m *mockClassificationStore) GetByRiskLevel(_ context.Context, _ types.RiskLevel) ([]types.ToolClassification, error) {
+	return nil, nil
+}
+
+func (m *mockClassificationStore) Upsert(_ context.Context, _ *types.ToolClassification) error {
+	return nil
+}
+
+func (m *mockClassificationStore) Delete(_ context.Context, _ string) error {
+	return nil
 }
 
 func hasViolationType(violations []Violation, expected ViolationType) bool {

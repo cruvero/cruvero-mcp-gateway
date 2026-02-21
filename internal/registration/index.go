@@ -1,10 +1,13 @@
 package registration
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
@@ -79,7 +82,32 @@ func (i *CapabilityIndex) Remove(serverID string) {
 
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.removeLocked(serverID)
+}
 
+// RefreshServer fetches a server from the store and updates the index.
+// If the server is routable it is added; otherwise it is removed.
+func (i *CapabilityIndex) RefreshServer(ctx context.Context, serverID string, serverStore store.ServerStore) error {
+	if i == nil || serverStore == nil || strings.TrimSpace(serverID) == "" {
+		return fmt.Errorf("refresh server: invalid arguments")
+	}
+
+	record, err := serverStore.Get(ctx, serverID)
+	if err != nil {
+		return fmt.Errorf("refresh server: %w", err)
+	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.removeLocked(serverID)
+	if record != nil && record.Status.IsRoutable() {
+		i.addLocked(*record)
+	}
+	return nil
+}
+
+func (i *CapabilityIndex) removeLocked(serverID string) {
 	for tool, servers := range i.tools {
 		filtered := removeServer(servers, serverID)
 		if len(filtered) == 0 {

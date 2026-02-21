@@ -109,6 +109,7 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 				s.logger.ErrorContext(ctx, "publish server health changed event failed", "error", err.Error())
 			}
 		}
+		s.publishBroadcast("status_changed", record.ID)
 	}
 
 	if err := s.serverStore.UpdateHeartbeat(ctx, id); err != nil {

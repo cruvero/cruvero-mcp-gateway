@@ -55,11 +55,11 @@ func TestReadMCPMethodGuardPaths(t *testing.T) {
 	}
 }
 
-func TestSetRateLimitHeadersNilInputs(t *testing.T) {
+func TestSetBackendHeadersNilInputs(t *testing.T) {
 	t.Parallel()
 
-	setRateLimitHeaders(nil, nil)
-	setRateLimitHeaders(http.Header{}, nil)
+	setBackendHeaders(nil, 0, 0)
+	setBackendHeaders(http.Header{}, 0, 0)
 }
 
 func TestLimiterStoreSetDefaults(t *testing.T) {

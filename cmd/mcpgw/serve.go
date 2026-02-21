@@ -18,6 +18,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/proxy"
+	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/server"
 	storepkg "github.com/cruvero/mcp-gateway/internal/store"
@@ -84,12 +85,93 @@ func serveWithContext(ctx context.Context) error {
 	}
 	index.Rebuild(activeServers)
 
+	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+
+	classificationStore := storepkg.NewPostgresToolClassificationStore(db)
+
 	gw := server.New(cfg, logger)
+
+	// Rate limit backend override.
+	var dragonflyBackend *ratelimit.DragonflyBackend
+	switch cfg.RateLimitBackend {
+	case "dragonfly":
+		fallback := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+		rb, rbErr := ratelimit.NewDragonflyBackend(cfg.DragonflyURL,
+			ratelimit.WithDragonflyFallback(fallback),
+			ratelimit.WithDragonflyLogger(logger),
+		)
+		if rbErr != nil {
+			_ = fallback.Close()
+			return fmt.Errorf("serve command: create dragonfly rate limit backend: %w", rbErr)
+		}
+		dragonflyBackend = rb
+		gw.SetRateLimitBackend(rb)
+		defer func() { _ = rb.Close() }()
+		logger.Info("rate limit backend: dragonfly")
+	case "nats":
+		evClient := gw.EventsClient()
+		if evClient == nil || !evClient.IsConnected() {
+			return fmt.Errorf("serve command: nats rate limit backend requires active NATS connection")
+		}
+		js, jsErr := evClient.JetStream()
+		if jsErr != nil {
+			return fmt.Errorf("serve command: get jetstream context: %w", jsErr)
+		}
+		fallback := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+		nb, nbErr := ratelimit.NewNATSBackend(js,
+			ratelimit.WithNATSFallback(fallback),
+			ratelimit.WithNATSLogger(logger),
+		)
+		if nbErr != nil {
+			_ = fallback.Close()
+			return fmt.Errorf("serve command: create nats rate limit backend: %w", nbErr)
+		}
+		gw.SetRateLimitBackend(nb)
+		logger.Info("rate limit backend: nats")
+	default:
+		logger.Info("rate limit backend: memory")
+	}
+	gw.SetAuditStore(auditStore)
+	gw.SetClassificationStore(classificationStore)
 	eventPublisher := gw.EventPublisher()
 
 	registrationService := registration.NewService(serverStore, auditStore, cfg, logger)
+	registrationService.SetClassificationStore(classificationStore)
 	registrationService.SetLifecycleEventPublisher(eventPublisher)
 	gw.BindRegistrationService(registrationService)
+
+	// Broadcaster selection for cross-pod sync.
+	var broadcaster registration.Broadcaster
+	eventsClient := gw.EventsClient()
+	switch {
+	case cfg.CruveroEnabled && eventsClient != nil && eventsClient.IsConnected():
+		broadcaster = registration.NewNATSBroadcaster(eventsClient.Conn(), logger)
+		logger.Info("broadcaster: nats")
+	case dragonflyBackend != nil:
+		broadcaster = registration.NewDragonflyBroadcaster(dragonflyBackend.DragonflyClient(), logger)
+		logger.Info("broadcaster: dragonfly")
+	default:
+		broadcaster = registration.NewNoopBroadcaster()
+		logger.Info("broadcaster: noop")
+	}
+	defer func() { _ = broadcaster.Close() }()
+
+	registrationService.SetBroadcaster(broadcaster)
+
+	// Start cross-pod sync subscribers.
+	regSubscriber := registration.NewRegistrationSubscriber(broadcaster, index, serverStore, logger)
+	if err := regSubscriber.Start(ctx); err != nil {
+		logger.Warn("registration subscriber start failed", slog.String("error", err.Error()))
+	}
+
+	if policyEngine := gw.PolicyEngine(); policyEngine != nil {
+		classSubscriber := registration.NewClassificationSubscriber(broadcaster, policyEngine.ClassificationCache(), logger)
+		if err := classSubscriber.Start(ctx); err != nil {
+			logger.Warn("classification subscriber start failed", slog.String("error", err.Error()))
+		}
+	}
 
 	sweeper := registration.NewSweeper(serverStore, index, cfg, logger)
 	sweeper.SetLifecycleEventPublisher(eventPublisher)
@@ -101,6 +183,7 @@ func serveWithContext(ctx context.Context) error {
 		return fmt.Errorf("serve command: build proxy tls config: %w", err)
 	}
 	proxyServer := proxy.NewProxyServer(index, cfg, proxyTLSConfig, 0, logger)
+	proxyServer.SetAuditStore(auditStore)
 
 	oidcValidator, err := maybeBuildOIDCValidator(ctx, cfg)
 	if err != nil {
@@ -119,6 +202,8 @@ func serveWithContext(ctx context.Context) error {
 	)
 	gw.MountRegistrationRoutes(regHandler.Routes())
 	gw.MountProxyRoutes(proxyServer.Handler())
+
+	go storepkg.StartAuditRetention(ctx, db, cfg.AuditRetentionDays, cfg.AuditCleanupInterval, logger)
 
 	logger.Info("starting mcp gateway",
 		slog.String("version", version),

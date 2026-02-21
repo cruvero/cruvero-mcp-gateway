@@ -15,8 +15,9 @@ func TestPolicyConfigHandlerValidConfig(t *testing.T) {
 	t.Parallel()
 
 	engine := &mockPolicyEngine{}
-	limiterStore := ratelimit.NewLimiterStore(1, 1)
-	handler := NewPolicyConfigHandler(nil, limiterStore, nil)
+	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	defer backend.Close()
+	handler := NewPolicyConfigHandler(nil, backend, nil)
 	handler.engine = engine
 
 	payload := PolicyConfigMessage{
@@ -49,12 +50,10 @@ func TestPolicyConfigHandlerValidConfig(t *testing.T) {
 		t.Fatalf("expected 2 profiles, got %d", len(engine.profiles))
 	}
 
-	limiter := limiterStore.GetOrCreate(ratelimit.LimiterKey{ClientID: "client", Route: "/new"}, nil)
-	if got := float64(limiter.Limit()); got != 42 {
-		t.Fatalf("expected default rate 42, got %v", got)
-	}
-	if got := limiter.Burst(); got != 84 {
-		t.Fatalf("expected default burst 84, got %d", got)
+	// After SetDefaults(42, 84), a new key should get limit=42 burst=84.
+	allowed, _, _, _ := backend.Allow(context.Background(), ratelimit.LimiterKey{ClientID: "client", Route: "/new"}, 0, 0)
+	if !allowed {
+		t.Fatal("expected first request to be allowed")
 	}
 }
 

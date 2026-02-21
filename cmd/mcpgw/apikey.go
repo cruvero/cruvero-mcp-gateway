@@ -43,6 +43,7 @@ func apikeyCreateCommand(args []string) error {
 	scopesRaw := fs.String("scopes", "read", "comma-separated scopes")
 	expiresRaw := fs.String("expires", "", "expiration duration (e.g. 24h, 30d)")
 	clientID := fs.String("client-id", "", "client identity bound to the key")
+	profile := fs.String("profile", "default", "policy profile for the API key")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse apikey create flags: %w", err)
 	}
@@ -75,10 +76,16 @@ func apikeyCreateCommand(args []string) error {
 		effectiveClientID = trimmedName
 	}
 
+	effectiveProfile := strings.TrimSpace(*profile)
+	if effectiveProfile == "" {
+		effectiveProfile = "default"
+	}
+
 	record := &types.APIKey{
 		Name:          trimmedName,
 		ClientID:      effectiveClientID,
 		Scopes:        scopes,
+		PolicyProfile: effectiveProfile,
 		ExpiresAt:     expiresAt,
 		KeyLookupHash: lookupHash,
 		KeyBcryptHash: bcryptHash,
