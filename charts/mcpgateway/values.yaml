@@ -98,6 +98,13 @@ nats:
   enabled: false
   # -- NATS server URL; use valueFrom secret for production deployments.
   url: ""
+  tls:
+    # -- Enable mTLS for NATS connections.
+    enabled: false
+    # -- Name of the Kubernetes Secret containing the NATS client cert and key.
+    certSecretName: ""
+    # -- Name of the Kubernetes Secret containing the NATS CA certificate.
+    caSecretName: ""
 
 rateLimit:
   # -- Rate limit backend: memory (default), dragonfly, or nats.
