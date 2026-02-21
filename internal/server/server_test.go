@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -578,4 +579,94 @@ func (s *serverTestConfigStore) Keys(ctx context.Context) ([]string, error) {
 
 func nilContext() context.Context {
 	return nil
+}
+
+func TestBuildNATSTLSConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid certs produce tls config", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		certPath := filepath.Join(tmpDir, "nats.crt")
+		keyPath := filepath.Join(tmpDir, "nats.key")
+		caPath := filepath.Join(tmpDir, "ca.crt")
+		if err := os.WriteFile(certPath, certs.ServerCertPEM, 0o600); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(caPath, certs.CACertPEM, 0o600); err != nil {
+			t.Fatalf("write ca: %v", err)
+		}
+
+		tlsCfg, err := buildNATSTLSConfig(certPath, keyPath, caPath)
+		if err != nil {
+			t.Fatalf("build nats tls config: %v", err)
+		}
+		if tlsCfg == nil {
+			t.Fatal("expected non-nil tls config")
+		}
+		if tlsCfg.MinVersion != tls.VersionTLS12 {
+			t.Fatalf("expected min tls version 1.2, got %d", tlsCfg.MinVersion)
+		}
+		if len(tlsCfg.Certificates) != 1 {
+			t.Fatalf("expected 1 certificate, got %d", len(tlsCfg.Certificates))
+		}
+		if tlsCfg.RootCAs == nil {
+			t.Fatal("expected non-nil RootCAs")
+		}
+	})
+
+	t.Run("missing cert file returns error", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		keyPath := filepath.Join(tmpDir, "nats.key")
+		caPath := filepath.Join(tmpDir, "ca.crt")
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(caPath, certs.CACertPEM, 0o600); err != nil {
+			t.Fatalf("write ca: %v", err)
+		}
+
+		_, err := buildNATSTLSConfig(filepath.Join(tmpDir, "missing.crt"), keyPath, caPath)
+		if err == nil {
+			t.Fatal("expected error for missing cert file")
+		}
+		if !strings.Contains(err.Error(), "load nats tls cert/key") {
+			t.Fatalf("expected error to mention cert/key, got %v", err)
+		}
+	})
+
+	t.Run("invalid ca pem returns error", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		certPath := filepath.Join(tmpDir, "nats.crt")
+		keyPath := filepath.Join(tmpDir, "nats.key")
+		caPath := filepath.Join(tmpDir, "bad-ca.crt")
+		if err := os.WriteFile(certPath, certs.ServerCertPEM, 0o600); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(caPath, []byte("not-valid-pem"), 0o600); err != nil {
+			t.Fatalf("write bad ca: %v", err)
+		}
+
+		_, err := buildNATSTLSConfig(certPath, keyPath, caPath)
+		if err == nil {
+			t.Fatal("expected error for invalid ca pem")
+		}
+		if !strings.Contains(err.Error(), "failed to parse nats tls ca") {
+			t.Fatalf("expected error to mention parsing ca, got %v", err)
+		}
+	})
 }
