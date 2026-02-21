@@ -35,7 +35,7 @@ func TestRegistrationFlowMountedInServer(t *testing.T) {
 	svc := NewService(store, &mockAuditStore{}, &config.Config{HeartbeatTTL: 30 * time.Second, SPIFFEAllowList: []string{"spiffe://example.org"}}, testIntegrationLogger())
 	handler := NewHandler(svc, testIntegrationLogger())
 
-	srv := server.New(&config.Config{SPIFFEAllowList: []string{"spiffe://example.org"}}, testIntegrationLogger())
+	srv := server.New(&config.Config{SPIFFEAllowList: []string{"spiffe://example.org"}}, testIntegrationLogger(), nil)
 	srv.MountRegistrationRoutes(handler.Routes())
 
 	registerBody := `{"service_name":"svc-alpha","version":"1.0.0","listen":{"host":"svc-alpha.default.svc","port":8080,"protocol":"https"},"capabilities":{"tools":["tool.alpha"],"resources":[],"prompts":[]},"labels":{"team":"platform"}}`

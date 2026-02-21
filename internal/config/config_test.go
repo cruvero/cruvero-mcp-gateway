@@ -78,6 +78,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DragonflyURL != "" {
 		t.Fatalf("expected empty dragonfly url by default, got %q", cfg.DragonflyURL)
 	}
+	if cfg.NATSTLSEnabled {
+		t.Fatal("expected default nats tls enabled false")
+	}
+	if cfg.NATSTLSCert != "" {
+		t.Fatalf("expected empty nats tls cert by default, got %q", cfg.NATSTLSCert)
+	}
+	if cfg.NATSTLSKey != "" {
+		t.Fatalf("expected empty nats tls key by default, got %q", cfg.NATSTLSKey)
+	}
+	if cfg.NATSTLSCa != "" {
+		t.Fatalf("expected empty nats tls ca by default, got %q", cfg.NATSTLSCa)
+	}
 }
 
 func TestLoadAllEnvVars(t *testing.T) {
@@ -318,6 +330,26 @@ func TestValidateErrors(t *testing.T) {
 			},
 			errText: "MCPGW_CRUVERO_ENABLED",
 		},
+		{
+			name: "nats tls enabled without cert",
+			cfg: Config{
+				DBURL:            "postgres://db",
+				RateDefault:      1,
+				RateBurst:        1,
+				CircuitThreshold: 1,
+				RetryMax:         1,
+				DBMaxOpenConns:       25,
+				DBMaxIdleConns:       10,
+				DBConnMaxLifetime:    5 * time.Minute,
+				AuditRetentionDays:   90,
+				AuditCleanupInterval: time.Hour,
+				ShutdownTimeout:      30 * time.Second,
+				NATSTLSEnabled:       true,
+				NATSTLSKey:           "/tls/nats.key",
+				NATSTLSCa:            "/tls/nats-ca.crt",
+			},
+			errText: "MCPGW_NATS_TLS_CERT",
+		},
 	}
 
 	for _, tt := range tests {
@@ -395,9 +427,109 @@ func clearKnownEnv(t *testing.T) {
 		"MCPGW_SHUTDOWN_TIMEOUT",
 		"MCPGW_RATE_LIMIT_BACKEND",
 		"MCPGW_DRAGONFLY_URL",
+		"MCPGW_NATS_TLS_ENABLED",
+		"MCPGW_NATS_TLS_CERT",
+		"MCPGW_NATS_TLS_KEY",
+		"MCPGW_NATS_TLS_CA",
 	}
 
 	for _, key := range keys {
 		t.Setenv(key, "")
+	}
+}
+
+func TestConfig_NATSTLSFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		envVars   map[string]string
+		wantErr   bool
+		errText   string
+		checkCfg  func(t *testing.T, cfg *Config)
+	}{
+		{
+			name:    "tls enabled with all paths parses correctly",
+			envVars: map[string]string{
+				"MCPGW_NATS_TLS_ENABLED": "true",
+				"MCPGW_NATS_TLS_CERT":    "/tls/nats.crt",
+				"MCPGW_NATS_TLS_KEY":     "/tls/nats.key",
+				"MCPGW_NATS_TLS_CA":      "/tls/nats-ca.crt",
+			},
+			checkCfg: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if !cfg.NATSTLSEnabled {
+					t.Fatal("expected nats tls enabled true")
+				}
+				if cfg.NATSTLSCert != "/tls/nats.crt" {
+					t.Fatalf("expected cert path /tls/nats.crt, got %q", cfg.NATSTLSCert)
+				}
+				if cfg.NATSTLSKey != "/tls/nats.key" {
+					t.Fatalf("expected key path /tls/nats.key, got %q", cfg.NATSTLSKey)
+				}
+				if cfg.NATSTLSCa != "/tls/nats-ca.crt" {
+					t.Fatalf("expected ca path /tls/nats-ca.crt, got %q", cfg.NATSTLSCa)
+				}
+			},
+		},
+		{
+			name:    "tls enabled without key path fails validation",
+			envVars: map[string]string{
+				"MCPGW_NATS_TLS_ENABLED": "true",
+				"MCPGW_NATS_TLS_CERT":    "/tls/nats.crt",
+				"MCPGW_NATS_TLS_CA":      "/tls/nats-ca.crt",
+			},
+			wantErr: true,
+			errText: "MCPGW_NATS_TLS_KEY",
+		},
+		{
+			name:    "tls disabled with paths set causes no validation error",
+			envVars: map[string]string{
+				"MCPGW_NATS_TLS_ENABLED": "false",
+				"MCPGW_NATS_TLS_CERT":    "/tls/nats.crt",
+			},
+			checkCfg: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.NATSTLSEnabled {
+					t.Fatal("expected nats tls enabled false")
+				}
+				if cfg.NATSTLSCert != "/tls/nats.crt" {
+					t.Fatalf("expected cert path preserved, got %q", cfg.NATSTLSCert)
+				}
+			},
+		},
+		{
+			name:    "invalid bool for tls enabled returns parse error",
+			envVars: map[string]string{
+				"MCPGW_NATS_TLS_ENABLED": "not-bool",
+			},
+			wantErr: true,
+			errText: "MCPGW_NATS_TLS_ENABLED",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearKnownEnv(t)
+			t.Setenv("MCPGW_DB_URL", "postgres://db")
+			for k, v := range tt.envVars {
+				t.Setenv(k, v)
+			}
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), tt.errText) {
+					t.Fatalf("expected error to contain %q, got %v", tt.errText, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.checkCfg != nil {
+				tt.checkCfg(t, cfg)
+			}
+		})
 	}
 }

@@ -84,7 +84,7 @@ func TestFullLifecycle(t *testing.T) {
 	defer backendCleanup()
 
 	proxyServer := proxy.NewProxyServer(index, cfg, backendTLSConfig, 2*time.Second, testutilLogger())
-	gateway := gwserver.New(cfg, testutilLogger())
+	gateway := gwserver.New(cfg, testutilLogger(), nil)
 	gateway.MountRegistrationRoutes(registration.NewHandler(wrapped, testutilLogger()).Routes())
 	gateway.MountProxyRoutes(proxyServer.Handler())
 

@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,9 +54,15 @@ type Server struct {
 }
 
 // New builds a configured HTTP server with middleware and routes.
-func New(cfg *config.Config, logger *slog.Logger) *Server {
+// When db is non-nil, a PostgresConfigStore is created for DegradationManager.
+func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+
+	var configStore events.ConfigStore
+	if db != nil {
+		configStore = events.NewPostgresConfigStore(db)
 	}
 
 	router := chi.NewRouter()
@@ -93,54 +101,74 @@ func New(cfg *config.Config, logger *slog.Logger) *Server {
 	srv.policyEngine = policyEngine
 
 	if cfg != nil && cfg.CruveroEnabled && strings.TrimSpace(cfg.NATSURL) != "" {
-		natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID)
-		if err != nil {
-			logger.Warn("events client init failed", slog.String("error", err.Error()))
-		} else {
-			srv.eventsClient = natsClient
-			srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
-			policyEngine.SetViolationEventPublisher(srv.eventPublisher)
-			SetNATSConnected(true)
-
-			subscriber := events.NewSubscriber(natsClient, logger)
-			policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimitBackend, logger)
-			serverHandler := events.NewServerConfigHandler(nil, logger)
-			serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
-			serverSettingsHandler := &metricsServerSettingsHandler{
-				next: serverSettings,
-			}
-			authHandler := events.NewAuthConfigHandler(logger)
-			ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
-			subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
-			subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
-			if startErr := subscriber.Start(context.Background()); startErr != nil {
-				logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
+		var clientOpts []events.ClientOption
+		connectNATS := true
+		if cfg.NATSTLSEnabled {
+			tlsConfig, tlsErr := buildNATSTLSConfig(cfg.NATSTLSCert, cfg.NATSTLSKey, cfg.NATSTLSCa)
+			if tlsErr != nil {
+				logger.Error("nats tls config failed; skipping nats connection", slog.String("error", tlsErr.Error()))
+				connectNATS = false
 			} else {
-				srv.eventSubscriber = subscriber
-				srv.serverCfgHandler = serverHandler
-				srv.settingsHandler = serverSettings
-				srv.ackHandler = ackHandler
+				clientOpts = append(clientOpts, events.WithTLS(tlsConfig))
 			}
-
-			degradation := events.NewDegradationManager(natsClient, nil, srv.eventSubscriber, logger)
-			natsClient.SetDisconnectHandler(func() {
-				SetNATSConnected(false)
-				degradation.OnDisconnect()
-			})
-			natsClient.SetReconnectHandler(func() {
+		}
+		if connectNATS {
+			natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID, clientOpts...)
+			if err != nil {
+				logger.Warn("events client init failed", slog.String("error", err.Error()))
+			} else {
+				srv.eventsClient = natsClient
+				srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
+				policyEngine.SetViolationEventPublisher(srv.eventPublisher)
 				SetNATSConnected(true)
-				if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
-					logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
+
+				subscriber := events.NewSubscriber(natsClient, logger)
+				policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimitBackend, logger)
+				serverHandler := events.NewServerConfigHandler(nil, logger)
+				serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
+				serverSettingsHandler := &metricsServerSettingsHandler{
+					next: serverSettings,
 				}
-			})
-			srv.degradation = degradation
+				authHandler := events.NewAuthConfigHandler(logger)
+				ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
+				subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
+				subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
+				if startErr := subscriber.Start(context.Background()); startErr != nil {
+					logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
+				} else {
+					srv.eventSubscriber = subscriber
+					srv.serverCfgHandler = serverHandler
+					srv.settingsHandler = serverSettings
+					srv.ackHandler = ackHandler
+				}
+
+				degradation := events.NewDegradationManager(natsClient, configStore, srv.eventSubscriber, logger)
+				natsClient.SetDisconnectHandler(func() {
+					SetNATSConnected(false)
+					degradation.OnDisconnect()
+				})
+				natsClient.SetReconnectHandler(func() {
+					SetNATSConnected(true)
+					if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
+						logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
+					}
+				})
+				srv.degradation = degradation
+			}
 		}
 	}
 	if srv.eventsClient == nil {
 		SetNATSConnected(false)
 	}
 	if cfg != nil && cfg.CruveroEnabled && srv.degradation == nil {
-		srv.degradation = events.NewDegradationManager(nil, nil, nil, logger)
+		srv.degradation = events.NewDegradationManager(nil, configStore, nil, logger)
+		if srv.degradation != nil && !srv.degradation.EverConnected() {
+			if err := srv.degradation.LoadCachedConfig(context.Background()); err != nil {
+				logger.Warn("failed to load cached config from postgres", slog.String("error", err.Error()))
+			} else if srv.degradation.HasCachedConfig() {
+				logger.Info("loaded cached config from postgres; running in degraded mode")
+			}
+		}
 	}
 
 	ratelimit.SetRateLimitedObserver(func(clientID string, route string) {
@@ -263,6 +291,29 @@ func buildInboundTLSConfig(cfg *config.Config) (*tls.Config, error) {
 	// client certs when provided so registration routes can enforce mTLS identity.
 	tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
 	return tlsCfg, nil
+}
+
+func buildNATSTLSConfig(certPath, keyPath, caPath string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load nats tls cert/key: %w", err)
+	}
+
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read nats tls ca: %w", err)
+	}
+
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse nats tls ca")
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caPool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 // MountRegistrationRoutes mounts registration routes under /v1/registrations with mTLS identity middleware.

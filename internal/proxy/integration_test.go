@@ -31,7 +31,7 @@ func TestProxyMountedInGatewayToolsListAndCall(t *testing.T) {
 	proxyServer.clients[record1.ID] = client1
 	proxyServer.clients[record2.ID] = client2
 
-	gateway := gwserver.New(proxyGatewayTestConfig(), nil)
+	gateway := gwserver.New(proxyGatewayTestConfig(), nil, nil)
 	gateway.MountProxyRoutes(proxyServer.Handler())
 
 	httpServer := httptest.NewServer(gateway.Handler())

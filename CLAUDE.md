@@ -100,6 +100,10 @@ make quality
 | `MCPGW_TLS_KEY` | no | — | TLS private key path |
 | `MCPGW_TLS_CA` | no | — | Client CA for mTLS verification |
 | `MCPGW_NATS_URL` | if Cruvero | — | NATS server URL |
+| `MCPGW_NATS_TLS_ENABLED` | no | `false` | Enable mTLS for NATS connections |
+| `MCPGW_NATS_TLS_CERT` | if NATS TLS | — | Path to NATS client certificate |
+| `MCPGW_NATS_TLS_KEY` | if NATS TLS | — | Path to NATS client private key |
+| `MCPGW_NATS_TLS_CA` | if NATS TLS | — | Path to NATS CA certificate |
 | `MCPGW_CRUVERO_ENABLED` | no | `false` | Enable Cruvero platform integration |
 | `MCPGW_GATEWAY_ID` | no | `auto` | Gateway instance ID (auto = random UUID) |
 | `MCPGW_OIDC_ISSUER` | no | — | OIDC issuer URL |

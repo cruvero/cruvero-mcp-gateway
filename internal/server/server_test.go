@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 func TestHealthzReturns200(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
@@ -47,7 +48,7 @@ func TestHealthzReturns200(t *testing.T) {
 func TestReadyzReturns200(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
@@ -61,7 +62,7 @@ func TestReadyzReturns200(t *testing.T) {
 func TestReadyzReturns503WhenNotReady(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	srv.ready.Store(false)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
@@ -80,7 +81,7 @@ func TestReadyzCruveroNeverConnectedNoCacheReturns503(t *testing.T) {
 	cfg.CruveroEnabled = true
 	cfg.NATSURL = ""
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
@@ -104,7 +105,7 @@ func TestReadyzCruveroConnectedReturns200(t *testing.T) {
 	cfg := baseConfig()
 	cfg.CruveroEnabled = true
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 	manager := events.NewDegradationManager(nil, nil, nil, testLogger())
 	if err := manager.OnReconnect(context.Background()); err != nil {
 		t.Fatalf("set connected state: %v", err)
@@ -147,7 +148,7 @@ func TestReadyzCruveroDegradedWithCacheReturns200AndSettings(t *testing.T) {
 		t.Fatalf("load cached config: %v", err)
 	}
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 	srv.SetDegradationManager(manager)
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -178,7 +179,7 @@ func TestReadyzCruveroDegradedWithCacheReturns200AndSettings(t *testing.T) {
 func TestRequestIDGenerated(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 
@@ -193,7 +194,7 @@ func TestRequestIDGenerated(t *testing.T) {
 func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	srv.router.Get("/panic", func(_ http.ResponseWriter, _ *http.Request) {
 		panic("boom")
 	})
@@ -211,7 +212,7 @@ func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 func TestMetricsNotExposedOnMainRouter(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 
@@ -225,7 +226,7 @@ func TestMetricsNotExposedOnMainRouter(t *testing.T) {
 func TestRequestBodyLimitMiddleware(t *testing.T) {
 	t.Parallel()
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	srv.router.Post("/write", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.ReadAll(r.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
@@ -252,7 +253,7 @@ func TestMountProxyRoutesAppliesRateLimitMiddleware(t *testing.T) {
 	cfg.RateDefault = 1
 	cfg.RateBurst = 1
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 	srv.MountProxyRoutes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -282,7 +283,7 @@ func TestStartGracefulShutdownOnContextCancellation(t *testing.T) {
 	cfg := baseConfig()
 	cfg.ListenAddr = "127.0.0.1:0"
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -311,14 +312,14 @@ func TestStartErrors(t *testing.T) {
 		t.Fatal("expected error when starting nil server")
 	}
 
-	srv := New(baseConfig(), testLogger())
+	srv := New(baseConfig(), testLogger(), nil)
 	if err := srv.Start(nilContext()); err == nil {
 		t.Fatal("expected error when context is nil")
 	}
 
 	badCfg := baseConfig()
 	badCfg.ListenAddr = "bad-address"
-	badSrv := New(badCfg, testLogger())
+	badSrv := New(badCfg, testLogger(), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := badSrv.Start(ctx); err == nil {
@@ -390,7 +391,7 @@ func TestCORSMiddlewareAllowlistedOrigin(t *testing.T) {
 	cfg := baseConfig()
 	cfg.CORSEnabled = true
 	cfg.CORSAllowedOrigins = []string{"https://example.com", "https://other.com"}
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 
 	t.Run("allowlisted origin echoed", func(t *testing.T) {
 		t.Parallel()
@@ -468,7 +469,7 @@ func TestEventPublisherDisabledByDefault(t *testing.T) {
 	cfg.CruveroEnabled = false
 	cfg.NATSURL = "nats://127.0.0.1:4222"
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 	if srv.EventPublisher() != nil {
 		t.Fatal("expected nil event publisher when cruvero integration disabled")
 	}
@@ -486,9 +487,27 @@ func TestEventPublisherInitializedWhenCruveroEnabled(t *testing.T) {
 	cfg.NATSURL = fmt.Sprintf("nats://127.0.0.1:%d", port)
 	cfg.GatewayID = "gw-server-test"
 
-	srv := New(cfg, testLogger())
+	srv := New(cfg, testLogger(), nil)
 	if srv.EventPublisher() == nil {
 		t.Fatal("expected event publisher when cruvero enabled and nats configured")
+	}
+}
+
+func TestNATSTLSFailureSkipsConnection(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+	cfg.NATSURL = "nats://127.0.0.1:4222"
+	cfg.GatewayID = "gw-tls-skip"
+	cfg.NATSTLSEnabled = true
+	cfg.NATSTLSCert = "/nonexistent/nats.crt"
+	cfg.NATSTLSKey = "/nonexistent/nats.key"
+	cfg.NATSTLSCa = "/nonexistent/ca.crt"
+
+	srv := New(cfg, testLogger(), nil)
+	if srv.EventsClient() != nil {
+		t.Fatal("expected nil events client when NATS TLS config fails")
 	}
 }
 
@@ -578,4 +597,117 @@ func (s *serverTestConfigStore) Keys(ctx context.Context) ([]string, error) {
 
 func nilContext() context.Context {
 	return nil
+}
+
+func TestBuildNATSTLSConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid certs produce tls config", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		certPath := filepath.Join(tmpDir, "nats.crt")
+		keyPath := filepath.Join(tmpDir, "nats.key")
+		caPath := filepath.Join(tmpDir, "ca.crt")
+		if err := os.WriteFile(certPath, certs.ServerCertPEM, 0o600); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(caPath, certs.CACertPEM, 0o600); err != nil {
+			t.Fatalf("write ca: %v", err)
+		}
+
+		tlsCfg, err := buildNATSTLSConfig(certPath, keyPath, caPath)
+		if err != nil {
+			t.Fatalf("build nats tls config: %v", err)
+		}
+		if tlsCfg == nil {
+			t.Fatal("expected non-nil tls config")
+		}
+		if tlsCfg.MinVersion != tls.VersionTLS12 {
+			t.Fatalf("expected min tls version 1.2, got %d", tlsCfg.MinVersion)
+		}
+		if len(tlsCfg.Certificates) != 1 {
+			t.Fatalf("expected 1 certificate, got %d", len(tlsCfg.Certificates))
+		}
+		if tlsCfg.RootCAs == nil {
+			t.Fatal("expected non-nil RootCAs")
+		}
+	})
+
+	t.Run("missing cert file returns error", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		keyPath := filepath.Join(tmpDir, "nats.key")
+		caPath := filepath.Join(tmpDir, "ca.crt")
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(caPath, certs.CACertPEM, 0o600); err != nil {
+			t.Fatalf("write ca: %v", err)
+		}
+
+		_, err := buildNATSTLSConfig(filepath.Join(tmpDir, "missing.crt"), keyPath, caPath)
+		if err == nil {
+			t.Fatal("expected error for missing cert file")
+		}
+		if !strings.Contains(err.Error(), "load nats tls cert/key") {
+			t.Fatalf("expected error to mention cert/key, got %v", err)
+		}
+	})
+
+	t.Run("missing key file returns error", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		certPath := filepath.Join(tmpDir, "nats.crt")
+		caPath := filepath.Join(tmpDir, "ca.crt")
+		if err := os.WriteFile(certPath, certs.ServerCertPEM, 0o600); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(caPath, certs.CACertPEM, 0o600); err != nil {
+			t.Fatalf("write ca: %v", err)
+		}
+
+		_, err := buildNATSTLSConfig(certPath, filepath.Join(tmpDir, "missing.key"), caPath)
+		if err == nil {
+			t.Fatal("expected error for missing key file")
+		}
+		if !strings.Contains(err.Error(), "load nats tls cert/key") {
+			t.Fatalf("expected error to mention cert/key, got %v", err)
+		}
+	})
+
+	t.Run("invalid ca pem returns error", func(t *testing.T) {
+		t.Parallel()
+
+		certs := testutil.GenerateTestCerts(t)
+		tmpDir := t.TempDir()
+		certPath := filepath.Join(tmpDir, "nats.crt")
+		keyPath := filepath.Join(tmpDir, "nats.key")
+		caPath := filepath.Join(tmpDir, "bad-ca.crt")
+		if err := os.WriteFile(certPath, certs.ServerCertPEM, 0o600); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, certs.ServerKeyPEM, 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		if err := os.WriteFile(caPath, []byte("not-valid-pem"), 0o600); err != nil {
+			t.Fatalf("write bad ca: %v", err)
+		}
+
+		_, err := buildNATSTLSConfig(certPath, keyPath, caPath)
+		if err == nil {
+			t.Fatal("expected error for invalid ca pem")
+		}
+		if !strings.Contains(err.Error(), "parse nats tls ca") {
+			t.Fatalf("expected error to mention parsing ca, got %v", err)
+		}
+	})
 }

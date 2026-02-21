@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -128,5 +129,85 @@ func TestDegradationManagerLoadCachedConfig(t *testing.T) {
 	}
 	if policyCalls.Load() != 1 {
 		t.Fatalf("expected policy handler to run once, got %d", policyCalls.Load())
+	}
+}
+
+func TestDegradationManager_LoadCachedConfig_WithStore(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConfigStore{
+		keys: []string{configCacheServerSettingsKey},
+		values: map[string][]byte{
+			configCacheServerSettingsKey: []byte(`{"config_version":5,"servers":[]}`),
+		},
+	}
+
+	manager := NewDegradationManager(nil, store, nil, nil)
+	if err := manager.LoadCachedConfig(context.Background()); err != nil {
+		t.Fatalf("load cached config: %v", err)
+	}
+	if manager.Status() != DegradationStatusDegraded {
+		t.Fatalf("expected degraded status after loading cache, got %q", manager.Status())
+	}
+	if !manager.HasCachedConfig() {
+		t.Fatal("expected has cached config to be true")
+	}
+}
+
+func TestDegradationManager_LoadCachedConfig_NilStore(t *testing.T) {
+	t.Parallel()
+
+	manager := NewDegradationManager(nil, nil, nil, nil)
+	if err := manager.LoadCachedConfig(context.Background()); err != nil {
+		t.Fatalf("expected no error with nil store, got %v", err)
+	}
+	if manager.HasCachedConfig() {
+		t.Fatal("expected no cached config with nil store")
+	}
+}
+
+func TestDegradationManager_LoadCachedConfig_EmptyCache(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConfigStore{
+		keys:   []string{},
+		values: map[string][]byte{},
+	}
+
+	manager := NewDegradationManager(nil, store, nil, nil)
+	if err := manager.LoadCachedConfig(context.Background()); err != nil {
+		t.Fatalf("expected no error with empty cache, got %v", err)
+	}
+	if manager.Status() != DegradationStatusDisconnected {
+		t.Fatalf("expected disconnected status with empty cache, got %q", manager.Status())
+	}
+	if manager.HasCachedConfig() {
+		t.Fatal("expected no cached config with empty keys")
+	}
+}
+
+func TestDegradationManager_LoadCachedConfig_StoreError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConfigStore{
+		keysErr: errors.New("db connection lost"),
+	}
+
+	manager := NewDegradationManager(nil, store, nil, nil)
+	err := manager.LoadCachedConfig(context.Background())
+	if err == nil {
+		t.Fatal("expected error when store returns error")
+	}
+	if !errors.Is(err, store.keysErr) {
+		t.Fatalf("expected wrapped store error, got %v", err)
+	}
+}
+
+func TestDegradationManager_LoadCachedConfig_NilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var manager *DegradationManager
+	if err := manager.LoadCachedConfig(context.Background()); err != nil {
+		t.Fatalf("expected no error on nil receiver, got %v", err)
 	}
 }

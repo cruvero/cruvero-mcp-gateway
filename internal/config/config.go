@@ -41,6 +41,10 @@ type Config struct {
 	TLSCAPath            string        `json:"tls_ca_path"`
 	DBURL                string        `json:"db_url"`
 	NATSURL              string        `json:"nats_url"`
+	NATSTLSEnabled       bool          `json:"nats_tls_enabled"`
+	NATSTLSCert          string        `json:"nats_tls_cert"`
+	NATSTLSKey           string        `json:"nats_tls_key"`
+	NATSTLSCa            string        `json:"nats_tls_ca"`
 	OIDCIssuer           string        `json:"oidc_issuer"`
 	OIDCAudience         string        `json:"oidc_audience"`
 	HeartbeatTTL         time.Duration `json:"heartbeat_ttl"`
@@ -122,6 +126,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	natsTLSEnabled, err := parseBool("MCPGW_NATS_TLS_ENABLED", false)
+	if err != nil {
+		return nil, err
+	}
+
 	dbMaxOpenConns, err := parseInt("MCPGW_DB_MAX_OPEN_CONNS", defaultDBMaxOpenConns)
 	if err != nil {
 		return nil, err
@@ -196,6 +205,10 @@ func Load() (*Config, error) {
 		TLSCAPath:            os.Getenv("MCPGW_TLS_CA"),
 		DBURL:                os.Getenv("MCPGW_DB_URL"),
 		NATSURL:              os.Getenv("MCPGW_NATS_URL"),
+		NATSTLSEnabled:       natsTLSEnabled,
+		NATSTLSCert:          os.Getenv("MCPGW_NATS_TLS_CERT"),
+		NATSTLSKey:           os.Getenv("MCPGW_NATS_TLS_KEY"),
+		NATSTLSCa:            os.Getenv("MCPGW_NATS_TLS_CA"),
 		OIDCIssuer:           os.Getenv("MCPGW_OIDC_ISSUER"),
 		OIDCAudience:         os.Getenv("MCPGW_OIDC_AUDIENCE"),
 		HeartbeatTTL:         heartbeatTTL,
@@ -272,6 +285,12 @@ func (c *Config) Validate() error {
 
 	if c.CruveroEnabled && strings.TrimSpace(c.NATSURL) == "" {
 		return fmt.Errorf("validate config: MCPGW_NATS_URL is required when MCPGW_CRUVERO_ENABLED is true")
+	}
+
+	if c.NATSTLSEnabled {
+		if strings.TrimSpace(c.NATSTLSCert) == "" || strings.TrimSpace(c.NATSTLSKey) == "" || strings.TrimSpace(c.NATSTLSCa) == "" {
+			return fmt.Errorf("validate config: MCPGW_NATS_TLS_CERT, MCPGW_NATS_TLS_KEY, and MCPGW_NATS_TLS_CA are all required when MCPGW_NATS_TLS_ENABLED is true")
+		}
 	}
 
 	if c.CORSEnabled && len(c.CORSAllowedOrigins) == 0 {

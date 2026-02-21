@@ -1,6 +1,7 @@
 package events
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync/atomic"
@@ -144,6 +145,19 @@ func freePort(t *testing.T) int {
 	}
 	defer func() { _ = listener.Close() }()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func TestWithTLS_SetsConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := &clientConfig{}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	opt := WithTLS(tlsCfg)
+	opt(cfg)
+
+	if cfg.tlsConfig != tlsCfg {
+		t.Fatal("expected WithTLS to set tls config on clientConfig")
+	}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
