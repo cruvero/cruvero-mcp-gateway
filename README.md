@@ -1,5 +1,11 @@
 # cruvero-mcp-gateway
 
+[![CI](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/cruvero/cruvero-mcp-gateway)](go.mod)
+[![Quality Gate](https://sonar.dev.gchinfo.com/api/project_badges/measure?project=Cruvero-MCP-Gateway&metric=alert_status)](https://sonar.dev.gchinfo.com/dashboard?id=Cruvero-MCP-Gateway)
+[![Coverage](https://sonar.dev.gchinfo.com/api/project_badges/measure?project=Cruvero-MCP-Gateway&metric=coverage)](https://sonar.dev.gchinfo.com/dashboard?id=Cruvero-MCP-Gateway)
+[![Security Rating](https://sonar.dev.gchinfo.com/api/project_badges/measure?project=Cruvero-MCP-Gateway&metric=security_rating)](https://sonar.dev.gchinfo.com/dashboard?id=Cruvero-MCP-Gateway)
+
 A pure-Go mTLS reverse proxy that acts as a unified gateway for MCP (Model Context Protocol) servers on Kubernetes. The gateway auto-discovers backend MCP servers via a registration handshake, aggregates their tool catalogs into a single MCP-compliant endpoint, and proxies requests with rate limiting, circuit breakers, and per-tool policy enforcement. Clients connect to one gateway instead of managing individual backends.
 
 The gateway operates in two modes: **standalone** with only PostgreSQL as a dependency, or **Cruvero-integrated** where a NATS event bus synchronizes state with the Cruvero control plane. Both modes use the same binary and configuration surface -- Cruvero features activate only when `MCPGW_CRUVERO_ENABLED=true`.
