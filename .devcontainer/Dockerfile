@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/go:1-1.24-bookworm
+FROM mcr.microsoft.com/devcontainers/go:1-1.25-bookworm
 
 ARG HELM_VERSION=v3.17.0
 ARG KUBECTL_VERSION=v1.31.0
@@ -9,7 +9,7 @@ USER root
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl git make tar gzip; \
+    apt-get install -y --no-install-recommends ca-certificates curl git make tar gzip postgresql-client; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -46,5 +46,11 @@ RUN set -eux; \
 
 RUN set -eux; \
     curl -fsSL "https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh" | sh -s -- -b /usr/local/bin "${GOLANGCI_LINT_VERSION}"
+
+RUN set -eux; \
+    go install honnef.co/go/tools/cmd/staticcheck@latest; \
+    go install golang.org/x/vuln/cmd/govulncheck@latest; \
+    go install github.com/securego/gosec/v2/cmd/gosec@latest; \
+    go install github.com/mibk/dupl@latest
 
 USER vscode

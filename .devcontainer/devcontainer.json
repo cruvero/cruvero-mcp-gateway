@@ -1,9 +1,8 @@
 {
   "name": "cruvero-mcp-gateway",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
-  },
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "devcontainer",
+  "workspaceFolder": "/workspaces/cruvero-mcp-gateway",
   "remoteUser": "vscode",
   "customizations": {
     "vscode": {
@@ -20,5 +19,5 @@
       ]
     }
   },
-  "postCreateCommand": "bash -lc 'set -euo pipefail; go version; helm version --short; kubectl version --client --output=yaml >/dev/null; argocd version --client --short; golangci-lint version; go list ./... >/dev/null; echo \"devcontainer smoke check complete\"'"
+  "postCreateCommand": "bash -lc 'set -euo pipefail; go version; helm version --short; kubectl version --client --output=yaml >/dev/null; argocd version --client --short; golangci-lint version; staticcheck --version; govulncheck --version; go list ./... >/dev/null; echo \"devcontainer smoke check complete\"'"
 }

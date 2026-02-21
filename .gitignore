@@ -38,5 +38,11 @@ vendor/
 .idea/
 .vscode/
 
+# Local cert generation
+certs/
+
+# Docker overrides
+docker-compose.override.yml
+
 # OS files
 .DS_Store

@@ -1,0 +1,147 @@
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    volumes:
+      - .:/workspaces/cruvero-mcp-gateway:cached
+      - go-mod-cache:/home/vscode/go/pkg/mod
+      - certs:/certs:ro
+    environment:
+      MCPGW_DB_URL: "postgres://mcpgw:mcpgw@postgres:5432/mcpgw?sslmode=disable"
+      MCPGW_LISTEN_ADDR: ":8443"
+      MCPGW_TLS_CERT: "/certs/server.crt"
+      MCPGW_TLS_KEY: "/certs/server.key"
+      MCPGW_TLS_CA: "/certs/ca.crt"
+      MCPGW_NATS_URL: "nats://nats:4222"
+      MCPGW_LOG_FORMAT: "text"
+      MCPGW_LOG_LEVEL: "debug"
+      MCPGW_METRICS_ADDR: ":9090"
+      MCPGW_CRUVERO_ENABLED: "false"
+      MCPGW_CORS_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sleep infinity
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mcpgw
+      POSTGRES_PASSWORD: mcpgw
+      POSTGRES_DB: mcpgw
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-test-db.sh:/docker-entrypoint-initdb.d/init-test-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcpgw -d mcpgw"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nats:
+    image: nats:2.12-alpine
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - natsdata:/data
+    profiles:
+      - nats
+      - gateway
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8443:8443"
+      - "9090:9090"
+    environment:
+      MCPGW_DB_URL: "postgres://mcpgw:mcpgw@postgres:5432/mcpgw?sslmode=disable"
+      MCPGW_LISTEN_ADDR: ":8443"
+      MCPGW_TLS_CERT: "/certs/server.crt"
+      MCPGW_TLS_KEY: "/certs/server.key"
+      MCPGW_TLS_CA: "/certs/ca.crt"
+      MCPGW_NATS_URL: "nats://nats:4222"
+      MCPGW_LOG_FORMAT: "json"
+      MCPGW_LOG_LEVEL: "info"
+      MCPGW_METRICS_ADDR: ":9090"
+      MCPGW_CRUVERO_ENABLED: "false"
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      certs:
+        condition: service_completed_successfully
+    profiles:
+      - gateway
+
+  certs:
+    image: alpine/openssl:latest
+    volumes:
+      - certs:/certs
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -eu
+        if [ -f /certs/ca.crt ]; then
+          echo "Certificates already exist, skipping generation."
+          exit 0
+        fi
+        echo "Generating CA..."
+        openssl genrsa -out /certs/ca.key 4096
+        openssl req -new -x509 -key /certs/ca.key -sha256 \
+          -subj "/CN=mcpgw-dev-ca" -days 3650 -out /certs/ca.crt
+
+        echo "Generating server certificate..."
+        openssl genrsa -out /certs/server.key 2048
+        cat > /tmp/server-ext.cnf <<'SANCFG'
+        [req]
+        distinguished_name = req_dn
+        req_extensions = v3_req
+        prompt = no
+        [req_dn]
+        CN = gateway
+        [v3_req]
+        subjectAltName = DNS:localhost,DNS:gateway,DNS:*.mcpgw.local,IP:127.0.0.1
+        SANCFG
+        openssl req -new -key /certs/server.key -out /tmp/server.csr \
+          -config /tmp/server-ext.cnf
+        openssl x509 -req -in /tmp/server.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
+          -CAcreateserial -out /certs/server.crt -days 3650 -sha256 \
+          -extensions v3_req -extfile /tmp/server-ext.cnf
+
+        echo "Generating client certificate..."
+        openssl genrsa -out /certs/client.key 2048
+        cat > /tmp/client-ext.cnf <<'CLIENTCFG'
+        [req]
+        distinguished_name = req_dn
+        req_extensions = v3_req
+        prompt = no
+        [req_dn]
+        CN = test-client
+        [v3_req]
+        subjectAltName = URI:spiffe://mcpgw.local/ns/dev/sa/test-client
+        CLIENTCFG
+        openssl req -new -key /certs/client.key -out /tmp/client.csr \
+          -config /tmp/client-ext.cnf
+        openssl x509 -req -in /tmp/client.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
+          -CAcreateserial -out /certs/client.crt -days 3650 -sha256 \
+          -extensions v3_req -extfile /tmp/client-ext.cnf
+
+        chmod 644 /certs/*.crt /certs/*.key
+        echo "Certificate generation complete."
+    profiles:
+      - gateway
+
+volumes:
+  pgdata:
+  go-mod-cache:
+  natsdata:
+  certs:
