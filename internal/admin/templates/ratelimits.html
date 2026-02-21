@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Rate Limits</h1>
+{{if .InspectionAvailable}}
+<div id="ratelimits-table"
+     hx-get="/admin/ratelimits" hx-trigger="every 5s"
+     hx-target="#ratelimits-table" hx-swap="innerHTML">
+  {{template "ratelimits_table" .}}
+</div>
+{{else}}
+<p class="notice">Rate limit inspection is not available for the current backend.</p>
+{{end}}
+{{end}}

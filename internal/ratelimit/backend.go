@@ -16,3 +16,17 @@ type LimiterBackend interface {
 	// Close releases resources held by the backend.
 	Close() error
 }
+
+// RateLimitEntry represents a snapshot of a single rate limiter state.
+type RateLimitEntry struct {
+	ClientID  string    `json:"client_id"`
+	Route     string    `json:"route"`
+	Remaining int       `json:"remaining"`
+	Limit     float64   `json:"limit"`
+	LastUsed  time.Time `json:"last_used"`
+}
+
+// LimiterInspector is an optional interface for backends that support state inspection.
+type LimiterInspector interface {
+	Snapshot() []RateLimitEntry
+}

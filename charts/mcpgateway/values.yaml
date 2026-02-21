@@ -103,6 +103,29 @@ rateLimit:
   # -- Rate limit backend: memory (default), dragonfly, or nats.
   backend: memory
 
+deviceFlow:
+  # -- Enable OAuth2 Device Code flow for IDE/CLI authentication.
+  enabled: false
+  # -- IdP device authorization endpoint URL.
+  idpDeviceURL: ""
+  # -- IdP token endpoint URL.
+  idpTokenURL: ""
+  # -- OAuth2 client ID for device flow.
+  clientID: ""
+  # clientSecret: via Vault secret (never in values.yaml)
+
+admin:
+  # -- Enable the admin dashboard.
+  enabled: false
+  oidc:
+    # -- OIDC client ID for admin dashboard authentication.
+    clientID: ""
+  # -- Required OIDC scope for admin access.
+  requiredScope: admin
+  # -- Admin session duration.
+  sessionTTL: 8h
+  # clientSecret + sessionKey: via secretKeyRef (never in values.yaml)
+
 dragonfly:
   # -- Enable DragonflyDB for distributed rate limiting.
   enabled: false

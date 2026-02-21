@@ -1,0 +1,26 @@
+{{define "ratelimits_table"}}
+<table>
+  <thead>
+    <tr>
+      <th>Client ID</th>
+      <th>Route</th>
+      <th>Remaining</th>
+      <th>Limit</th>
+      <th>Last Used</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Entries}}
+    <tr>
+      <td>{{.ClientID}}</td>
+      <td>{{.Route}}</td>
+      <td>{{.Remaining}}</td>
+      <td>{{.Limit}}</td>
+      <td>{{.LastUsed}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No active rate limiters.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

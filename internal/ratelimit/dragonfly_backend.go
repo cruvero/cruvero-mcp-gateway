@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -179,6 +180,42 @@ func (rb *DragonflyBackend) Close() error {
 		_ = rb.fallback.Close()
 	}
 	return rb.client.Close()
+}
+
+// Snapshot returns a snapshot of all tracked rate limit keys from DragonflyDB.
+func (rb *DragonflyBackend) Snapshot() []RateLimitEntry {
+	if rb == nil || !rb.healthy.Load() {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	pattern := rb.keyPrefix + "rl:*"
+	var entries []RateLimitEntry
+
+	iter := rb.client.Scan(ctx, 0, pattern, 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		// Parse key: prefix + "rl:" + clientID + ":" + route
+		trimmed := key[len(rb.keyPrefix+"rl:"):]
+		parts := strings.SplitN(trimmed, ":", 2)
+		clientID := trimmed
+		route := ""
+		if len(parts) == 2 {
+			clientID = parts[0]
+			route = parts[1]
+		}
+
+		count := rb.client.ZCard(ctx, key).Val()
+		entries = append(entries, RateLimitEntry{
+			ClientID:  clientID,
+			Route:     route,
+			Remaining: int(count),
+		})
+	}
+
+	return entries
 }
 
 func (rb *DragonflyBackend) handleUnavailable(ctx context.Context, key LimiterKey, limit float64, burst int) (bool, int, time.Duration, error) {

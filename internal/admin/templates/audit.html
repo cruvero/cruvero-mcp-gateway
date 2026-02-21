@@ -1,0 +1,38 @@
+{{define "content"}}
+<h1>Audit Log</h1>
+<div x-data="{clientID: '', toolName: '', decision: ''}">
+  <div class="filters">
+    <input type="date" name="since" hx-get="/admin/audit" hx-trigger="change"
+           hx-target="#audit-table" hx-include=".audit-filter">
+    <input type="date" name="until" hx-get="/admin/audit" hx-trigger="change"
+           hx-target="#audit-table" hx-include=".audit-filter">
+    <input type="text" name="client_id" x-model="clientID" placeholder="Client ID"
+           class="audit-filter"
+           hx-get="/admin/audit" hx-trigger="keyup changed delay:300ms"
+           hx-target="#audit-table" hx-include=".audit-filter">
+    <input type="text" name="tool_name" x-model="toolName" placeholder="Tool name"
+           class="audit-filter"
+           hx-get="/admin/audit" hx-trigger="keyup changed delay:300ms"
+           hx-target="#audit-table" hx-include=".audit-filter">
+    <select name="decision" x-model="decision" class="audit-filter"
+            hx-get="/admin/audit" hx-trigger="change"
+            hx-target="#audit-table" hx-include=".audit-filter">
+      <option value="">All decisions</option>
+      <option value="allow">Allow</option>
+      <option value="deny">Deny</option>
+    </select>
+    <a href="/admin/audit/export" class="btn btn-secondary">Export CSV</a>
+  </div>
+  <div id="audit-table">
+    {{template "audit_table" .}}
+  </div>
+  {{if gt .TotalPages 1}}
+  <div class="pagination">
+    {{range .PageNumbers}}
+    <a href="?page={{.}}" hx-get="/admin/audit?page={{.}}"
+       hx-target="#audit-table" hx-include=".audit-filter">{{.}}</a>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

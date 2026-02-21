@@ -23,6 +23,18 @@ data:
   MCPGW_GATEWAY_ID: {{ .Values.config.MCPGW_GATEWAY_ID | quote }}
   MCPGW_CORS_ENABLED: {{ .Values.config.MCPGW_CORS_ENABLED | quote }}
   MCPGW_RATE_LIMIT_BACKEND: {{ .Values.config.MCPGW_RATE_LIMIT_BACKEND | quote }}
+  {{- if .Values.admin.enabled }}
+  MCPGW_ADMIN_ENABLED: "true"
+  MCPGW_ADMIN_OIDC_CLIENT_ID: {{ .Values.admin.oidc.clientID | quote }}
+  MCPGW_ADMIN_REQUIRED_SCOPE: {{ .Values.admin.requiredScope | quote }}
+  MCPGW_ADMIN_SESSION_TTL: {{ .Values.admin.sessionTTL | quote }}
+  {{- end }}
+  {{- if .Values.deviceFlow.enabled }}
+  MCPGW_DEVICE_FLOW_ENABLED: "true"
+  MCPGW_DEVICE_FLOW_IDP_DEVICE_URL: {{ .Values.deviceFlow.idpDeviceURL | quote }}
+  MCPGW_DEVICE_FLOW_IDP_TOKEN_URL: {{ .Values.deviceFlow.idpTokenURL | quote }}
+  MCPGW_DEVICE_FLOW_CLIENT_ID: {{ .Values.deviceFlow.clientID | quote }}
+  {{- end }}
   {{- if .Values.dragonfly.enabled }}
   MCPGW_DRAGONFLY_URL: {{ .Values.dragonfly.url | quote }}
   {{- end }}

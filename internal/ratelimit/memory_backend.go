@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,6 +187,42 @@ func (mb *MemoryBackend) cleanupLoop() {
 			mb.cleanup()
 		}
 	}
+}
+
+// Snapshot returns a snapshot of all active rate limiters.
+func (mb *MemoryBackend) Snapshot() []RateLimitEntry {
+	if mb == nil {
+		return nil
+	}
+
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+
+	entries := make([]RateLimitEntry, 0, len(mb.limiters))
+	for key, entry := range mb.limiters {
+		if entry == nil {
+			continue
+		}
+		parts := strings.SplitN(key, ":", 2)
+		clientID := key
+		route := ""
+		if len(parts) == 2 {
+			clientID = parts[0]
+			route = parts[1]
+		}
+		remaining := int(math.Floor(entry.limiter.Tokens()))
+		if remaining < 0 {
+			remaining = 0
+		}
+		entries = append(entries, RateLimitEntry{
+			ClientID:  clientID,
+			Route:     route,
+			Remaining: remaining,
+			Limit:     float64(entry.limiter.Limit()),
+			LastUsed:  entry.lastUsed,
+		})
+	}
+	return entries
 }
 
 func (mb *MemoryBackend) cleanup() {

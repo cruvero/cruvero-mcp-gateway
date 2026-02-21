@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Edit Tool: {{.Tool.ToolName}}</h1>
+<form method="POST" action="/admin/tools/{{.Tool.ToolName}}">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <div class="form-group">
+    <label for="risk_level">Risk Level</label>
+    <select name="risk_level" id="risk_level">
+      <option value="read_only" {{if eq .Tool.RiskLevel.String "read_only"}}selected{{end}}>Read Only</option>
+      <option value="write" {{if eq .Tool.RiskLevel.String "write"}}selected{{end}}>Write</option>
+      <option value="destructive" {{if eq .Tool.RiskLevel.String "destructive"}}selected{{end}}>Destructive</option>
+      <option value="unknown" {{if eq .Tool.RiskLevel.String "unknown"}}selected{{end}}>Unknown</option>
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="reason">Reason</label>
+    <textarea name="reason" id="reason" rows="3">{{.Tool.Reason}}</textarea>
+  </div>
+  <button type="submit" class="btn">Save</button>
+  <a href="/admin/tools" class="btn btn-secondary">Cancel</a>
+</form>
+{{end}}

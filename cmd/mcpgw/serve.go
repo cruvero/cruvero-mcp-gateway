@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cruvero/mcp-gateway/internal/admin"
 	"github.com/cruvero/mcp-gateway/internal/auth"
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/identity"
@@ -202,6 +203,30 @@ func serveWithContext(ctx context.Context) error {
 	)
 	gw.MountRegistrationRoutes(regHandler.Routes())
 	gw.MountProxyRoutes(proxyServer.Handler())
+
+	if cfg.DeviceFlowEnabled {
+		deviceFlowHandler := auth.NewDeviceFlowHandler(cfg, logger)
+		gw.MountDeviceFlowRoutes(deviceFlowHandler.Routes())
+		logger.Info("device flow enabled")
+	}
+
+	if cfg.AdminEnabled {
+		adminAuth, adminErr := admin.NewAdminAuth(cfg, logger)
+		if adminErr != nil {
+			return fmt.Errorf("serve command: initialize admin auth: %w", adminErr)
+		}
+		adminRouter := admin.NewRouter(admin.AdminDeps{
+			Auth:                adminAuth,
+			Logger:              logger,
+			ServerStore:         serverStore,
+			AuditStore:          auditStore,
+			ClassificationStore: classificationStore,
+			Broadcaster:         broadcaster,
+			RateLimitBackend:    gw.RateLimitBackend(),
+		})
+		gw.MountAdmin(adminRouter)
+		logger.Info("admin dashboard enabled")
+	}
 
 	go storepkg.StartAuditRetention(ctx, db, cfg.AuditRetentionDays, cfg.AuditCleanupInterval, logger)
 

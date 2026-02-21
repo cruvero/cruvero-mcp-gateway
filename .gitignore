@@ -2,7 +2,6 @@
 docs/phases/
 
 # Agent instruction docs
-CLAUDE.md
 LLM.md
 
 # Go build artifacts

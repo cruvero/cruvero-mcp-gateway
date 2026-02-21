@@ -12,12 +12,15 @@ When paired with Cruvero, the gateway becomes a managed component: Cruvero's UI 
 - **mTLS with SPIFFE** -- client and server identity via X.509 certificates and SPIFFE URI SANs
 - **Auto-registration** -- backend MCP servers register via handshake with heartbeat keepalive
 - **Dual auth modes** -- API key authentication for CLI tools, OIDC for service-to-service
+- **Device Code flow** -- OAuth2 Device Authorization Grant for IDE/CLI authentication without API keys
+- **Admin dashboard** -- web UI for tool management, audit logs, server monitoring, and rate limit inspection
 - **Policy enforcement** -- per-tool and per-client allow/deny lists with risk classification
 - **Rate limiting** -- token-bucket rate limiter with per-identity configuration
 - **Circuit breakers** -- automatic backend isolation on repeated failures with configurable recovery
 - **Cruvero integration** -- optional NATS-based event sync for centralized management
 - **Kubernetes-native** -- Helm chart, health probes, Prometheus metrics, OTel tracing
-- **Single binary** -- one `mcpgw` binary with subcommands (serve, migrate, register, health)
+- **MCP proxy bridge** -- stdio-to-HTTP bridge (`mcpgw mcp-proxy`) for IDE integration
+- **Single binary** -- one `mcpgw` binary with subcommands (serve, migrate, auth, mcp-proxy, health)
 
 ## Quick Start
 
@@ -123,7 +126,8 @@ cruvero-mcp-gateway/
 ├── cmd/
 │   └── mcpgw/              Single binary with subcommands
 ├── internal/
-│   ├── auth/               API key + OIDC authentication
+│   ├── admin/              Admin dashboard (OIDC auth, HTMX templates, handlers)
+│   ├── auth/               API key + OIDC + Device Code flow authentication
 │   ├── config/             Environment-based configuration
 │   ├── events/             NATS client, event types, pub/sub
 │   ├── identity/           mTLS, SPIFFE ID, cert validation
@@ -182,6 +186,68 @@ Canonical Go module path: `github.com/cruvero/mcp-gateway` (defined in `go.mod`)
 | `MCPGW_METRICS_ADDR` | `:9090` | Prometheus metrics listen address |
 | `MCPGW_CRUVERO_ENABLED` | `false` | Enable Cruvero integration |
 | `MCPGW_GATEWAY_ID` | `auto` | Gateway instance ID (for NATS subjects) |
+| `MCPGW_DEVICE_FLOW_ENABLED` | `false` | Enable OAuth2 Device Code flow |
+| `MCPGW_DEVICE_FLOW_IDP_DEVICE_URL` | -- | IdP device authorization endpoint |
+| `MCPGW_DEVICE_FLOW_IDP_TOKEN_URL` | -- | IdP token endpoint for device flow |
+| `MCPGW_DEVICE_FLOW_CLIENT_ID` | -- | OAuth2 client ID for device flow |
+| `MCPGW_DEVICE_FLOW_CLIENT_SECRET` | -- | OAuth2 client secret (optional) |
+| `MCPGW_ADMIN_ENABLED` | `false` | Enable admin dashboard |
+| `MCPGW_ADMIN_OIDC_CLIENT_ID` | -- | OIDC client ID for admin auth |
+| `MCPGW_ADMIN_OIDC_CLIENT_SECRET` | -- | OIDC client secret for admin auth |
+| `MCPGW_ADMIN_REQUIRED_SCOPE` | `admin` | Required OIDC scope for admin access |
+| `MCPGW_ADMIN_SESSION_KEY` | -- | 64-char hex string (32-byte AES-256-GCM key) |
+| `MCPGW_ADMIN_SESSION_TTL` | `8h` | Admin session duration |
+
+## IDE Configuration
+
+The gateway supports two authentication modes for IDE integration: Device Code flow (browser-based) and API key (static credential).
+
+### Device Code Flow (recommended)
+
+Authenticate via browser -- no API key management required:
+
+```bash
+# One-time login
+mcpgw auth login --gateway-url https://gateway.example.com
+
+# Check auth status
+mcpgw auth status
+
+# Logout
+mcpgw auth logout
+```
+
+IDE MCP server configuration (e.g. Claude Code `mcp_servers.json`):
+
+```json
+{
+  "mcpServers": {
+    "gateway": {
+      "command": "mcpgw",
+      "args": ["mcp-proxy", "--gateway-url", "https://gateway.example.com"]
+    }
+  }
+}
+```
+
+The `mcp-proxy` command reads stdin JSON-RPC, forwards to the gateway with automatic token refresh, and writes responses to stdout.
+
+### API Key Mode
+
+For environments without browser access:
+
+```json
+{
+  "mcpServers": {
+    "gateway": {
+      "command": "curl",
+      "args": ["-s", "-X", "POST", "-H", "Authorization: Bearer <API_KEY>",
+               "-H", "Content-Type: application/json",
+               "https://gateway.example.com/mcp"]
+    }
+  }
+}
+```
 
 ## Dependencies
 
@@ -199,6 +265,7 @@ Dependency versions are pinned in `go.mod` / `go.sum` and should be treated as t
 | `github.com/prometheus/client_golang` | Prometheus metrics |
 | `go.opentelemetry.io/otel` | OTel tracing |
 | `golang.org/x/crypto` | bcrypt verification for API keys (with deterministic lookup hash) |
+| `golang.org/x/oauth2` | OIDC authorization code exchange for admin dashboard |
 
 ## Phase Roadmap
 
@@ -215,7 +282,10 @@ Development is organized into nine sequential phases. See [docs/phases/INDEX.md]
 | 7 | Kubernetes and Observability -- Helm chart, probes, metrics, tracing |
 | 8 | CLI and Testing -- subcommands, integration tests, coverage gates |
 | 9 | GitOps Deployment -- devcontainer baseline, Helm env overlays, Argo ApplicationSet, Vault-managed secrets |
+| 10 | Production Hardening -- tool risk classification, audit retention, shutdown timeout |
+| 11 | Distributed Rate Limiting -- DragonflyDB/NATS backends, multi-gateway sync |
+| 12 | Device Code Flow + Admin Dashboard -- OAuth2 device auth, admin UI, HTMX templates |
 
 ## License
 
-Private. All rights reserved.
+This project is licensed under the [MIT License](LICENSE).

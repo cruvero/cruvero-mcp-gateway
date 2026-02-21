@@ -1,0 +1,34 @@
+{{define "servers_table"}}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Host</th>
+      <th>Version</th>
+      <th>Last Heartbeat</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Servers}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><span class="badge badge-{{.Status}}">{{.Status}}</span></td>
+      <td>{{.Host}}:{{.Port}}</td>
+      <td>{{.Version}}</td>
+      <td>{{if .LastHeartbeat}}{{.LastHeartbeat.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td>
+      <td>
+        <form method="POST" action="/admin/servers/{{.ID}}/deregister" style="display:inline">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <button type="submit" class="btn btn-danger btn-sm"
+                  onclick="return confirm('Deregister server {{.Name}}?')">Deregister</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="6">No servers registered.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

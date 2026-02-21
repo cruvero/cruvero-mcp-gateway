@@ -300,6 +300,30 @@ func (s *Server) MountProxyRoutes(proxyHandler http.Handler) {
 	})
 }
 
+// MountAdmin mounts the admin dashboard router under /admin/.
+func (s *Server) MountAdmin(adminRouter chi.Router) {
+	if s == nil || adminRouter == nil {
+		return
+	}
+	s.router.Mount("/admin", adminRouter)
+}
+
+// RateLimitBackend returns the server's rate limit backend for sharing with admin.
+func (s *Server) RateLimitBackend() ratelimit.LimiterBackend {
+	if s == nil {
+		return nil
+	}
+	return s.rateLimitBackend
+}
+
+// MountDeviceFlowRoutes mounts device code flow endpoints under /device.
+func (s *Server) MountDeviceFlowRoutes(handler http.Handler) {
+	if s == nil || handler == nil {
+		return
+	}
+	s.router.Mount("/device", handler)
+}
+
 // SetRateLimitBackend replaces the default memory rate-limit backend.
 // Call before MountProxyRoutes.
 func (s *Server) SetRateLimitBackend(backend ratelimit.LimiterBackend) {
