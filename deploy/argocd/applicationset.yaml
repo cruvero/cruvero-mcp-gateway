@@ -17,6 +17,14 @@ spec:
             namespace: cruvero-dev
             valuesFile: values-dev.yaml
             targetRevision: dev
+          - env: staging
+            namespace: cruvero-staging
+            valuesFile: values-staging.yaml
+            targetRevision: main
+          - env: prod
+            namespace: cruvero-prod
+            valuesFile: values-prod.yaml
+            targetRevision: main
   template:
     metadata:
       name: 'mcpgateway-{{ .env }}'
@@ -67,4 +75,18 @@ spec:
         argocd-image-updater.argoproj.io/mcpgateway.force-update: "true"
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-tag: image.tag
+    {{- else if eq .env "staging" }}
+    metadata:
+      labels:
+        image-updater: mcpgateway
+      annotations:
+        argocd-image-updater.argoproj.io/image-list: "mcpgateway=harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway"
+        argocd-image-updater.argoproj.io/mcpgateway.update-strategy: semver
+        argocd-image-updater.argoproj.io/mcpgateway.allow-tags: "regexp:^staging-"
+        argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
+        argocd-image-updater.argoproj.io/mcpgateway.helm.image-tag: image.tag
+    {{- else if eq .env "prod" }}
+    spec:
+      syncPolicy:
+        automated: null
     {{- end }}
