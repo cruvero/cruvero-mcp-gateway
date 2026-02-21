@@ -17,7 +17,7 @@ func TestNATSBroadcasterPublishSubscribe(t *testing.T) {
 
 	conn := startNATSForBroadcast(t)
 	b := NewNATSBroadcaster(conn, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	received := make(chan []byte, 1)
 	if err := b.Subscribe("test.subject", func(data []byte) {
@@ -53,7 +53,7 @@ func TestNATSBroadcasterMultipleSubjects(t *testing.T) {
 
 	conn := startNATSForBroadcast(t)
 	b := NewNATSBroadcaster(conn, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	ch1 := make(chan []byte, 1)
 	ch2 := make(chan []byte, 1)
@@ -113,10 +113,10 @@ func TestDragonflyBroadcasterPublishSubscribe(t *testing.T) {
 
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	b := NewDragonflyBroadcaster(client, nil)
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	received := make(chan []byte, 1)
 	if err := b.Subscribe("test.subject", func(data []byte) {

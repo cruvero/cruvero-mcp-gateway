@@ -1,8 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/cruvero/mcp-gateway/internal/auth"
 )
 
 func TestMCPProxyCommand_MissingGatewayURL(t *testing.T) {
@@ -50,5 +58,344 @@ func TestExtractSSEData(t *testing.T) {
 				t.Fatalf("extractSSEData() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSendMCPRequest_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("expected Bearer test-token, got %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":"ok"}`))
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	result, err := sendMCPRequest(context.Background(), srv.URL+"/mcp", "test-token", []byte(`{"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("sendMCPRequest: %v", err)
+	}
+	if !strings.Contains(string(result), "ok") {
+		t.Fatalf("expected ok in result, got %q", string(result))
+	}
+}
+
+func TestSendMCPRequest_SSEResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"result\":\"streamed\"}\n\n"))
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	result, err := sendMCPRequest(context.Background(), srv.URL+"/mcp", "test-token", []byte(`{"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("sendMCPRequest SSE: %v", err)
+	}
+	if !strings.Contains(string(result), "streamed") {
+		t.Fatalf("expected streamed in SSE result, got %q", string(result))
+	}
+}
+
+func TestSendMCPRequest_UnexpectedStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad request body"))
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	_, err := sendMCPRequest(context.Background(), srv.URL+"/mcp", "test-token", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for unexpected status")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 400") {
+		t.Fatalf("expected status 400 error, got: %v", err)
+	}
+}
+
+func TestSendMCPRequest_RateLimited(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := sendMCPRequest(ctx, srv.URL+"/mcp", "test-token", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error after retries")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("expected rate limited error, got: %v", err)
+	}
+}
+
+func TestSendMCPRequest_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := sendMCPRequest(ctx, srv.URL+"/mcp", "test-token", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestEnsureValidToken_ValidToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tokens := &auth.CachedTokens{
+		AccessToken:  "access-valid",
+		RefreshToken: "refresh-valid",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+		GatewayURL:   "https://gw.example.com",
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	result, err := ensureValidToken()
+	if err != nil {
+		t.Fatalf("ensureValidToken: %v", err)
+	}
+	if result.AccessToken != "access-valid" {
+		t.Fatalf("expected access-valid, got %q", result.AccessToken)
+	}
+}
+
+func TestEnsureValidToken_NotLoggedIn(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	_, err := ensureValidToken()
+	if err == nil {
+		t.Fatal("expected error when not logged in")
+	}
+	if !strings.Contains(err.Error(), "load tokens") {
+		t.Fatalf("expected load tokens error, got: %v", err)
+	}
+}
+
+func TestEnsureValidToken_ExpiredNoRefresh(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tokens := &auth.CachedTokens{
+		AccessToken: "access-expired",
+		TokenType:   "Bearer",
+		ExpiresAt:   time.Now().Add(-1 * time.Hour),
+		GatewayURL:  "https://gw.example.com",
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	_, err := ensureValidToken()
+	if err == nil {
+		t.Fatal("expected error for expired token with no refresh token")
+	}
+	if !strings.Contains(err.Error(), "no refresh token") {
+		t.Fatalf("expected no refresh token error, got: %v", err)
+	}
+}
+
+func TestRunProxy_EmptyInputExitsCleanly(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Save a valid token so ensureValidToken would succeed if called.
+	tokens := &auth.CachedTokens{
+		AccessToken: "access-valid",
+		TokenType:   "Bearer",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+		GatewayURL:  "https://gw.example.com",
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	input := strings.NewReader("")
+	output := &bytes.Buffer{}
+
+	err := runProxy(context.Background(), "https://gw.example.com", input, output)
+	if err != nil {
+		t.Fatalf("runProxy with empty input: %v", err)
+	}
+}
+
+func TestRunProxy_BlankLinesSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tokens := &auth.CachedTokens{
+		AccessToken: "access-valid",
+		TokenType:   "Bearer",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+		GatewayURL:  "https://gw.example.com",
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	// Only blank lines -- should be skipped without calling the server.
+	input := strings.NewReader("   \n\n  \n")
+	output := &bytes.Buffer{}
+
+	err := runProxy(context.Background(), "https://gw.example.com", input, output)
+	if err != nil {
+		t.Fatalf("runProxy with blank lines: %v", err)
+	}
+}
+
+func TestRunProxy_ContextCancelledBeforeInput(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	tokens := &auth.CachedTokens{
+		AccessToken: "access-valid",
+		TokenType:   "Bearer",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+		GatewayURL:  "https://gw.example.com",
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	// Provide some input but context is already cancelled.
+	input := strings.NewReader(`{"method":"ping"}` + "\n")
+	output := &bytes.Buffer{}
+
+	err := runProxy(ctx, "https://gw.example.com", input, output)
+	if err != nil {
+		t.Fatalf("runProxy with cancelled context: %v", err)
+	}
+}
+
+func TestEnsureValidToken_ExpiredWithRefreshToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Create a mock IDP that handles refresh.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "access-refreshed",
+			"refresh_token": "refresh-new",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+
+	tokens := &auth.CachedTokens{
+		AccessToken:  "access-expired",
+		RefreshToken: "refresh-valid",
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+		GatewayURL:   srv.URL,
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	result, err := ensureValidToken()
+	if err != nil {
+		t.Fatalf("ensureValidToken with refresh: %v", err)
+	}
+	if result.AccessToken != "access-refreshed" {
+		t.Fatalf("expected refreshed token, got %q", result.AccessToken)
+	}
+}
+
+func TestSendMCPRequest_Unauthorized_RefreshFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// No tokens saved, so ensureValidToken will fail during 401 retry.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	_, err := sendMCPRequest(context.Background(), srv.URL+"/mcp", "bad-token", []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected error for unauthorized request with no refresh")
+	}
+	if !strings.Contains(err.Error(), "auth failed") {
+		t.Fatalf("expected auth failed error, got: %v", err)
+	}
+}
+
+func TestRunProxy_WithMockServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "result": "pong"})
+	}))
+	defer srv.Close()
+
+	origClient := httpClientForProxy
+	httpClientForProxy = srv.Client()
+	defer func() { httpClientForProxy = origClient }()
+
+	tokens := &auth.CachedTokens{
+		AccessToken: "access-proxy",
+		TokenType:   "Bearer",
+		ExpiresAt:   time.Now().Add(1 * time.Hour),
+		GatewayURL:  srv.URL,
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		t.Fatalf("save tokens: %v", err)
+	}
+
+	input := strings.NewReader(`{"method":"ping"}` + "\n")
+	output := &bytes.Buffer{}
+
+	err := runProxy(context.Background(), srv.URL, input, output)
+	if err != nil {
+		t.Fatalf("runProxy with mock server: %v", err)
+	}
+
+	if !strings.Contains(output.String(), "pong") {
+		t.Fatalf("expected pong in output, got %q", output.String())
 	}
 }

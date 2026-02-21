@@ -142,3 +142,149 @@ func TestRunPropagatesSubcommandError(t *testing.T) {
 		t.Fatalf("expected propagated error, got %v", err)
 	}
 }
+
+func TestRunHelp(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	t.Cleanup(func() {
+		stdout = origStdout
+		stderr = origStderr
+	})
+
+	buf := &bytes.Buffer{}
+	stdout = buf
+	stderr = &bytes.Buffer{}
+
+	if err := run([]string{"--help"}); err != nil {
+		t.Fatalf("run --help: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "Usage:") {
+		t.Fatalf("expected Usage in help output, got %q", got)
+	}
+	if !strings.Contains(got, "Commands:") {
+		t.Fatalf("expected Commands in help output, got %q", got)
+	}
+}
+
+func TestRunHelpShort(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	t.Cleanup(func() {
+		stdout = origStdout
+		stderr = origStderr
+	})
+
+	buf := &bytes.Buffer{}
+	stdout = buf
+	stderr = &bytes.Buffer{}
+
+	if err := run([]string{"-h"}); err != nil {
+		t.Fatalf("run -h: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Usage:") {
+		t.Fatalf("expected Usage in -h output, got %q", buf.String())
+	}
+}
+
+func TestRunHelpCommand(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	t.Cleanup(func() {
+		stdout = origStdout
+		stderr = origStderr
+	})
+
+	buf := &bytes.Buffer{}
+	stdout = buf
+	stderr = &bytes.Buffer{}
+
+	if err := run([]string{"help"}); err != nil {
+		t.Fatalf("run help: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Usage:") {
+		t.Fatalf("expected Usage in help output, got %q", buf.String())
+	}
+}
+
+func TestRunVersionSubcommand(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	t.Cleanup(func() {
+		stdout = origStdout
+		stderr = origStderr
+	})
+
+	buf := &bytes.Buffer{}
+	stdout = buf
+	stderr = &bytes.Buffer{}
+
+	if err := run([]string{"version"}); err != nil {
+		t.Fatalf("run version: %v", err)
+	}
+	if !strings.Contains(buf.String(), "version=") {
+		t.Fatalf("expected version= in output, got %q", buf.String())
+	}
+}
+
+func TestRunRoutesAuthAndProxy(t *testing.T) {
+	origAuth := authHandler
+	origProxy := proxyHandler
+	origStdout := stdout
+	origStderr := stderr
+	t.Cleanup(func() {
+		authHandler = origAuth
+		proxyHandler = origProxy
+		stdout = origStdout
+		stderr = origStderr
+	})
+
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	var called string
+	authHandler = func(args []string) error {
+		called = "auth"
+		return nil
+	}
+	proxyHandler = func(args []string) error {
+		called = "mcp-proxy"
+		return nil
+	}
+
+	called = ""
+	if err := run([]string{"auth", "status"}); err != nil {
+		t.Fatalf("run auth: %v", err)
+	}
+	if called != "auth" {
+		t.Fatalf("expected auth handler, got %q", called)
+	}
+
+	called = ""
+	if err := run([]string{"mcp-proxy", "--gateway-url", "http://example.com"}); err != nil {
+		t.Fatalf("run mcp-proxy: %v", err)
+	}
+	if called != "mcp-proxy" {
+		t.Fatalf("expected mcp-proxy handler, got %q", called)
+	}
+}
+
+func TestRunWithGlobalLogFlags(t *testing.T) {
+	origServe := serveHandler
+	origStdout := stdout
+	origStderr := stderr
+	t.Cleanup(func() {
+		serveHandler = origServe
+		stdout = origStdout
+		stderr = origStderr
+	})
+
+	serveHandler = func(args []string) error { return nil }
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	if err := run([]string{"--log-level", "debug", "--log-format", "text", "serve"}); err != nil {
+		t.Fatalf("run with global flags: %v", err)
+	}
+}

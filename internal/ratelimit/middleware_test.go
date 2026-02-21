@@ -19,7 +19,7 @@ func TestRateLimitMiddlewareAllowsWithinLimit(t *testing.T) {
 	t.Parallel()
 
 	backend := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	backend.SetDefaults(10, 20)
 
 	handler := RateLimitMiddleware(backend, nil, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -50,7 +50,7 @@ func TestRateLimitMiddlewareReturns429WhenExceeded(t *testing.T) {
 	t.Parallel()
 
 	backend := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	backend.SetDefaults(1, 1)
 
 	handler := RateLimitMiddleware(backend, nil, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -102,7 +102,7 @@ func TestRateLimitMiddlewareUsesResolvedProfile(t *testing.T) {
 	}, defaultProfile)
 
 	backend := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	backend.SetDefaults(1, 1)
 
 	handler := RateLimitMiddleware(backend, resolver, testRateLimitLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

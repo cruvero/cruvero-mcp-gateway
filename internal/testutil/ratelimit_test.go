@@ -19,7 +19,7 @@ func TestConcurrentRateLimiting(t *testing.T) {
 	ratePerSecond := 50
 	burst := 50
 	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	backend.SetDefaults(float64(ratePerSecond), burst)
 	resolver := ratelimit.NewDefaultProfileResolver(map[string]*types.PolicyProfile{
 		"default": {Name: "default", RateLimit: ratePerSecond, RateBurst: burst},
@@ -67,7 +67,7 @@ func TestPerClientIsolation(t *testing.T) {
 	t.Parallel()
 
 	backend := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer backend.Close()
+	defer func() { _ = backend.Close() }()
 	backend.SetDefaults(1, 1)
 	resolver := ratelimit.NewDefaultProfileResolver(map[string]*types.PolicyProfile{
 		"default": {Name: "default", RateLimit: 1, RateBurst: 1},

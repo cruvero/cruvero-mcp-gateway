@@ -10,7 +10,7 @@ func TestMemoryBackendAllowWithinLimit(t *testing.T) {
 	t.Parallel()
 
 	mb := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer mb.Close()
+	defer func() { _ = mb.Close() }()
 
 	key := LimiterKey{ClientID: "client-a", Route: "/mcp"}
 	allowed, remaining, retryAfter, err := mb.Allow(context.Background(), key, 10, 20)
@@ -32,7 +32,7 @@ func TestMemoryBackendRejectOverLimit(t *testing.T) {
 	t.Parallel()
 
 	mb := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer mb.Close()
+	defer func() { _ = mb.Close() }()
 
 	key := LimiterKey{ClientID: "client-a", Route: "/mcp"}
 
@@ -65,7 +65,7 @@ func TestMemoryBackendSameKeyShared(t *testing.T) {
 	t.Parallel()
 
 	mb := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer mb.Close()
+	defer func() { _ = mb.Close() }()
 
 	key := LimiterKey{ClientID: "shared", Route: "/mcp"}
 
@@ -92,7 +92,7 @@ func TestMemoryBackendDifferentKeysIndependent(t *testing.T) {
 	t.Parallel()
 
 	mb := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer mb.Close()
+	defer func() { _ = mb.Close() }()
 
 	keyA := LimiterKey{ClientID: "client-a", Route: "/mcp"}
 	keyB := LimiterKey{ClientID: "client-b", Route: "/mcp"}
@@ -118,10 +118,10 @@ func TestMemoryBackendCleanupRemovesIdle(t *testing.T) {
 	t.Parallel()
 
 	mb := NewMemoryBackend(20*time.Millisecond, 10*time.Millisecond)
-	defer mb.Close()
+	defer func() { _ = mb.Close() }()
 
 	key := LimiterKey{ClientID: "idle", Route: "/mcp"}
-	mb.Allow(context.Background(), key, 10, 20)
+	_, _, _, _ = mb.Allow(context.Background(), key, 10, 20)
 	if mb.Count() != 1 {
 		t.Fatalf("expected 1 entry, got %d", mb.Count())
 	}
@@ -155,7 +155,7 @@ func TestMemoryBackendSetDefaults(t *testing.T) {
 	t.Parallel()
 
 	mb := NewMemoryBackend(time.Minute, 5*time.Minute)
-	defer mb.Close()
+	defer func() { _ = mb.Close() }()
 
 	mb.SetDefaults(50, 100)
 
@@ -186,4 +186,116 @@ func TestMemoryBackendNilSafety(t *testing.T) {
 	}
 	mb.SetDefaults(1, 1)
 	_ = mb.Close()
+}
+
+func TestMemoryBackendSnapshot(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil backend returns nil", func(t *testing.T) {
+		t.Parallel()
+		var mb *MemoryBackend
+		if entries := mb.Snapshot(); entries != nil {
+			t.Fatalf("expected nil snapshot from nil backend, got %v", entries)
+		}
+	})
+
+	t.Run("empty backend returns empty slice", func(t *testing.T) {
+		t.Parallel()
+		mb := NewMemoryBackend(time.Minute, 5*time.Minute)
+		defer func() { _ = mb.Close() }()
+
+		entries := mb.Snapshot()
+		if len(entries) != 0 {
+			t.Fatalf("expected 0 entries, got %d", len(entries))
+		}
+	})
+
+	t.Run("populated backend returns entries", func(t *testing.T) {
+		t.Parallel()
+		mb := NewMemoryBackend(time.Minute, 5*time.Minute)
+		defer func() { _ = mb.Close() }()
+
+		ctx := context.Background()
+		keyA := LimiterKey{ClientID: "client-snap-a", Route: "/route-a"}
+		keyB := LimiterKey{ClientID: "client-snap-b", Route: "/route-b"}
+
+		_, _, _, _ = mb.Allow(ctx, keyA, 10, 20)
+		_, _, _, _ = mb.Allow(ctx, keyB, 5, 10)
+
+		entries := mb.Snapshot()
+		if len(entries) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(entries))
+		}
+
+		found := make(map[string]RateLimitEntry)
+		for _, e := range entries {
+			found[e.ClientID] = e
+		}
+
+		a, ok := found["client-snap-a"]
+		if !ok {
+			t.Fatal("expected entry for client-snap-a")
+		}
+		if a.Route != "/route-a" {
+			t.Fatalf("expected route /route-a, got %q", a.Route)
+		}
+		if a.Limit != 10 {
+			t.Fatalf("expected limit 10, got %v", a.Limit)
+		}
+		if a.Remaining < 0 {
+			t.Fatalf("expected non-negative remaining, got %d", a.Remaining)
+		}
+		if a.LastUsed.IsZero() {
+			t.Fatal("expected non-zero LastUsed")
+		}
+
+		b, ok := found["client-snap-b"]
+		if !ok {
+			t.Fatal("expected entry for client-snap-b")
+		}
+		if b.Route != "/route-b" {
+			t.Fatalf("expected route /route-b, got %q", b.Route)
+		}
+		if b.Limit != 5 {
+			t.Fatalf("expected limit 5, got %v", b.Limit)
+		}
+	})
+
+	t.Run("key without route separator", func(t *testing.T) {
+		t.Parallel()
+		mb := NewMemoryBackend(time.Minute, 5*time.Minute)
+		defer func() { _ = mb.Close() }()
+
+		// Use a key with only ClientID, empty Route to produce a key without ":"
+		keyNoRoute := LimiterKey{ClientID: "solo-client", Route: ""}
+		_, _, _, _ = mb.Allow(context.Background(), keyNoRoute, 10, 20)
+
+		entries := mb.Snapshot()
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		// When route is empty, the normalizeKey produces "solo-client:" which splits into 2 parts.
+		// The snapshot should still return a valid entry.
+		e := entries[0]
+		if e.ClientID == "" {
+			t.Fatal("expected non-empty ClientID in snapshot entry")
+		}
+	})
+}
+
+func TestMemoryBackendDefaultsWhenZero(t *testing.T) {
+	t.Parallel()
+
+	mb := NewMemoryBackend(0, 0)
+	defer func() { _ = mb.Close() }()
+
+	// Should use default cleanupInterval and maxIdle without panicking.
+	key := LimiterKey{ClientID: "defaults", Route: "/mcp"}
+	allowed, _, _, err := mb.Allow(context.Background(), key, 10, 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("expected request to be allowed")
+	}
 }
