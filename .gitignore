@@ -40,5 +40,8 @@ docker-compose.override.yml
 # Working notes (local only)
 docs/notes/
 
+# Phase specifications (internal only)
+docs/phases/
+
 # OS files
 .DS_Store
