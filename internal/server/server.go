@@ -66,6 +66,39 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 		configStore = events.NewPostgresConfigStore(db)
 	}
 
+	router := newBaseRouter(cfg, logger)
+	srv := &Server{
+		cfg:             cfg,
+		logger:          logger,
+		router:          router,
+		startTime:       time.Now().UTC(),
+		shutdownTimeout: resolveShutdownTimeout(cfg),
+
+		cleanupInterval:   time.Minute,
+		cleanupMaxIdleTTL: 5 * time.Minute,
+	}
+	srv.initPolicyAndRateLimit(cfg, logger)
+	srv.initNATS(cfg, configStore, logger)
+	srv.initDegradationFallback(cfg, configStore, logger)
+
+	ratelimit.SetRateLimitedObserver(func(clientID string, route string) {
+		ObserveRateLimited(clientID, route)
+	})
+	policy.SetDeniedObserver(func(reason string, tool string) {
+		ObservePolicyDenied(reason, tool)
+	})
+
+	srv.proxyPolicyMW = policy.PolicyMiddleware(srv.policyEngine, logger)
+
+	srv.ready.Store(true)
+	srv.setupRoutes()
+	srv.httpServer = newHTTPServer(cfg, router)
+	srv.metricsSrv = StartMetricsServer(resolveMetricsAddr(cfg))
+
+	return srv
+}
+
+func newBaseRouter(cfg *config.Config, logger *slog.Logger) chi.Router {
 	router := chi.NewRouter()
 	router.Use(RequestIDMiddleware)
 	router.Use(TracingMiddleware(otel.Tracer("mcpgw/server")))
@@ -76,134 +109,136 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 	if cfg != nil && cfg.CORSEnabled {
 		router.Use(CORSMiddleware(cfg.CORSAllowedOrigins))
 	}
+	return router
+}
 
-	shutdownTimeout := 30 * time.Second
+func resolveShutdownTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ShutdownTimeout > 0 {
-		shutdownTimeout = cfg.ShutdownTimeout
+		return cfg.ShutdownTimeout
 	}
+	return 30 * time.Second
+}
 
-	srv := &Server{
-		cfg:             cfg,
-		logger:          logger,
-		router:          router,
-		startTime:       time.Now().UTC(),
-		shutdownTimeout: shutdownTimeout,
-
-		cleanupInterval:   time.Minute,
-		cleanupMaxIdleTTL: 5 * time.Minute,
-	}
+func (s *Server) initPolicyAndRateLimit(cfg *config.Config, logger *slog.Logger) {
 	profiles := defaultProfiles(cfg)
 	defaultProfile := profiles["default"]
 	mb := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
 	mb.SetDefaults(float64(defaultProfile.RateLimit), defaultProfile.RateBurst)
-	srv.rateLimitBackend = mb
-	srv.profileResolver = ratelimit.NewDefaultProfileResolver(profiles, defaultProfile)
-	policyEngine := policy.NewEngine(profiles, nil, logger)
-	srv.policyEngine = policyEngine
+	s.rateLimitBackend = mb
+	s.profileResolver = ratelimit.NewDefaultProfileResolver(profiles, defaultProfile)
+	s.policyEngine = policy.NewEngine(profiles, nil, logger)
+}
 
-	if cfg != nil && cfg.CruveroEnabled && strings.TrimSpace(cfg.NATSURL) != "" {
-		var clientOpts []events.ClientOption
-		connectNATS := true
-		if cfg.NATSTLSEnabled {
-			tlsConfig, tlsErr := buildNATSTLSConfig(cfg.NATSTLSCert, cfg.NATSTLSKey, cfg.NATSTLSCa)
-			if tlsErr != nil {
-				logger.Error("nats tls config failed; skipping nats connection", slog.String("error", tlsErr.Error()))
-				connectNATS = false
-			} else {
-				clientOpts = append(clientOpts, events.WithTLS(tlsConfig))
-			}
-		}
-		if connectNATS {
-			natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID, clientOpts...)
-			if err != nil {
-				logger.Warn("events client init failed", slog.String("error", err.Error()))
-			} else {
-				srv.eventsClient = natsClient
-				srv.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
-				policyEngine.SetViolationEventPublisher(srv.eventPublisher)
-				SetNATSConnected(true)
-
-				subscriber := events.NewSubscriber(natsClient, logger)
-				policyHandler := events.NewPolicyConfigHandler(policyEngine, srv.rateLimitBackend, logger)
-				serverHandler := events.NewServerConfigHandler(nil, logger)
-				serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
-				serverSettingsHandler := &metricsServerSettingsHandler{
-					next: serverSettings,
-				}
-				authHandler := events.NewAuthConfigHandler(logger)
-				ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
-				toolMetadataHandler := events.NewToolMetadataConfigHandler(configStore, nil, logger)
-				subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
-				subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
-				subscriber.RegisterHandler(events.SubjectForConfig(cfg.GatewayID, events.ConfigScopeToolMetadata), toolMetadataHandler)
-				if startErr := subscriber.Start(context.Background()); startErr != nil {
-					logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
-				} else {
-					srv.eventSubscriber = subscriber
-					srv.serverCfgHandler = serverHandler
-					srv.settingsHandler = serverSettings
-					srv.ackHandler = ackHandler
-					srv.toolMetadataHandler = toolMetadataHandler
-				}
-
-				degradation := events.NewDegradationManager(natsClient, configStore, srv.eventSubscriber, logger)
-				natsClient.SetDisconnectHandler(func() {
-					SetNATSConnected(false)
-					degradation.OnDisconnect()
-				})
-				natsClient.SetReconnectHandler(func() {
-					SetNATSConnected(true)
-					if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
-						logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
-					}
-				})
-				srv.degradation = degradation
-			}
-		}
-	}
-	if srv.eventsClient == nil {
+func (s *Server) initNATS(cfg *config.Config, configStore events.ConfigStore, logger *slog.Logger) {
+	if cfg == nil || !cfg.CruveroEnabled || strings.TrimSpace(cfg.NATSURL) == "" {
 		SetNATSConnected(false)
+		return
 	}
-	if cfg != nil && cfg.CruveroEnabled && srv.degradation == nil {
-		srv.degradation = events.NewDegradationManager(nil, configStore, nil, logger)
-		if srv.degradation != nil && !srv.degradation.EverConnected() {
-			if err := srv.degradation.LoadCachedConfig(context.Background()); err != nil {
-				logger.Warn("failed to load cached config from postgres", slog.String("error", err.Error()))
-			} else if srv.degradation.HasCachedConfig() {
-				logger.Info("loaded cached config from postgres; running in degraded mode")
-			}
+	clientOpts, ok := buildNATSClientOpts(cfg, logger)
+	if !ok {
+		SetNATSConnected(false)
+		return
+	}
+	natsClient, err := events.NewClient(cfg.NATSURL, cfg.GatewayID, clientOpts...)
+	if err != nil {
+		logger.Warn("events client init failed", slog.String("error", err.Error()))
+		SetNATSConnected(false)
+		return
+	}
+	s.eventsClient = natsClient
+	s.eventPublisher = events.NewPublisher(natsClient, cfg.GatewayID, logger)
+	s.policyEngine.SetViolationEventPublisher(s.eventPublisher)
+	SetNATSConnected(true)
+
+	s.initEventSubscriber(cfg, natsClient, configStore, logger)
+	s.initDegradationHandlers(natsClient, configStore, logger)
+}
+
+func buildNATSClientOpts(cfg *config.Config, logger *slog.Logger) ([]events.ClientOption, bool) {
+	var clientOpts []events.ClientOption
+	if !cfg.NATSTLSEnabled {
+		return clientOpts, true
+	}
+	tlsConfig, tlsErr := buildNATSTLSConfig(cfg.NATSTLSCert, cfg.NATSTLSKey, cfg.NATSTLSCa)
+	if tlsErr != nil {
+		logger.Error("nats tls config failed; skipping nats connection", slog.String("error", tlsErr.Error()))
+		return nil, false
+	}
+	return append(clientOpts, events.WithTLS(tlsConfig)), true
+}
+
+func (s *Server) initEventSubscriber(cfg *config.Config, natsClient *events.Client, configStore events.ConfigStore, logger *slog.Logger) {
+	subscriber := events.NewSubscriber(natsClient, logger)
+	policyHandler := events.NewPolicyConfigHandler(s.policyEngine, s.rateLimitBackend, logger)
+	serverHandler := events.NewServerConfigHandler(nil, logger)
+	serverSettings := events.NewServerSettingsConfigHandler(nil, nil, logger)
+	serverSettingsHandler := &metricsServerSettingsHandler{
+		next: serverSettings,
+	}
+	authHandler := events.NewAuthConfigHandler(logger)
+	ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
+	toolMetadataHandler := events.NewToolMetadataConfigHandler(configStore, nil, logger)
+	subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
+	subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
+	subscriber.RegisterHandler(events.SubjectForConfig(cfg.GatewayID, events.ConfigScopeToolMetadata), toolMetadataHandler)
+	if startErr := subscriber.Start(context.Background()); startErr != nil {
+		logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
+		return
+	}
+	s.eventSubscriber = subscriber
+	s.serverCfgHandler = serverHandler
+	s.settingsHandler = serverSettings
+	s.ackHandler = ackHandler
+	s.toolMetadataHandler = toolMetadataHandler
+}
+
+func (s *Server) initDegradationHandlers(natsClient *events.Client, configStore events.ConfigStore, logger *slog.Logger) {
+	degradation := events.NewDegradationManager(natsClient, configStore, s.eventSubscriber, logger)
+	natsClient.SetDisconnectHandler(func() {
+		SetNATSConnected(false)
+		degradation.OnDisconnect()
+	})
+	natsClient.SetReconnectHandler(func() {
+		SetNATSConnected(true)
+		if reconnectErr := degradation.OnReconnect(context.Background()); reconnectErr != nil {
+			logger.Warn("degradation reconnect handler failed", slog.String("error", reconnectErr.Error()))
 		}
+	})
+	s.degradation = degradation
+}
+
+func (s *Server) initDegradationFallback(cfg *config.Config, configStore events.ConfigStore, logger *slog.Logger) {
+	if cfg == nil || !cfg.CruveroEnabled || s.degradation != nil {
+		return
 	}
+	s.degradation = events.NewDegradationManager(nil, configStore, nil, logger)
+	if s.degradation == nil || s.degradation.EverConnected() {
+		return
+	}
+	if err := s.degradation.LoadCachedConfig(context.Background()); err != nil {
+		logger.Warn("failed to load cached config from postgres", slog.String("error", err.Error()))
+	} else if s.degradation.HasCachedConfig() {
+		logger.Info("loaded cached config from postgres; running in degraded mode")
+	}
+}
 
-	ratelimit.SetRateLimitedObserver(func(clientID string, route string) {
-		ObserveRateLimited(clientID, route)
-	})
-	policy.SetDeniedObserver(func(reason string, tool string) {
-		ObservePolicyDenied(reason, tool)
-	})
-
-	srv.proxyPolicyMW = policy.PolicyMiddleware(policyEngine, logger)
-
-	srv.ready.Store(true)
-	srv.setupRoutes()
-
+func newHTTPServer(cfg *config.Config, handler http.Handler) *http.Server {
 	listenAddr := ":8443"
 	if cfg != nil && cfg.ListenAddr != "" {
 		listenAddr = cfg.ListenAddr
 	}
-
-	srv.httpServer = &http.Server{
+	return &http.Server{
 		Addr:              listenAddr,
-		Handler:           router,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	metricsAddr := ":9090"
-	if cfg != nil && strings.TrimSpace(cfg.MetricsAddr) != "" {
-		metricsAddr = cfg.MetricsAddr
-	}
-	srv.metricsSrv = StartMetricsServer(metricsAddr)
+}
 
-	return srv
+func resolveMetricsAddr(cfg *config.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.MetricsAddr) != "" {
+		return cfg.MetricsAddr
+	}
+	return ":9090"
 }
 
 // Start starts the HTTP server and shuts it down gracefully when the context is cancelled.
