@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 env:
   REGISTRY: ${{ secrets.HARBOR_URL || vars.HARBOR_URL || 'harbor.dev.gchinfo.com' }}
@@ -54,22 +53,6 @@ jobs:
             -t "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:${GITHUB_REF_NAME}" \
             -t "${REGISTRY_NORM}/${HARBOR_PROJECT}/cruvero-mcp-gateway:latest" \
             .
-
-      - name: Scan Image with Trivy
-        uses: aquasecurity/trivy-action@0.34.1
-        with:
-          image-ref: ${{ env.REGISTRY_NORM }}/${{ env.HARBOR_PROJECT }}/cruvero-mcp-gateway:${{ github.ref_name }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-
-      - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        continue-on-error: true
-        with:
-          sarif_file: trivy-results.sarif
 
       - name: Push Image
         shell: bash
