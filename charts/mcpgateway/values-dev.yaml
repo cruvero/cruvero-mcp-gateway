@@ -61,6 +61,13 @@ secrets:
   existingSecret: mcpgateway-dev-vault-secrets
   otlpEndpointFromSecret: false
 
+admin:
+  enabled: true
+  oidc:
+    clientID: mcpgateway-admin
+  requiredScope: admin
+  sessionTTL: 8h
+
 tracing:
   enabled: true
 
@@ -87,6 +94,13 @@ networkPolicy:
           matchLabels:
             app.kubernetes.io/name: traefik
   egress:
+    oidc:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: traefik
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
     otel:
       - namespaceSelector:
           matchLabels:

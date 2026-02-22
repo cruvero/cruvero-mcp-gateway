@@ -256,6 +256,8 @@ networkPolicy:
     backends:
       - namespaceSelector: {}
         podSelector: {}
+    # -- Allowed OIDC provider destinations (ports 443/80).
+    oidc: []
     # -- Allowed OTLP collector destinations (port 4318).
     otel: []
     # -- DNS egress destinations (UDP/TCP 53).
