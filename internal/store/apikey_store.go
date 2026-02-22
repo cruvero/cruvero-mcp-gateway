@@ -53,7 +53,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 		profile,
 		key.ExpiresAt,
 	); err != nil {
-		return fmt.Errorf(errAPIKeyStore,err)
+		return fmt.Errorf(errAPIKeyStore, err)
 	}
 
 	return nil
@@ -71,7 +71,7 @@ WHERE key_lookup_hash = $1
 	row := s.db.QueryRowContext(ctx, query, lookupHash)
 	key, err := scanAPIKey(row)
 	if err != nil {
-		return nil, fmt.Errorf(errAPIKeyStore,err)
+		return nil, fmt.Errorf(errAPIKeyStore, err)
 	}
 
 	return key, nil
@@ -83,7 +83,7 @@ func (s *PostgresAPIKeyStore) List(ctx context.Context) ([]types.APIKey, error) 
 
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf(errAPIKeyStore,err)
+		return nil, fmt.Errorf(errAPIKeyStore, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -91,12 +91,12 @@ func (s *PostgresAPIKeyStore) List(ctx context.Context) ([]types.APIKey, error) 
 	for rows.Next() {
 		key, scanErr := scanAPIKey(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf(errAPIKeyStore,scanErr)
+			return nil, fmt.Errorf(errAPIKeyStore, scanErr)
 		}
 		keys = append(keys, *key)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(errAPIKeyStore,err)
+		return nil, fmt.Errorf(errAPIKeyStore, err)
 	}
 
 	return keys, nil
@@ -106,7 +106,7 @@ func (s *PostgresAPIKeyStore) List(ctx context.Context) ([]types.APIKey, error) 
 func (s *PostgresAPIKeyStore) Revoke(ctx context.Context, id string) error {
 	const query = `UPDATE api_keys SET expires_at = now() WHERE id = $1`
 	if _, err := s.db.ExecContext(ctx, query, id); err != nil {
-		return fmt.Errorf(errAPIKeyStore,err)
+		return fmt.Errorf(errAPIKeyStore, err)
 	}
 	return nil
 }
@@ -116,12 +116,12 @@ func (s *PostgresAPIKeyStore) DeleteExpired(ctx context.Context) (int64, error) 
 	const query = `DELETE FROM api_keys WHERE expires_at IS NOT NULL AND expires_at < now()`
 	result, err := s.db.ExecContext(ctx, query)
 	if err != nil {
-		return 0, fmt.Errorf(errAPIKeyStore,err)
+		return 0, fmt.Errorf(errAPIKeyStore, err)
 	}
 
 	deleted, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf(errAPIKeyStore,err)
+		return 0, fmt.Errorf(errAPIKeyStore, err)
 	}
 
 	return deleted, nil

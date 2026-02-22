@@ -44,7 +44,7 @@ VALUES ($1, $2, $3, $4)
 `
 
 	if _, err := s.db.ExecContext(ctx, query, entry.EventType, entry.ClientID, entry.ServerName, detailsJSON); err != nil {
-		return fmt.Errorf(errAuditStore,err)
+		return fmt.Errorf(errAuditStore, err)
 	}
 	return nil
 }
@@ -85,7 +85,7 @@ OFFSET $7
 		offset,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(errAuditStore,err)
+		return nil, fmt.Errorf(errAuditStore, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -93,12 +93,12 @@ OFFSET $7
 	for rows.Next() {
 		entry, scanErr := scanAuditEntry(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf(errAuditStore,scanErr)
+			return nil, fmt.Errorf(errAuditStore, scanErr)
 		}
 		entries = append(entries, *entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(errAuditStore,err)
+		return nil, fmt.Errorf(errAuditStore, err)
 	}
 
 	return entries, nil

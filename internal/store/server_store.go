@@ -93,7 +93,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		strings.TrimSpace(record.LastPlatformAckVersion),
 		record.LastPlatformAckAt,
 	); err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 
 	return nil
@@ -105,7 +105,7 @@ func (s *PostgresServerStore) Get(ctx context.Context, id string) (*types.Server
 	row := s.db.QueryRowContext(ctx, query, id)
 	record, err := scanServerRecord(row)
 	if err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	return record, nil
 }
@@ -116,7 +116,7 @@ func (s *PostgresServerStore) GetByName(ctx context.Context, name string) (*type
 	row := s.db.QueryRowContext(ctx, query, name)
 	record, err := scanServerRecord(row)
 	if err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	return record, nil
 }
@@ -127,7 +127,7 @@ func (s *PostgresServerStore) GetBySPIFFEID(ctx context.Context, spiffeID string
 	row := s.db.QueryRowContext(ctx, query, spiffeID)
 	record, err := scanServerRecord(row)
 	if err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	return record, nil
 }
@@ -162,7 +162,7 @@ OFFSET $4
 		offset,
 	)
 	if err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -170,12 +170,12 @@ OFFSET $4
 	for rows.Next() {
 		record, scanErr := scanServerRecord(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf(errServerStore,scanErr)
+			return nil, fmt.Errorf(errServerStore, scanErr)
 		}
 		records = append(records, *record)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 
 	return records, nil
@@ -252,7 +252,7 @@ WHERE id = $16
 		record.LastPlatformAckAt,
 		record.ID,
 	); err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 
 	return nil
@@ -262,7 +262,7 @@ WHERE id = $16
 func (s *PostgresServerStore) UpdateStatus(ctx context.Context, id string, status types.ServerStatus) error {
 	const query = `UPDATE mcp_servers SET status = $1, updated_at = now() WHERE id = $2`
 	if _, err := s.db.ExecContext(ctx, query, status.String(), id); err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 	return nil
 }
@@ -271,7 +271,7 @@ func (s *PostgresServerStore) UpdateStatus(ctx context.Context, id string, statu
 func (s *PostgresServerStore) UpdateHeartbeat(ctx context.Context, id string) error {
 	const query = `UPDATE mcp_servers SET last_heartbeat = now(), updated_at = now() WHERE id = $1`
 	if _, err := s.db.ExecContext(ctx, query, id); err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 	return nil
 }
@@ -307,11 +307,11 @@ WHERE id = $4
 		strings.TrimSpace(capabilityHash),
 	)
 	if err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 	if affected == 0 {
 		return sql.ErrNoRows
@@ -323,7 +323,7 @@ WHERE id = $4
 func (s *PostgresServerStore) Delete(ctx context.Context, id string) error {
 	const query = `DELETE FROM mcp_servers WHERE id = $1`
 	if _, err := s.db.ExecContext(ctx, query, id); err != nil {
-		return fmt.Errorf(errServerStore,err)
+		return fmt.Errorf(errServerStore, err)
 	}
 	return nil
 }
@@ -344,7 +344,7 @@ ORDER BY last_heartbeat ASC
 
 	rows, err := s.db.QueryContext(ctx, query, threshold.String())
 	if err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -367,7 +367,7 @@ ORDER BY last_heartbeat ASC
 
 	rows, err := s.db.QueryContext(ctx, query, threshold.String())
 	if err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -383,12 +383,12 @@ func scanServerRows(rows *sql.Rows) ([]types.ServerRecord, error) {
 	for rows.Next() {
 		record, scanErr := scanServerRecord(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf(errServerStore,scanErr)
+			return nil, fmt.Errorf(errServerStore, scanErr)
 		}
 		records = append(records, *record)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(errServerStore,err)
+		return nil, fmt.Errorf(errServerStore, err)
 	}
 	return records, nil
 }
