@@ -9,26 +9,26 @@ autoscaling:
   maxReplicas: 5
 
 image:
-  repository: harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway
+  repository: registry.example.com/<PROJECT>/<IMAGE>
   tag: staging-latest
   pullPolicy: Always
 
 imagePullSecrets:
-  - name: harbor-pull-secret
+  - name: <PULL_SECRET>
 
 tls:
   certManager:
     enabled: true
     secretName: mcpgateway-staging-tls
     issuerRef:
-      name: vault-mcp-gateway-server
+      name: <CERT_ISSUER>
       kind: ClusterIssuer
       group: cert-manager.io
     dnsNames:
       - mcpgateway-staging
-      - mcpgateway-staging.cruvero-staging
-      - mcpgateway-staging.cruvero-staging.svc
-      - mcpgateway-staging.cruvero-staging.svc.cluster.local
+      - mcpgateway-staging.<APP>-staging
+      - mcpgateway-staging.<APP>-staging.svc
+      - mcpgateway-staging.<APP>-staging.svc.cluster.local
 
 probes:
   scheme: HTTPS
@@ -37,7 +37,7 @@ config:
   MCPGW_TLS_CERT: "/tls/tls.crt"
   MCPGW_TLS_KEY: "/tls/tls.key"
   MCPGW_TLS_CA: "/tls/ca.crt"
-  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://cruvero.dev/ns/cruvero-staging/sa/"
+  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://<TRUST_DOMAIN>/ns/<APP>-staging/sa/"
   MCPGW_CRUVERO_ENABLED: "true"
   MCPGW_GATEWAY_ID: "mcpgateway-staging"
   MCPGW_RATE_LIMIT_BACKEND: "memory"
@@ -46,9 +46,9 @@ config:
 vault:
   enabled: true
   createAuth: true
-  authRef: mcpgw-vault-auth-staging
+  authRef: <VAULT_AUTH>
   mount: kubernetes
-  path: secret/data/mcpgateway/staging/runtime
+  path: <VAULT_PATH>
   refreshAfter: 1m
 
 secrets:

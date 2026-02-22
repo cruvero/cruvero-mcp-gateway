@@ -630,14 +630,13 @@ Deployment is managed through Argo CD manifests in `deploy/argocd/`, following t
 
 Any GitHub Actions workflow in this repository must follow these standards:
 
-- Use `cruvero-org-runners` for `runs-on`.
-- Harbor image operations must use org secrets:
-  - `HARBOR_URL`
-  - `HARBOR_TOKEN`
-- Sonar workflows must use org secrets:
+- Set `runs-on` to your runner group or labels.
+- Image build workflows must use secrets for your container registry:
+  - `REGISTRY_URL`
+  - `REGISTRY_USERNAME` / `REGISTRY_PASSWORD`
+- SonarQube workflows (if enabled) must use secrets:
   - `SONAR_HOST_URL`
   - `SONAR_TOKEN`
-- Sonar workflows must use repo secret:
   - `SONAR_PROJECT_KEY`
 
 ### Secret Management (Vault Operator)

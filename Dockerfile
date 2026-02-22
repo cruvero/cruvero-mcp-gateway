@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
-ARG DOCKER_PROXY=docker-cache.dev.gchinfo.com
-ARG GCR_PROXY=gcr-cache.dev.gchinfo.com
+ARG DOCKER_PROXY=docker.io
+ARG GCR_PROXY=gcr.io
 FROM ${DOCKER_PROXY}/library/golang:1.25.7-alpine AS build
 WORKDIR /src
 
-ARG GOPROXY=https://nexus.dev.gchinfo.com/repository/go-proxy/,direct
+ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=$GOPROXY
 
 COPY go.mod go.sum ./

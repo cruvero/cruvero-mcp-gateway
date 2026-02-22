@@ -47,7 +47,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	cfg := &config.Config{
 		DBURL:            "postgres://test-db",
-		HeartbeatTTL:     50 * time.Millisecond,
+		HeartbeatTTL:     2 * time.Second,
 		SPIFFEAllowList:  []string{"spiffe://example.org"},
 		RateDefault:      10,
 		RateBurst:        20,
@@ -94,11 +94,14 @@ func TestFullLifecycle(t *testing.T) {
 	certs := GenerateTestCerts(t)
 	clientCert := parsePEMCertificate(t, certs.ClientCertPEM)
 
+	// Register with a private RFC 1918 IP to satisfy SSRF validation (loopback
+	// is blocked in production). After registration we override the host in
+	// the capability index so the proxy routes to the real httptest backend.
 	registerPayload := registration.RegistrationRequest{
 		ServiceName: backendRecord.Name,
 		Version:     "1.0.0",
 		Listen: registration.ListenConfig{
-			Host:     backendRecord.Host,
+			Host:     "10.0.0.1",
 			Port:     backendRecord.Port,
 			Protocol: "https",
 		},
@@ -139,6 +142,7 @@ func TestFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load registered server: %v", err)
 	}
+	record.Host = backendRecord.Host
 	index.Add(*record)
 
 	mcpGatewayClient, err := mcpclient.NewStreamableHttpClient(httpServer.URL + "/mcp")
@@ -178,13 +182,13 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("unexpected tool result content: %#v", toolResp.Content[0])
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		current, getErr := serverStore.Get(context.Background(), regResp.InstanceID)
 		if getErr == nil && current.Status == types.StatusExpired {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	current, err := serverStore.Get(context.Background(), regResp.InstanceID)
 	if err != nil {

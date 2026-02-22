@@ -14,15 +14,15 @@ spec:
     - list:
         elements:
           - env: dev
-            namespace: cruvero-dev
+            namespace: <APP>-dev
             valuesFile: values-dev.yaml
             targetRevision: dev
           - env: staging
-            namespace: cruvero-staging
+            namespace: <APP>-staging
             valuesFile: values-staging.yaml
             targetRevision: main
           - env: prod
-            namespace: cruvero-prod
+            namespace: <APP>-prod
             valuesFile: values-prod.yaml
             targetRevision: main
   template:
@@ -35,7 +35,7 @@ spec:
     spec:
       project: mcpgateway
       source:
-        repoURL: https://github.com/cruvero/cruvero-mcp-gateway.git
+        repoURL: https://github.com/<ORG>/<REPO>.git
         targetRevision: '{{ .targetRevision }}'
         path: charts/mcpgateway
         helm:
@@ -70,7 +70,7 @@ spec:
       labels:
         image-updater: mcpgateway
       annotations:
-        argocd-image-updater.argoproj.io/image-list: "mcpgateway=harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway:dev"
+        argocd-image-updater.argoproj.io/image-list: "mcpgateway=registry.example.com/<PROJECT>/<IMAGE>:dev"
         argocd-image-updater.argoproj.io/mcpgateway.update-strategy: digest
         argocd-image-updater.argoproj.io/mcpgateway.force-update: "true"
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
@@ -80,7 +80,7 @@ spec:
       labels:
         image-updater: mcpgateway
       annotations:
-        argocd-image-updater.argoproj.io/image-list: "mcpgateway=harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway"
+        argocd-image-updater.argoproj.io/image-list: "mcpgateway=registry.example.com/<PROJECT>/<IMAGE>"
         argocd-image-updater.argoproj.io/mcpgateway.update-strategy: digest
         argocd-image-updater.argoproj.io/mcpgateway.allow-tags: "regexp:^staging-"
         argocd-image-updater.argoproj.io/mcpgateway.force-update: "true"
