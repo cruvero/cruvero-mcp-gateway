@@ -303,6 +303,9 @@ func (d *DiscoveryIndex) Browse(category string, offset, limit int) ([]ToolDefin
 	})
 
 	total := len(matching)
+	if offset < 0 {
+		offset = 0
+	}
 	if offset >= total {
 		return nil, total
 	}

@@ -503,6 +503,17 @@ func TestDiscoveryIndex_Browse(t *testing.T) {
 			t.Fatalf("expected stripped schema, got %s", string(results[0].InputSchema))
 		}
 	})
+
+	t.Run("negative offset clamped to zero", func(t *testing.T) {
+		t.Parallel()
+		results, total := idx.Browse("", -5, 10)
+		if total != 4 {
+			t.Fatalf("expected 4 total, got %d", total)
+		}
+		if len(results) != 4 {
+			t.Fatalf("expected 4 results with clamped offset, got %d", len(results))
+		}
+	})
 }
 
 func TestDiscoveryIndex_Stats(t *testing.T) {

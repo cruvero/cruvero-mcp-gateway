@@ -12,6 +12,7 @@ import (
 const (
 	defaultBrowsePerPage = 50
 	maxBrowsePerPage     = 100
+	maxBrowsePage        = 10000
 
 	// Approximate token estimates for tool definitions.
 	tokensPerFullDefinition = 170
@@ -40,6 +41,9 @@ func (h *AdminHandler) HandleToolBrowse(w http.ResponseWriter, r *http.Request) 
 	}
 	if page <= 0 {
 		page = 1
+	}
+	if page > maxBrowsePage {
+		page = maxBrowsePage
 	}
 
 	offset := (page - 1) * perPage
