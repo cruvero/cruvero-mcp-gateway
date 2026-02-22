@@ -31,6 +31,8 @@ const (
 	ConfigScopeServerSettings = "server_settings"
 	// ConfigScopeAuth is the auth configuration subject suffix.
 	ConfigScopeAuth = "auth"
+	// ConfigScopeToolMetadata is the tool metadata configuration subject suffix.
+	ConfigScopeToolMetadata = "tool_metadata"
 )
 
 // EventEnvelope wraps all outbound/inbound NATS events.
@@ -43,17 +45,18 @@ type EventEnvelope struct {
 
 // ServerRegisteredPayload is the payload for EventServerRegistered.
 type ServerRegisteredPayload struct {
-	EventID        string           `json:"event_id,omitempty"`
-	OccurredAt     time.Time        `json:"occurred_at,omitempty"`
-	ServerID       string           `json:"server_id"`
-	RegistrationID string           `json:"registration_id,omitempty"`
-	LeaseEpoch     int64            `json:"lease_epoch,omitempty"`
-	CapabilityHash string           `json:"capability_hash,omitempty"`
-	SyncState      string           `json:"sync_state,omitempty"`
-	Name           string           `json:"name"`
-	SPIFFEID       string           `json:"spiffe_id"`
-	Capabilities   types.Capability `json:"capabilities"`
-	Endpoint       string           `json:"endpoint"`
+	EventID         string                `json:"event_id,omitempty"`
+	OccurredAt      time.Time             `json:"occurred_at,omitempty"`
+	ServerID        string                `json:"server_id"`
+	RegistrationID  string                `json:"registration_id,omitempty"`
+	LeaseEpoch      int64                 `json:"lease_epoch,omitempty"`
+	CapabilityHash  string                `json:"capability_hash,omitempty"`
+	SyncState       string                `json:"sync_state,omitempty"`
+	Name            string                `json:"name"`
+	SPIFFEID        string                `json:"spiffe_id"`
+	Capabilities    types.Capability      `json:"capabilities"`
+	Endpoint        string                `json:"endpoint"`
+	ToolDefinitions []ToolDefinitionPayload `json:"tool_definitions,omitempty"`
 }
 
 // ServerDeregisteredPayload is the payload for EventServerDeregistered.
@@ -88,6 +91,31 @@ type ServerRegisteredAckPayload struct {
 	RegistryVersion string    `json:"registry_version,omitempty"`
 	ToolSchemaHash  string    `json:"tool_schema_hash,omitempty"`
 	AckedAt         time.Time `json:"acked_at,omitempty"`
+}
+
+// ToolMetadataConfigMessage describes incoming tool metadata enrichment updates.
+type ToolMetadataConfigMessage struct {
+	Version int64               `json:"version"`
+	Tools   []ToolMetadataEntry `json:"tools"`
+}
+
+// ToolMetadataEntry describes metadata for a single tool.
+type ToolMetadataEntry struct {
+	ToolName    string         `json:"tool_name"`
+	Category    string         `json:"category"`
+	DisplayName string         `json:"display_name,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
+	Priority    int            `json:"priority,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
+// ToolDefinitionPayload is a serializable tool definition for event payloads.
+type ToolDefinitionPayload struct {
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	Annotations  json.RawMessage `json:"annotations,omitempty"`
+	DeferLoading bool            `json:"defer_loading,omitempty"`
 }
 
 // SubjectForEvent returns the publish subject for a gateway-scoped event type.

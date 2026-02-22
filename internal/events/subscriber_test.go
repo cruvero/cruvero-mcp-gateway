@@ -292,6 +292,25 @@ func (m *mockConfigStore) Keys(ctx context.Context) ([]string, error) {
 	return append([]string(nil), m.keys...), nil
 }
 
+func TestCacheKeyToSubject_ToolMetadata(t *testing.T) {
+	t.Parallel()
+
+	got := cacheKeyToSubject("gw-1", configCacheToolMetadataKey)
+	want := SubjectForConfig("gw-1", ConfigScopeToolMetadata)
+	if got != want {
+		t.Fatalf("cacheKeyToSubject(%q) = %q, want %q", configCacheToolMetadataKey, got, want)
+	}
+}
+
+func TestCacheKeyToSubject_UnknownKey(t *testing.T) {
+	t.Parallel()
+
+	got := cacheKeyToSubject("gw-1", "config.unknown")
+	if got != "" {
+		t.Fatalf("expected empty string for unknown key, got %q", got)
+	}
+}
+
 func nilContext() context.Context {
 	return nil
 }

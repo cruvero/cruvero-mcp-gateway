@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cruvero/mcp-gateway/internal/proxy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/store"
@@ -19,13 +20,15 @@ import (
 
 // AdminHandler serves admin dashboard pages.
 type AdminHandler struct {
-	logger              *slog.Logger
-	serverStore         store.ServerStore
-	auditStore          store.AuditStore
-	classificationStore store.ToolClassificationStore
-	broadcaster         registration.Broadcaster
-	rateLimitBackend    ratelimit.LimiterBackend
-	templates           *template.Template
+	logger               *slog.Logger
+	serverStore          store.ServerStore
+	auditStore           store.AuditStore
+	classificationStore  store.ToolClassificationStore
+	broadcaster          registration.Broadcaster
+	rateLimitBackend     ratelimit.LimiterBackend
+	templates            *template.Template
+	discoveryIndex       *proxy.DiscoveryIndex
+	progressiveDiscovery bool
 }
 
 // NewAdminHandler creates a new admin handler with compiled templates.
@@ -37,13 +40,15 @@ func NewAdminHandler(deps AdminDeps) *AdminHandler {
 	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
 
 	return &AdminHandler{
-		logger:              deps.Logger,
-		serverStore:         deps.ServerStore,
-		auditStore:          deps.AuditStore,
-		classificationStore: deps.ClassificationStore,
-		broadcaster:         deps.Broadcaster,
-		rateLimitBackend:    deps.RateLimitBackend,
-		templates:           tmpl,
+		logger:               deps.Logger,
+		serverStore:          deps.ServerStore,
+		auditStore:           deps.AuditStore,
+		classificationStore:  deps.ClassificationStore,
+		broadcaster:          deps.Broadcaster,
+		rateLimitBackend:     deps.RateLimitBackend,
+		templates:            tmpl,
+		discoveryIndex:       deps.DiscoveryIndex,
+		progressiveDiscovery: deps.ProgressiveDiscovery,
 	}
 }
 

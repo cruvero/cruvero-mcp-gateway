@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/policy"
@@ -19,7 +20,8 @@ const (
 	configCachePolicyKey         = "config.policy"
 	configCacheServersKey        = "config.servers"
 	configCacheServerSettingsKey = "config.server_settings"
-	configCacheAuthKey           = "config.auth"
+	configCacheAuthKey              = "config.auth"
+	configCacheToolMetadataKey      = "config.tool_metadata"
 )
 
 // PolicyConfigMessage describes incoming policy profile updates.
@@ -359,6 +361,76 @@ func (h *ServerRegisteredAckHandler) Handle(ctx context.Context, data []byte) er
 		slog.String("registration_id", message.RegistrationID),
 		slog.Int64("lease_epoch", message.LeaseEpoch),
 		slog.String("registry_version", strings.TrimSpace(message.RegistryVersion)),
+	)
+	return nil
+}
+
+// ToolMetadataConfigHandler applies tool metadata enrichment updates from the platform.
+type ToolMetadataConfigHandler struct {
+	mu          sync.Mutex
+	configStore ConfigStore
+	onUpdate    func(ToolMetadataConfigMessage)
+	lastMessage *ToolMetadataConfigMessage
+	logger      *slog.Logger
+}
+
+// NewToolMetadataConfigHandler creates a tool metadata config handler.
+func NewToolMetadataConfigHandler(store ConfigStore, onUpdate func(ToolMetadataConfigMessage), logger *slog.Logger) *ToolMetadataConfigHandler {
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+	return &ToolMetadataConfigHandler{
+		configStore: store,
+		onUpdate:    onUpdate,
+		logger:      logger,
+	}
+}
+
+// SetOnUpdate sets the callback invoked when tool metadata is updated.
+// If a message was received before the callback was installed, it is replayed immediately.
+func (h *ToolMetadataConfigHandler) SetOnUpdate(fn func(ToolMetadataConfigMessage)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.onUpdate = fn
+	buffered := h.lastMessage
+	h.mu.Unlock()
+
+	if fn != nil && buffered != nil {
+		fn(*buffered)
+	}
+}
+
+// Handle validates and applies tool metadata config payloads.
+func (h *ToolMetadataConfigHandler) Handle(ctx context.Context, data []byte) error {
+	if h == nil {
+		return fmt.Errorf("handle tool metadata config: handler is nil")
+	}
+
+	var message ToolMetadataConfigMessage
+	if err := decodeConfigMessage(data, &message); err != nil {
+		return fmt.Errorf("handle tool metadata config: %w", err)
+	}
+
+	if h.configStore != nil {
+		if err := h.configStore.Save(ctx, configCacheToolMetadataKey, data); err != nil {
+			h.logger.WarnContext(ctx, "tool metadata config persistence failed", slog.String("error", err.Error()))
+		}
+	}
+
+	h.mu.Lock()
+	h.lastMessage = &message
+	fn := h.onUpdate
+	h.mu.Unlock()
+
+	if fn != nil {
+		fn(message)
+	}
+
+	h.logger.InfoContext(ctx, "tool metadata config updated",
+		slog.Int64("version", message.Version),
+		slog.Int("tool_count", len(message.Tools)),
 	)
 	return nil
 }

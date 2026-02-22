@@ -58,7 +58,7 @@ func NewProxyServer(
 		backendTimeout = defaultBackendTimeout
 	}
 
-	return &ProxyServer{
+	ps := &ProxyServer{
 		index:          index,
 		clients:        make(map[string]*BackendClient),
 		toolCache:      NewToolCache(defaultToolCacheTTL),
@@ -68,6 +68,12 @@ func NewProxyServer(
 		backendTimeout: backendTimeout,
 		router:         NewRouter(index, &RoundRobinStrategy{}, tlsConfig, backendTimeout, logger),
 	}
+
+	if cfg != nil && cfg.ProgressiveDiscovery {
+		ps.discoveryIndex = NewDiscoveryIndex()
+	}
+
+	return ps
 }
 
 // SetAuditStore wires an audit store for tool call result auditing.
@@ -76,6 +82,22 @@ func (p *ProxyServer) SetAuditStore(auditStore store.AuditStore) {
 		return
 	}
 	p.auditStore = auditStore
+}
+
+// ApplyToolMetadata enriches the discovery index with platform-provided metadata.
+func (p *ProxyServer) ApplyToolMetadata(metadata []ToolMetadata) {
+	if p == nil || p.discoveryIndex == nil {
+		return
+	}
+	p.discoveryIndex.ApplyMetadata(metadata)
+}
+
+// DiscoveryIndex returns the proxy's discovery index for admin wiring.
+func (p *ProxyServer) DiscoveryIndex() *DiscoveryIndex {
+	if p == nil {
+		return nil
+	}
+	return p.discoveryIndex
 }
 
 // SetupMCP initializes the mcp-go server and streamable HTTP transport.
@@ -288,10 +310,7 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 		return fmt.Errorf("aggregate tool definitions: %w", err)
 	}
 
-	if p.config.ProgressiveDiscovery {
-		if p.discoveryIndex == nil {
-			p.discoveryIndex = NewDiscoveryIndex()
-		}
+	if p.config.ProgressiveDiscovery && p.discoveryIndex != nil {
 		p.discoveryIndex.Index(tools)
 	}
 
@@ -405,7 +424,7 @@ func (p *ProxyServer) buildSearchToolsMeta() []server.ServerTool {
 					limit = int(v)
 				}
 
-				results, totalMatches := p.discoveryIndex.Search(query, category, limit)
+				results, totalMatches := p.discoveryIndex.Search(query, category, 0, limit)
 
 				type searchResult struct {
 					Tools        []ToolDefinition `json:"tools"`
