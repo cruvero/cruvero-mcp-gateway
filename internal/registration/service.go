@@ -197,12 +197,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		if updateErr := s.serverStore.Update(ctx, record); updateErr != nil {
 			return nil, fmt.Errorf("register: update existing registration: %w", updateErr)
 		}
-	case errors.Is(err, sql.ErrNoRows):
-		if createErr := s.serverStore.Create(ctx, record); createErr != nil {
-			return nil, fmt.Errorf("register: create registration: %w", createErr)
-		}
-		created = true
-	case err != nil:
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("register: lookup by spiffe id: %w", err)
 	default:
 		if createErr := s.serverStore.Create(ctx, record); createErr != nil {
