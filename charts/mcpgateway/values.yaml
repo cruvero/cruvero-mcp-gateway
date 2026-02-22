@@ -31,6 +31,8 @@ service:
   ports:
     https: 8443
     metrics: 9090
+  # -- Additional annotations for the Service (e.g. Traefik backend TLS).
+  annotations: {}
 
 probes:
   # -- Probe scheme used for /healthz and /readyz checks.

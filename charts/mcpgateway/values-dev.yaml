@@ -28,6 +28,11 @@ tls:
       - mcpgateway-dev.cruvero-dev.svc
       - mcpgateway-dev.cruvero-dev.svc.cluster.local
 
+service:
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+    traefik.ingress.kubernetes.io/service.serverstransport: cruvero-dev-mcpgateway-dev@kubernetescrd
+
 probes:
   scheme: HTTPS
 
@@ -70,8 +75,6 @@ ingress:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/service.serversscheme: https
-    traefik.ingress.kubernetes.io/service.serverstransport: cruvero-dev-mcpgateway-dev@kubernetescrd
     cert-manager.io/cluster-issuer: letsencrypt-dns01
 
 networkPolicy:
