@@ -14,6 +14,8 @@ import (
 )
 
 const (
+	errHeartbeatFmt = "heartbeat: %w"
+
 	// HeartbeatActionNone indicates no client-side corrective action is required.
 	HeartbeatActionNone = "none"
 	// HeartbeatActionReRegister indicates the backend must perform a full
@@ -50,19 +52,19 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 		return nil, fmt.Errorf("heartbeat: %w: missing id", ErrInvalidRequest)
 	}
 	if caller == nil || caller.Type != identitypkg.IdentityMTLS {
-		return nil, fmt.Errorf("heartbeat: %w", ErrUnauthorized)
+		return nil, fmt.Errorf(errHeartbeatFmt, ErrUnauthorized)
 	}
 
 	record, err := s.serverStore.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("heartbeat: %w", ErrNotFound)
+			return nil, fmt.Errorf(errHeartbeatFmt, ErrNotFound)
 		}
 		return nil, fmt.Errorf("heartbeat: get registration: %w", err)
 	}
 
 	if caller.ID != record.SPIFFEID {
-		return nil, fmt.Errorf("heartbeat: %w", ErrForbidden)
+		return nil, fmt.Errorf(errHeartbeatFmt, ErrForbidden)
 	}
 
 	action := HeartbeatActionNone

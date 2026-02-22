@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	errParseFmt = "parse %s: %w"
+
 	defaultListenAddr       = ":8443"
 	defaultHeartbeatTTL     = 30 * time.Second
 	defaultRateDefault      = 10
@@ -408,7 +410,7 @@ func parseDuration(key string, defaultValue time.Duration) (time.Duration, error
 
 	parsed, err := time.ParseDuration(raw)
 	if err != nil {
-		return 0, fmt.Errorf("parse %s: %w", key, err)
+		return 0, fmt.Errorf(errParseFmt, key, err)
 	}
 	return parsed, nil
 }
@@ -421,7 +423,7 @@ func parseInt(key string, defaultValue int) (int, error) {
 
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, fmt.Errorf("parse %s: %w", key, err)
+		return 0, fmt.Errorf(errParseFmt, key, err)
 	}
 	return parsed, nil
 }
@@ -434,7 +436,7 @@ func parseBool(key string, defaultValue bool) (bool, error) {
 
 	parsed, err := strconv.ParseBool(raw)
 	if err != nil {
-		return false, fmt.Errorf("parse %s: %w", key, err)
+		return false, fmt.Errorf(errParseFmt, key, err)
 	}
 	return parsed, nil
 }

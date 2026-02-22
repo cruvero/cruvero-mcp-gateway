@@ -18,6 +18,8 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+const headerHXRequest = "HX-Request"
+
 // AdminHandler serves admin dashboard pages.
 type AdminHandler struct {
 	logger               *slog.Logger
@@ -60,7 +62,7 @@ func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, name strin
 	}
 
 	// HTMX partial response.
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		if err := h.templates.ExecuteTemplate(w, name, data); err != nil {
 			h.logger.Error("render partial failed", slog.String("template", name), slog.String("error", err.Error()))
 			http.Error(w, "render failed", http.StatusInternalServerError)
@@ -155,7 +157,7 @@ func (h *AdminHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 		"Tools":     tools,
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "tools_table", data)
 		return
 	}
@@ -267,7 +269,7 @@ func (h *AdminHandler) HandleRateLimits(w http.ResponseWriter, r *http.Request) 
 		data["Entries"] = inspector.Snapshot()
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "ratelimits_table", data)
 		return
 	}
@@ -336,7 +338,7 @@ func (h *AdminHandler) HandleAudit(w http.ResponseWriter, r *http.Request) {
 		"CurrentPage": page,
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "audit_table", data)
 		return
 	}
@@ -390,7 +392,7 @@ func (h *AdminHandler) HandleServers(w http.ResponseWriter, r *http.Request) {
 		"Servers":   servers,
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "servers_table", data)
 		return
 	}

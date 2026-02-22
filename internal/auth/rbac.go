@@ -6,13 +6,15 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/identity"
 )
 
+const errInsufficientScope = "insufficient scope"
+
 // RequireScope enforces that the current identity has a specific scope.
 func RequireScope(scope string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id, ok := identity.FromContext(r.Context())
 			if !ok || !id.HasScope(scope) {
-				writeAuthJSONError(w, http.StatusForbidden, "insufficient scope")
+				writeAuthJSONError(w, http.StatusForbidden, errInsufficientScope)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -31,7 +33,7 @@ func RequireAnyScope(scopes ...string) func(http.Handler) http.Handler {
 
 			id, ok := identity.FromContext(r.Context())
 			if !ok {
-				writeAuthJSONError(w, http.StatusForbidden, "insufficient scope")
+				writeAuthJSONError(w, http.StatusForbidden, errInsufficientScope)
 				return
 			}
 
@@ -42,7 +44,7 @@ func RequireAnyScope(scopes ...string) func(http.Handler) http.Handler {
 				}
 			}
 
-			writeAuthJSONError(w, http.StatusForbidden, "insufficient scope")
+			writeAuthJSONError(w, http.StatusForbidden, errInsufficientScope)
 		})
 	}
 }

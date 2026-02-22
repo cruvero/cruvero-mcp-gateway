@@ -14,6 +14,8 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/store"
 )
 
+const errInvalidAPIKey = "invalid api key"
+
 // APIKeyMiddleware authenticates requests using gateway API keys.
 func APIKeyMiddleware(store store.APIKeyStore, logger *slog.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
@@ -32,23 +34,23 @@ func APIKeyMiddleware(store store.APIKeyStore, logger *slog.Logger) func(http.Ha
 			record, err := store.GetByLookupHash(r.Context(), lookupHash)
 			if err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					writeAuthJSONError(w, http.StatusUnauthorized, "invalid api key")
+					writeAuthJSONError(w, http.StatusUnauthorized, errInvalidAPIKey)
 					return
 				}
 				logger.ErrorContext(r.Context(), "api key lookup failed", slog.String("error", err.Error()))
-				writeAuthJSONError(w, http.StatusUnauthorized, "invalid api key")
+				writeAuthJSONError(w, http.StatusUnauthorized, errInvalidAPIKey)
 				return
 			}
 			if record == nil {
-				writeAuthJSONError(w, http.StatusUnauthorized, "invalid api key")
+				writeAuthJSONError(w, http.StatusUnauthorized, errInvalidAPIKey)
 				return
 			}
 			if record.KeyLookupHash != "" && record.KeyLookupHash != lookupHash {
-				writeAuthJSONError(w, http.StatusUnauthorized, "invalid api key")
+				writeAuthJSONError(w, http.StatusUnauthorized, errInvalidAPIKey)
 				return
 			}
 			if !VerifyAPIKey(key, record.KeyBcryptHash) {
-				writeAuthJSONError(w, http.StatusUnauthorized, "invalid api key")
+				writeAuthJSONError(w, http.StatusUnauthorized, errInvalidAPIKey)
 				return
 			}
 			if record.ExpiresAt != nil && record.ExpiresAt.Before(time.Now().UTC()) {

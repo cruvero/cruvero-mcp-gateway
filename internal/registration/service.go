@@ -24,6 +24,8 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
+const errDeregisterFmt = "deregister: %w"
+
 var (
 	// ErrInvalidRequest indicates request payload validation failed.
 	ErrInvalidRequest = errors.New("invalid request")
@@ -299,13 +301,13 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 		return fmt.Errorf("deregister: %w: missing id", ErrInvalidRequest)
 	}
 	if caller == nil {
-		return fmt.Errorf("deregister: %w", ErrUnauthorized)
+		return fmt.Errorf(errDeregisterFmt, ErrUnauthorized)
 	}
 
 	record, err := s.serverStore.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("deregister: %w", ErrNotFound)
+			return fmt.Errorf(errDeregisterFmt, ErrNotFound)
 		}
 		return fmt.Errorf("deregister: get registration: %w", err)
 	}
@@ -313,7 +315,7 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 	isAdmin := caller.HasScope(identitypkg.ScopeAdmin)
 	isSelf := caller.Type == identitypkg.IdentityMTLS && caller.ID == record.SPIFFEID
 	if !isAdmin && !isSelf {
-		return fmt.Errorf("deregister: %w", ErrForbidden)
+		return fmt.Errorf(errDeregisterFmt, ErrForbidden)
 	}
 
 	if err := s.serverStore.Delete(ctx, id); err != nil {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 )
 
+const errConfigStoreKeys = "config store keys: %w"
+
 // ConfigStore persists last-known-good control-plane config snapshots.
 type ConfigStore interface {
 	Save(ctx context.Context, key string, value []byte) error
@@ -65,7 +67,7 @@ func (s *PostgresConfigStore) Keys(ctx context.Context) ([]string, error) {
 	const query = `SELECT key FROM config_cache`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("config store keys: %w", err)
+		return nil, fmt.Errorf(errConfigStoreKeys, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -73,12 +75,12 @@ func (s *PostgresConfigStore) Keys(ctx context.Context) ([]string, error) {
 	for rows.Next() {
 		var key string
 		if scanErr := rows.Scan(&key); scanErr != nil {
-			return nil, fmt.Errorf("config store keys: %w", scanErr)
+			return nil, fmt.Errorf(errConfigStoreKeys, scanErr)
 		}
 		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config store keys: %w", err)
+		return nil, fmt.Errorf(errConfigStoreKeys, err)
 	}
 
 	return keys, nil

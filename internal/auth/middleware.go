@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const logKeyAuthType = "auth.type"
+
 // AuthOptions configures unified authentication middleware.
 type AuthOptions struct {
 	APIKeyStore   store.APIKeyStore `json:"api_key_store"`
@@ -36,7 +38,7 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 			r = r.WithContext(ctx)
 
 			if _, ok := identity.FromContext(r.Context()); ok {
-				span.SetAttributes(attribute.String("auth.type", "mtls"))
+				span.SetAttributes(attribute.String(logKeyAuthType, "mtls"))
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -45,7 +47,7 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 			if !ok {
 				// Support API keys passed via X-API-Key by normalizing to bearer form.
 				if xAPIKey := strings.TrimSpace(r.Header.Get("X-API-Key")); xAPIKey != "" {
-					span.SetAttributes(attribute.String("auth.type", "api_key"))
+					span.SetAttributes(attribute.String(logKeyAuthType, "api_key"))
 					if opts.APIKeyStore == nil {
 						writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
 						return
@@ -56,13 +58,13 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 					apiKeyHandler.ServeHTTP(w, cloned)
 					return
 				}
-				span.SetAttributes(attribute.String("auth.type", "missing"))
+				span.SetAttributes(attribute.String(logKeyAuthType, "missing"))
 				writeAuthJSONError(w, http.StatusUnauthorized, "missing authorization header")
 				return
 			}
 
 			if isJWTToken(token) {
-				span.SetAttributes(attribute.String("auth.type", "oidc"))
+				span.SetAttributes(attribute.String(logKeyAuthType, "oidc"))
 				if opts.OIDCValidator == nil {
 					writeAuthJSONError(w, http.StatusUnauthorized, "oidc validator is not configured")
 					return
@@ -71,7 +73,7 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 				return
 			}
 
-			span.SetAttributes(attribute.String("auth.type", "api_key"))
+			span.SetAttributes(attribute.String(logKeyAuthType, "api_key"))
 			if opts.APIKeyStore == nil {
 				writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
 				return

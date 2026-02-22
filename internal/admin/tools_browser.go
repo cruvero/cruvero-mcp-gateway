@@ -17,13 +17,15 @@ const (
 	// Approximate token estimates for tool definitions.
 	tokensPerFullDefinition = 170
 	tokensPerSummary        = 25
+
+	errProgressiveDiscoveryDisabled = "progressive discovery is not enabled"
 )
 
 // HandleToolBrowse returns paginated tool summaries with optional search and category filter.
 func (h *AdminHandler) HandleToolBrowse(w http.ResponseWriter, r *http.Request) {
 	if !h.progressiveDiscovery || h.discoveryIndex == nil {
 		writeAdminJSON(w, http.StatusNotImplemented, map[string]string{
-			"error": "progressive discovery is not enabled",
+			"error": errProgressiveDiscoveryDisabled,
 		})
 		return
 	}
@@ -72,7 +74,7 @@ func (h *AdminHandler) HandleToolBrowse(w http.ResponseWriter, r *http.Request) 
 func (h *AdminHandler) HandleToolSchema(w http.ResponseWriter, r *http.Request) {
 	if !h.progressiveDiscovery || h.discoveryIndex == nil {
 		writeAdminJSON(w, http.StatusNotImplemented, map[string]string{
-			"error": "progressive discovery is not enabled",
+			"error": errProgressiveDiscoveryDisabled,
 		})
 		return
 	}
@@ -100,7 +102,7 @@ func (h *AdminHandler) HandleToolSchema(w http.ResponseWriter, r *http.Request) 
 func (h *AdminHandler) HandleDiscoveryStats(w http.ResponseWriter, r *http.Request) {
 	if !h.progressiveDiscovery || h.discoveryIndex == nil {
 		writeAdminJSON(w, http.StatusNotImplemented, map[string]string{
-			"error": "progressive discovery is not enabled",
+			"error": errProgressiveDiscoveryDisabled,
 		})
 		return
 	}
