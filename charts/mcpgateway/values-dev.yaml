@@ -31,7 +31,7 @@ tls:
 service:
   annotations:
     traefik.ingress.kubernetes.io/service.serversscheme: https
-    traefik.ingress.kubernetes.io/service.serverstransport: <APP>-dev-mcpgateway-dev@kubernetescrd
+    traefik.ingress.kubernetes.io/service.serverstransport: <RELEASE_NAME>-mcpgateway@kubernetescrd
 
 probes:
   scheme: HTTPS
@@ -83,7 +83,7 @@ ingress:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    cert-manager.io/cluster-issuer: letsencrypt-dns01
+    cert-manager.io/cluster-issuer: <INGRESS_ISSUER>
 
 networkPolicy:
   ingress:
