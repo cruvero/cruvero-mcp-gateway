@@ -105,6 +105,8 @@ type ServerRecord struct {
 	SyncState              RegistrationSyncState `json:"sync_state"`
 	LastPlatformAckVersion string                `json:"last_platform_ack_version"`
 	LastPlatformAckAt      *time.Time            `json:"last_platform_ack_at"`
+	RateLimit              *int                  `json:"rate_limit,omitempty"`
+	RateBurst              *int                  `json:"rate_burst,omitempty"`
 	CreatedAt              time.Time             `json:"created_at"`
 	UpdatedAt              time.Time             `json:"updated_at"`
 }

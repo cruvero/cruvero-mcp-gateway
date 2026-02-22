@@ -26,6 +26,8 @@ var (
 		"sync_state",
 		"last_platform_ack_version",
 		"last_platform_ack_at",
+		"rate_limit",
+		"rate_burst",
 		"created_at",
 		"updated_at",
 	}

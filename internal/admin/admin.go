@@ -82,6 +82,8 @@ func NewRouter(deps AdminDeps) chi.Router {
 		r.Get("/audit", handler.HandleAudit)
 		r.Get("/audit/export", handler.HandleAuditExport)
 		r.Get("/servers", handler.HandleServers)
+		r.Get("/servers/{id}/ratelimit", handler.HandleServerRateLimitEdit)
+		r.Post("/servers/{id}/ratelimit", handler.HandleServerRateLimitUpdate)
 		r.Post("/servers/{id}/deregister", handler.HandleServerDeregister)
 	})
 

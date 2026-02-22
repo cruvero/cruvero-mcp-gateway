@@ -92,6 +92,8 @@ func TestPostgresServerStoreGetAndNotFound(t *testing.T) {
 			"unacked",
 			"",
 			nil,
+			nil,
+			nil,
 			now,
 			now,
 		))
@@ -142,6 +144,8 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			"unacked",
 			"",
 			nil,
+			nil,
+			nil,
 			now,
 			now,
 		))
@@ -170,6 +174,8 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			"unacked",
 			"",
 			nil,
+			nil,
+			nil,
 			now,
 			now,
 		))
@@ -189,8 +195,8 @@ func TestPostgresServerStoreList(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
 		WithArgs(status.String(), "alpha%", int64(10), int64(2)).
 		WillReturnRows(serverRows().
-			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, now, now).
-			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, now, now))
+			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, nil, nil, now, now).
+			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, nil, nil, now, now))
 
 	records, err := s.List(context.Background(), types.ServerFilter{
 		Status:      &status,
@@ -318,6 +324,8 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			"unacked",
 			"",
 			nil,
+			nil,
+			nil,
 			now,
 			now,
 		))
@@ -349,6 +357,8 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			"unacked",
 			"",
 			nil,
+			nil,
+			nil,
 			now,
 			now,
 		))
@@ -371,6 +381,35 @@ func TestPostgresServerStoreThresholdValidation(t *testing.T) {
 	}
 	if _, err := s.ListExpired(context.Background(), -1*time.Second); err == nil {
 		t.Fatal("expected error for negative threshold in ListExpired")
+	}
+}
+
+func TestPostgresServerStoreUpdateRateLimit(t *testing.T) {
+	db, mock := newMockDB(t)
+	s := NewPostgresServerStore(db)
+
+	rateLimit := 10
+	rateBurst := 20
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE mcp_servers SET rate_limit = $1, rate_burst = $2, updated_at = now() WHERE id = $3")).
+		WithArgs(&rateLimit, &rateBurst, "server-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := s.UpdateRateLimit(context.Background(), "server-1", &rateLimit, &rateBurst); err != nil {
+		t.Fatalf("update rate limit: %v", err)
+	}
+}
+
+func TestPostgresServerStoreUpdateRateLimitClear(t *testing.T) {
+	db, mock := newMockDB(t)
+	s := NewPostgresServerStore(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE mcp_servers SET rate_limit = $1, rate_burst = $2, updated_at = now() WHERE id = $3")).
+		WithArgs(nil, nil, "server-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := s.UpdateRateLimit(context.Background(), "server-1", nil, nil); err != nil {
+		t.Fatalf("clear rate limit: %v", err)
 	}
 }
 

@@ -268,6 +268,9 @@ func initProxyServer(ctx context.Context, cfg *config.Config, index *registratio
 	}
 	proxyServer := proxy.NewProxyServer(index, cfg, proxyTLSConfig, 0, logger)
 	proxyServer.SetAuditStore(stores.auditStore)
+	if lb := gw.RateLimitBackend(); lb != nil {
+		proxyServer.Router().SetLimiter(lb)
+	}
 	wireToolMetadataCallback(gw, proxyServer)
 
 	oidcValidator, err := maybeBuildOIDCValidator(ctx, cfg)

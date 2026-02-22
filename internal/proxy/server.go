@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -83,6 +84,15 @@ func (p *ProxyServer) SetAuditStore(auditStore store.AuditStore) {
 	}
 	p.auditStore = auditStore
 }
+
+// Router returns the proxy's underlying router for configuration wiring.
+func (p *ProxyServer) Router() *Router {
+	if p == nil {
+		return nil
+	}
+	return p.router
+}
+
 
 // ApplyToolMetadata enriches the discovery index with platform-provided metadata.
 func (p *ProxyServer) ApplyToolMetadata(metadata []ToolMetadata) {
@@ -371,6 +381,13 @@ func (p *ProxyServer) makeToolHandler(toolName string) func(context.Context, mcp
 		args := req.GetArguments()
 		result, routeErr := p.router.Route(ctx, toolName, args)
 		if routeErr != nil {
+			var rateLimitErr *ServerRateLimitError
+			if errors.As(routeErr, &rateLimitErr) {
+				p.auditToolCall(toolName, "server rate limited", true)
+				msg := fmt.Sprintf("Server %s is rate limited. Retry after %s.",
+					rateLimitErr.ServerName, rateLimitErr.RetryAfter)
+				return mcp.NewToolResultError(msg), nil
+			}
 			p.auditToolCall(toolName, "", true)
 			return nil, fmt.Errorf("route tool %s: %w", toolName, routeErr)
 		}

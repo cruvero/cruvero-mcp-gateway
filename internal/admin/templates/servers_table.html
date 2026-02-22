@@ -6,6 +6,7 @@
       <th>Status</th>
       <th>Host</th>
       <th>Version</th>
+      <th>Rate Limit</th>
       <th>Last Heartbeat</th>
       <th>Actions</th>
     </tr>
@@ -17,8 +18,10 @@
       <td><span class="badge badge-{{.Status}}">{{.Status}}</span></td>
       <td>{{.Host}}:{{.Port}}</td>
       <td>{{.Version}}</td>
+      <td>{{if .RateLimit}}{{.RateLimit}}/s (burst {{if .RateBurst}}{{.RateBurst}}{{else}}{{.RateLimit}}{{end}}){{else}}Unlimited{{end}}</td>
       <td>{{if .LastHeartbeat}}{{.LastHeartbeat.Format "2006-01-02 15:04:05"}}{{else}}—{{end}}</td>
       <td>
+        <a href="/admin/servers/{{.ID}}/ratelimit" class="btn btn-sm">Rate Limit</a>
         <form method="POST" action="/admin/servers/{{.ID}}/deregister" style="display:inline">
           <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
           <button type="submit" class="btn btn-danger btn-sm"
@@ -27,7 +30,7 @@
       </td>
     </tr>
     {{else}}
-    <tr><td colspan="6">No servers registered.</td></tr>
+    <tr><td colspan="7">No servers registered.</td></tr>
     {{end}}
   </tbody>
 </table>

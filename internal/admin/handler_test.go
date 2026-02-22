@@ -23,17 +23,29 @@ import (
 // --- Mock stores ---
 
 type mockServerStore struct {
-	servers []types.ServerRecord
-	listErr error
-	delErr  error
-	deleted []string
+	servers  []types.ServerRecord
+	listErr  error
+	delErr   error
+	deleted  []string
+	getByID  map[string]*types.ServerRecord
+	updateRL []struct {
+		id        string
+		rateLimit *int
+		rateBurst *int
+	}
+	updateRLErr error
 }
 
 var _ store.ServerStore = (*mockServerStore)(nil)
 
 func (m *mockServerStore) Create(_ context.Context, _ *types.ServerRecord) error { return nil }
-func (m *mockServerStore) Get(_ context.Context, _ string) (*types.ServerRecord, error) {
-	return nil, nil
+func (m *mockServerStore) Get(_ context.Context, id string) (*types.ServerRecord, error) {
+	if m.getByID != nil {
+		if r, ok := m.getByID[id]; ok {
+			return r, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
 }
 func (m *mockServerStore) GetByName(_ context.Context, _ string) (*types.ServerRecord, error) {
 	return nil, nil
@@ -53,6 +65,17 @@ func (m *mockServerStore) UpdateStatus(_ context.Context, _ string, _ types.Serv
 }
 func (m *mockServerStore) UpdateHeartbeat(_ context.Context, _ string) error { return nil }
 func (m *mockServerStore) AcknowledgeRegistration(_ context.Context, _ string, _ int64, _ string, _ string, _ time.Time) error {
+	return nil
+}
+func (m *mockServerStore) UpdateRateLimit(_ context.Context, id string, rateLimit, rateBurst *int) error {
+	if m.updateRLErr != nil {
+		return m.updateRLErr
+	}
+	m.updateRL = append(m.updateRL, struct {
+		id        string
+		rateLimit *int
+		rateBurst *int
+	}{id, rateLimit, rateBurst})
 	return nil
 }
 func (m *mockServerStore) Delete(_ context.Context, id string) error {
@@ -852,6 +875,179 @@ func TestHandleServerDeregister(t *testing.T) {
 		}
 		if as.logged[0].ClientID != "admin" {
 			t.Fatalf("expected deregisteredBy=admin, got %s", as.logged[0].ClientID)
+		}
+	})
+}
+
+func TestHandleServerRateLimitEdit(t *testing.T) {
+	rateLimit := 10
+	rateBurst := 20
+	serverStore := &mockServerStore{
+		getByID: map[string]*types.ServerRecord{
+			"srv-1": {ID: "srv-1", Name: "test-server", RateLimit: &rateLimit, RateBurst: &rateBurst},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		ServerStore: serverStore,
+	})
+
+	t.Run("existing server", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/admin/servers/srv-1/ratelimit", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "srv-1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitEdit(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("empty id", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/admin/servers//ratelimit", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitEdit(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("server not found", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/admin/servers/missing/ratelimit", nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "missing")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitEdit(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+}
+
+func TestHandleServerRateLimitUpdate(t *testing.T) {
+	serverStore := &mockServerStore{}
+	auditStore := &mockAuditStore{}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		ServerStore: serverStore,
+		AuditStore:  auditStore,
+	})
+
+	t.Run("successful update", func(t *testing.T) {
+		form := url.Values{
+			"rate_limit": {"10"},
+			"rate_burst": {"20"},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/srv-1/ratelimit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "srv-1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitUpdate(w, req)
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("expected redirect, got %d: %s", w.Code, w.Body.String())
+		}
+		if len(serverStore.updateRL) != 1 {
+			t.Fatalf("expected 1 rate limit update, got %d", len(serverStore.updateRL))
+		}
+		if *serverStore.updateRL[0].rateLimit != 10 {
+			t.Fatalf("expected rate limit 10, got %d", *serverStore.updateRL[0].rateLimit)
+		}
+		if len(auditStore.logged) == 0 {
+			t.Fatalf("expected audit entry")
+		}
+	})
+
+	t.Run("clear rate limit", func(t *testing.T) {
+		serverStore.updateRL = nil
+		form := url.Values{}
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/srv-2/ratelimit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "srv-2")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitUpdate(w, req)
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("expected redirect, got %d", w.Code)
+		}
+		if len(serverStore.updateRL) != 1 {
+			t.Fatalf("expected 1 update call, got %d", len(serverStore.updateRL))
+		}
+		if serverStore.updateRL[0].rateLimit != nil {
+			t.Fatalf("expected nil rate limit, got %v", serverStore.updateRL[0].rateLimit)
+		}
+	})
+
+	t.Run("empty id", func(t *testing.T) {
+		form := url.Values{"rate_limit": {"10"}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers//ratelimit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitUpdate(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid rate limit", func(t *testing.T) {
+		form := url.Values{"rate_limit": {"abc"}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/srv-1/ratelimit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "srv-1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitUpdate(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid input, got %d", w.Code)
+		}
+	})
+
+	t.Run("negative rate limit", func(t *testing.T) {
+		form := url.Values{"rate_limit": {"-5"}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/srv-1/ratelimit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "srv-1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitUpdate(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for negative value, got %d", w.Code)
 		}
 	})
 }
