@@ -269,3 +269,35 @@ func TestRouterServerRateLimitNoLimiter(t *testing.T) {
 		}
 	}
 }
+
+func TestRouterServerRateLimitZeroBlocks(t *testing.T) {
+	t.Parallel()
+
+	record, client, cleanup := buildRoutedToolBackend(t, "server-zerolimit", "tool.echo", "blocked")
+	defer cleanup()
+
+	// RateLimit = 0 should block all requests for this server.
+	record.RateLimit = intPtr(0)
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record)
+
+	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
+	router.clients.Store(record.ID, newResilientClientForTest(record.ID, client))
+
+	backend := ratelimit.NewMemoryBackend(time.Second, 5*time.Second)
+	defer func() { _ = backend.Close() }()
+	router.SetLimiter(backend)
+
+	for i := range 2 {
+		_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
+		if err == nil {
+			t.Fatalf("call %d should be blocked by zero rate limit", i+1)
+		}
+
+		var rlErr *ServerRateLimitError
+		if !errors.As(err, &rlErr) {
+			t.Fatalf("call %d expected *ServerRateLimitError, got %T: %v", i+1, err, err)
+		}
+	}
+}

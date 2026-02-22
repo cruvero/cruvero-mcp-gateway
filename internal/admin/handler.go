@@ -515,6 +515,11 @@ func (h *AdminHandler) HandleServerRateLimitUpdate(w http.ResponseWriter, r *htt
 		rateBurst = &n
 	}
 
+	if rateLimit == nil && rateBurst != nil {
+		http.Error(w, "rate burst requires rate limit", http.StatusBadRequest)
+		return
+	}
+
 	if h.serverStore != nil {
 		if err := h.serverStore.UpdateRateLimit(r.Context(), id, rateLimit, rateBurst); err != nil {
 			h.logger.Error("update server rate limit failed", slog.String("error", err.Error()))

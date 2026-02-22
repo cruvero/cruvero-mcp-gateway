@@ -1055,6 +1055,23 @@ func TestHandleServerRateLimitUpdate(t *testing.T) {
 			t.Fatalf("expected 400 for negative value, got %d", w.Code)
 		}
 	})
+
+	t.Run("burst without limit", func(t *testing.T) {
+		form := url.Values{"rate_burst": {"20"}}
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/srv-1/ratelimit", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", "srv-1")
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandleServerRateLimitUpdate(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for burst without limit, got %d", w.Code)
+		}
+	})
 }
 
 func TestHandleServers_WithStore(t *testing.T) {

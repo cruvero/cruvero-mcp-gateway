@@ -7,7 +7,7 @@
     <input type="number" name="rate_limit" id="rate_limit" min="0"
            value="{{if .Server.RateLimit}}{{.Server.RateLimit}}{{end}}"
            placeholder="Leave empty for unlimited">
-    <small>Set to 0 to block all requests. Leave empty for unlimited.</small>
+    <small>Positive number enforces a limit. 0 blocks all requests. Leave empty for unlimited.</small>
   </div>
   <div class="form-group">
     <label for="rate_burst">Burst Size</label>
