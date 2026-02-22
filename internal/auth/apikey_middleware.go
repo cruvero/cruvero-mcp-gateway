@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -80,13 +79,13 @@ func (v *apiKeyValidator) lookupRecord(r *http.Request, key string) (*types.APIK
 	record, err := v.store.GetByLookupHash(r.Context(), lookupHash)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf(errInvalidAPIKey)
+			return nil, errors.New(errInvalidAPIKey)
 		}
 		v.logger.ErrorContext(r.Context(), "api key lookup failed", slog.String("error", err.Error()))
-		return nil, fmt.Errorf(errInvalidAPIKey)
+		return nil, errors.New(errInvalidAPIKey)
 	}
 	if record == nil {
-		return nil, fmt.Errorf(errInvalidAPIKey)
+		return nil, errors.New(errInvalidAPIKey)
 	}
 	return record, nil
 }
