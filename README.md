@@ -2,9 +2,7 @@
 
 [![CI](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/cruvero/cruvero-mcp-gateway)](go.mod)
-[![Quality Gate](https://sonar.dev.gchinfo.com/api/project_badges/measure?project=Cruvero-MCP-Gateway&metric=alert_status)](https://sonar.dev.gchinfo.com/dashboard?id=Cruvero-MCP-Gateway)
-[![Coverage](https://sonar.dev.gchinfo.com/api/project_badges/measure?project=Cruvero-MCP-Gateway&metric=coverage)](https://sonar.dev.gchinfo.com/dashboard?id=Cruvero-MCP-Gateway)
-[![Security Rating](https://sonar.dev.gchinfo.com/api/project_badges/measure?project=Cruvero-MCP-Gateway&metric=security_rating)](https://sonar.dev.gchinfo.com/dashboard?id=Cruvero-MCP-Gateway)
+
 
 A pure-Go mTLS reverse proxy that acts as a unified gateway for MCP (Model Context Protocol) servers on Kubernetes. The gateway auto-discovers backend MCP servers via a registration handshake, aggregates their tool catalogs into a single MCP-compliant endpoint, and proxies requests with rate limiting, circuit breakers, and per-tool policy enforcement. Clients connect to one gateway instead of managing individual backends.
 
@@ -553,7 +551,7 @@ make chart-validate
 
 ### Development Phases
 
-The gateway was developed across 18 sequential phases covering core infrastructure through production hardening. See [docs/phases/INDEX.md](docs/phases/INDEX.md) for specifications.
+The gateway was developed across 18 sequential phases covering core infrastructure through production hardening.
 
 ## Repository Layout
 
@@ -583,8 +581,7 @@ cruvero-mcp-gateway/
 ├── deploy/
 │   └── argocd/             GitOps manifests (AppProject, ApplicationSet)
 ├── docs/
-│   ├── OVERVIEW.md          Architecture reference
-│   └── phases/             Phase specifications
+│   └── OVERVIEW.md          Architecture reference
 ├── scripts/                Quality gate and CI helper scripts
 ├── Dockerfile
 ├── Makefile
