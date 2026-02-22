@@ -234,43 +234,28 @@ type parsedIntegers struct {
 
 // loadIntegers parses all MCPGW_* integer environment variables.
 func loadIntegers() (parsedIntegers, error) {
-	rateDefault, err := parseInt("MCPGW_RATE_DEFAULT", defaultRateDefault)
-	if err != nil {
-		return parsedIntegers{}, err
+	var p parsedIntegers
+	fields := []struct {
+		envKey     string
+		defaultVal int
+		dest       *int
+	}{
+		{"MCPGW_RATE_DEFAULT", defaultRateDefault, &p.rateDefault},
+		{"MCPGW_RATE_BURST", defaultRateBurst, &p.rateBurst},
+		{"MCPGW_CIRCUIT_THRESHOLD", defaultCircuitThreshold, &p.circuitThreshold},
+		{"MCPGW_RETRY_MAX", defaultRetryMax, &p.retryMax},
+		{"MCPGW_DB_MAX_OPEN_CONNS", defaultDBMaxOpenConns, &p.dbMaxOpenConns},
+		{"MCPGW_DB_MAX_IDLE_CONNS", defaultDBMaxIdleConns, &p.dbMaxIdleConns},
+		{"MCPGW_AUDIT_RETENTION_DAYS", defaultAuditRetentionDays, &p.auditRetentionDays},
 	}
-	rateBurst, err := parseInt("MCPGW_RATE_BURST", defaultRateBurst)
-	if err != nil {
-		return parsedIntegers{}, err
+	for _, f := range fields {
+		v, err := parseInt(f.envKey, f.defaultVal)
+		if err != nil {
+			return parsedIntegers{}, err
+		}
+		*f.dest = v
 	}
-	circuitThreshold, err := parseInt("MCPGW_CIRCUIT_THRESHOLD", defaultCircuitThreshold)
-	if err != nil {
-		return parsedIntegers{}, err
-	}
-	retryMax, err := parseInt("MCPGW_RETRY_MAX", defaultRetryMax)
-	if err != nil {
-		return parsedIntegers{}, err
-	}
-	dbMaxOpenConns, err := parseInt("MCPGW_DB_MAX_OPEN_CONNS", defaultDBMaxOpenConns)
-	if err != nil {
-		return parsedIntegers{}, err
-	}
-	dbMaxIdleConns, err := parseInt("MCPGW_DB_MAX_IDLE_CONNS", defaultDBMaxIdleConns)
-	if err != nil {
-		return parsedIntegers{}, err
-	}
-	auditRetentionDays, err := parseInt("MCPGW_AUDIT_RETENTION_DAYS", defaultAuditRetentionDays)
-	if err != nil {
-		return parsedIntegers{}, err
-	}
-	return parsedIntegers{
-		rateDefault:        rateDefault,
-		rateBurst:          rateBurst,
-		circuitThreshold:   circuitThreshold,
-		retryMax:           retryMax,
-		dbMaxOpenConns:     dbMaxOpenConns,
-		dbMaxIdleConns:     dbMaxIdleConns,
-		auditRetentionDays: auditRetentionDays,
-	}, nil
+	return p, nil
 }
 
 // parsedBooleans holds all boolean values parsed from environment variables.
@@ -286,43 +271,28 @@ type parsedBooleans struct {
 
 // loadBooleans parses all MCPGW_* boolean environment variables.
 func loadBooleans() (parsedBooleans, error) {
-	cruveroEnabled, err := parseBool("MCPGW_CRUVERO_ENABLED", defaultCruveroEnabled)
-	if err != nil {
-		return parsedBooleans{}, err
+	var p parsedBooleans
+	fields := []struct {
+		envKey     string
+		defaultVal bool
+		dest       *bool
+	}{
+		{"MCPGW_CRUVERO_ENABLED", defaultCruveroEnabled, &p.cruveroEnabled},
+		{"MCPGW_CORS_ENABLED", defaultCORSEnabled, &p.corsEnabled},
+		{"MCPGW_NATS_TLS_ENABLED", false, &p.natsTLSEnabled},
+		{"MCPGW_DEVICE_FLOW_ENABLED", false, &p.deviceFlowEnabled},
+		{"MCPGW_ADMIN_ENABLED", false, &p.adminEnabled},
+		{"MCPGW_ADMIN_DEV_MODE", false, &p.adminDevMode},
+		{"MCPGW_PROGRESSIVE_DISCOVERY", defaultProgressiveDiscovery, &p.progressiveDiscovery},
 	}
-	corsEnabled, err := parseBool("MCPGW_CORS_ENABLED", defaultCORSEnabled)
-	if err != nil {
-		return parsedBooleans{}, err
+	for _, f := range fields {
+		v, err := parseBool(f.envKey, f.defaultVal)
+		if err != nil {
+			return parsedBooleans{}, err
+		}
+		*f.dest = v
 	}
-	natsTLSEnabled, err := parseBool("MCPGW_NATS_TLS_ENABLED", false)
-	if err != nil {
-		return parsedBooleans{}, err
-	}
-	deviceFlowEnabled, err := parseBool("MCPGW_DEVICE_FLOW_ENABLED", false)
-	if err != nil {
-		return parsedBooleans{}, err
-	}
-	adminEnabled, err := parseBool("MCPGW_ADMIN_ENABLED", false)
-	if err != nil {
-		return parsedBooleans{}, err
-	}
-	adminDevMode, err := parseBool("MCPGW_ADMIN_DEV_MODE", false)
-	if err != nil {
-		return parsedBooleans{}, err
-	}
-	progressiveDiscovery, err := parseBool("MCPGW_PROGRESSIVE_DISCOVERY", defaultProgressiveDiscovery)
-	if err != nil {
-		return parsedBooleans{}, err
-	}
-	return parsedBooleans{
-		cruveroEnabled:       cruveroEnabled,
-		corsEnabled:          corsEnabled,
-		natsTLSEnabled:       natsTLSEnabled,
-		deviceFlowEnabled:    deviceFlowEnabled,
-		adminEnabled:         adminEnabled,
-		adminDevMode:         adminDevMode,
-		progressiveDiscovery: progressiveDiscovery,
-	}, nil
+	return p, nil
 }
 
 // resolveGatewayID reads the gateway ID from the environment and generates a
