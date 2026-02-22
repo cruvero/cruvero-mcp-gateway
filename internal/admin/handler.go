@@ -29,18 +29,42 @@ type AdminHandler struct {
 	classificationStore  store.ToolClassificationStore
 	broadcaster          registration.Broadcaster
 	rateLimitBackend     ratelimit.LimiterBackend
-	templates            *template.Template
+	pages                map[string]*template.Template
+	partials             *template.Template
 	discoveryIndex       *proxy.DiscoveryIndex
 	progressiveDiscovery bool
 }
 
 // NewAdminHandler creates a new admin handler with compiled templates.
+//
+// Each page template defines {{define "content"}}, so they cannot share a
+// single template.Template (Go uses the last definition). We build per-page
+// template sets by cloning the shared base+partials and parsing each page
+// template into its own clone.
 func NewAdminHandler(deps AdminDeps) *AdminHandler {
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
 
-	tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
+	shared := template.Must(template.ParseFS(templateFS,
+		"templates/base.html",
+		"templates/*_table.html",
+	))
+
+	pageFiles := []string{
+		"templates/dashboard.html",
+		"templates/servers.html",
+		"templates/audit.html",
+		"templates/ratelimits.html",
+		"templates/tools.html",
+		"templates/tool_edit.html",
+	}
+
+	pages := make(map[string]*template.Template, len(pageFiles))
+	for _, pf := range pageFiles {
+		clone := template.Must(shared.Clone())
+		pages[pf] = template.Must(clone.ParseFS(templateFS, pf))
+	}
 
 	return &AdminHandler{
 		logger:               deps.Logger,
@@ -49,7 +73,8 @@ func NewAdminHandler(deps AdminDeps) *AdminHandler {
 		classificationStore:  deps.ClassificationStore,
 		broadcaster:          deps.Broadcaster,
 		rateLimitBackend:     deps.RateLimitBackend,
-		templates:            tmpl,
+		pages:                pages,
+		partials:             shared,
 		discoveryIndex:       deps.DiscoveryIndex,
 		progressiveDiscovery: deps.ProgressiveDiscovery,
 	}
@@ -64,17 +89,34 @@ func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, name strin
 
 	// HTMX partial response.
 	if r.Header.Get(headerHXRequest) == "true" {
-		if err := h.templates.ExecuteTemplate(w, name, data); err != nil {
+		// Page templates define {{define "content"}} — render that block.
+		if pageTmpl, ok := h.pages["templates/"+name]; ok {
+			if err := pageTmpl.ExecuteTemplate(w, "content", data); err != nil {
+				h.logger.Error("render partial failed", slog.String("template", name), slog.String("error", err.Error()))
+				http.Error(w, "render failed", http.StatusInternalServerError)
+			}
+			return
+		}
+		// Table partials (e.g. servers_table) live in the shared set.
+		if err := h.partials.ExecuteTemplate(w, name, data); err != nil {
 			h.logger.Error("render partial failed", slog.String("template", name), slog.String("error", err.Error()))
 			http.Error(w, "render failed", http.StatusInternalServerError)
 		}
 		return
 	}
 
+	// Full page — look up the per-page template set.
+	pageTmpl, ok := h.pages["templates/"+name]
+	if !ok {
+		h.logger.Error("template not found", slog.String("template", name))
+		http.Error(w, "template not found", http.StatusInternalServerError)
+		return
+	}
+
 	data["Title"] = data["PageTitle"]
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	if err := h.templates.ExecuteTemplate(w, "base.html", data); err != nil {
+	if err := pageTmpl.ExecuteTemplate(w, "base.html", data); err != nil {
 		h.logger.Error("render page failed", slog.String("template", name), slog.String("error", err.Error()))
 		http.Error(w, "render failed", http.StatusInternalServerError)
 	}
