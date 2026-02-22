@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/part-of: cruvero-mcp-gateway
 spec:
   vault:
-    server: https://vault.dev.gchinfo.com
+    server: https://<VAULT_HOST>
     path: pki_mcp/sign/mcpgateway-dev-server
     auth:
       kubernetes:
@@ -23,7 +23,7 @@ metadata:
     app.kubernetes.io/part-of: cruvero-mcp-gateway
 spec:
   vault:
-    server: https://vault.dev.gchinfo.com
+    server: https://<VAULT_HOST>
     path: pki_mcp/sign/mcp-backend-client
     auth:
       kubernetes:

@@ -2,14 +2,16 @@
 set -euo pipefail
 
 PKI_PATH="${PKI_PATH:-pki_mcp}"
-TRUST_DOMAIN="${TRUST_DOMAIN:-cruvero.dev}"
+TRUST_DOMAIN="${TRUST_DOMAIN:-example.com}"
 VAULT_K8S_ROLE="${VAULT_K8S_ROLE:-cert-manager-pki}"
 VAULT_POLICY_NAME="${VAULT_POLICY_NAME:-cert-manager-mcp-pki}"
 CERT_MANAGER_SA="${CERT_MANAGER_SA:-cert-manager}"
 CERT_MANAGER_NS="${CERT_MANAGER_NS:-cert-manager}"
 MAX_TTL="${MAX_TTL:-87600h}"
 ISSUE_TTL="${ISSUE_TTL:-720h}"
-SPIFFE_PREFIX="spiffe://${TRUST_DOMAIN}/ns/cruvero-dev/sa/"
+APP_NAMESPACE="${APP_NAMESPACE:-mcpgateway-dev}"
+RELEASE_NAME="${RELEASE_NAME:-mcpgateway-dev}"
+SPIFFE_PREFIX="spiffe://${TRUST_DOMAIN}/ns/${APP_NAMESPACE}/sa/"
 
 if [[ -z "${VAULT_ADDR:-}" || -z "${VAULT_TOKEN:-}" ]]; then
   echo "VAULT_ADDR and VAULT_TOKEN must be set" >&2
@@ -33,13 +35,13 @@ vault write "${PKI_PATH}/config/urls" \
   crl_distribution_points="${VAULT_ADDR}/v1/${PKI_PATH}/crl"
 
 cat >/tmp/${VAULT_POLICY_NAME}.hcl <<POLICY
-path "${PKI_PATH}/sign/mcpgateway-dev-server" {
+path "${PKI_PATH}/sign/${RELEASE_NAME}-server" {
   capabilities = ["update"]
 }
 path "${PKI_PATH}/sign/mcp-backend-client" {
   capabilities = ["update"]
 }
-path "${PKI_PATH}/issue/mcpgateway-dev-server" {
+path "${PKI_PATH}/issue/${RELEASE_NAME}-server" {
   capabilities = ["update"]
 }
 path "${PKI_PATH}/issue/mcp-backend-client" {
@@ -55,7 +57,7 @@ vault write "auth/kubernetes/role/${VAULT_K8S_ROLE}" \
   policies="${VAULT_POLICY_NAME}" \
   ttl="1h"
 
-vault write "${PKI_PATH}/roles/mcpgateway-dev-server" \
+vault write "${PKI_PATH}/roles/${RELEASE_NAME}-server" \
   ttl="${ISSUE_TTL}" \
   max_ttl="${ISSUE_TTL}" \
   allow_any_name=false \
@@ -63,7 +65,7 @@ vault write "${PKI_PATH}/roles/mcpgateway-dev-server" \
   allow_subdomains=true \
   enforce_hostnames=true \
   allow_localhost=false \
-  allowed_domains="mcpgateway-dev,mcpgateway-dev.cruvero-dev,mcpgateway-dev.cruvero-dev.svc,mcpgateway-dev.cruvero-dev.svc.cluster.local" \
+  allowed_domains="${RELEASE_NAME},${RELEASE_NAME}.${APP_NAMESPACE},${RELEASE_NAME}.${APP_NAMESPACE}.svc,${RELEASE_NAME}.${APP_NAMESPACE}.svc.cluster.local" \
   require_cn=false \
   server_flag=true \
   client_flag=false \
@@ -82,4 +84,4 @@ vault write "${PKI_PATH}/roles/mcp-backend-client" \
   key_type="rsa" \
   key_bits=2048
 
-echo "Vault PKI bootstrap complete for ${PKI_PATH}" 
+echo "Vault PKI bootstrap complete for ${PKI_PATH}"

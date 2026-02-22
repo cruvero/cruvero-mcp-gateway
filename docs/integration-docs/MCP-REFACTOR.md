@@ -108,7 +108,7 @@ Provider secrets are additional env vars and should come from Kubernetes Secret 
 
 3. Gateway client cert
 - Add cert-manager `Certificate` template
-- SPIFFE URI: `spiffe://cruvero.dev/ns/<namespace>/sa/<serviceaccount>`
+- SPIFFE URI: `spiffe://<TRUST_DOMAIN>/ns/<namespace>/sa/<serviceaccount>`
 
 4. Vault integration (optional per server)
 - Add `VaultStaticSecret` template gated by `vault.enabled`

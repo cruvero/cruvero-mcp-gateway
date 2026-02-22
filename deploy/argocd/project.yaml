@@ -6,14 +6,14 @@ metadata:
 spec:
   description: GitOps boundaries for multi-environment deployment of cruvero-mcp-gateway.
   sourceRepos:
-    - https://github.com/cruvero/cruvero-mcp-gateway.git
+    - https://github.com/<ORG>/<REPO>.git
   destinations:
     - server: https://kubernetes.default.svc
-      namespace: cruvero-dev
+      namespace: <APP>-dev
     - server: https://kubernetes.default.svc
-      namespace: cruvero-staging
+      namespace: <APP>-staging
     - server: https://kubernetes.default.svc
-      namespace: cruvero-prod
+      namespace: <APP>-prod
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
@@ -57,30 +57,3 @@ spec:
       - group: ""
         kind: ServiceAccount
         name: default
-      - group: ""
-        kind: Secret
-        name: mcpgateway-dev*
-      - group: ""
-        kind: ServiceAccount
-        name: vault-secrets-operator
-      - group: ""
-        kind: PersistentVolumeClaim
-        name: cruvero-dev-*
-      - group: ""
-        kind: PersistentVolumeClaim
-        name: data-cruvero-dev-*
-      - group: ""
-        kind: PersistentVolumeClaim
-        name: qdrant-storage-*
-      - group: ""
-        kind: PersistentVolumeClaim
-        name: redis-data-cruvero-dev-*
-      - group: ""
-        kind: PersistentVolumeClaim
-        name: storage-cruvero-dev-*
-      - group: secrets.hashicorp.com
-        kind: VaultAuth
-        name: default
-      - group: secrets.hashicorp.com
-        kind: VaultStaticSecret
-        name: cruvero-dev-postgresql-auth

@@ -7,31 +7,31 @@ autoscaling:
   enabled: false
 
 image:
-  repository: harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway
+  repository: registry.example.com/<PROJECT>/<IMAGE>
   tag: dev
   pullPolicy: Always
 
 imagePullSecrets:
-  - name: harbor-pull-secret
+  - name: <PULL_SECRET>
 
 tls:
   certManager:
     enabled: true
     secretName: mcpgateway-dev-tls
     issuerRef:
-      name: vault-mcp-gateway-server
+      name: <CERT_ISSUER>
       kind: ClusterIssuer
       group: cert-manager.io
     dnsNames:
       - mcpgateway-dev
-      - mcpgateway-dev.cruvero-dev
-      - mcpgateway-dev.cruvero-dev.svc
-      - mcpgateway-dev.cruvero-dev.svc.cluster.local
+      - mcpgateway-dev.<APP>-dev
+      - mcpgateway-dev.<APP>-dev.svc
+      - mcpgateway-dev.<APP>-dev.svc.cluster.local
 
 service:
   annotations:
     traefik.ingress.kubernetes.io/service.serversscheme: https
-    traefik.ingress.kubernetes.io/service.serverstransport: cruvero-dev-mcpgateway-dev@kubernetescrd
+    traefik.ingress.kubernetes.io/service.serverstransport: <APP>-dev-mcpgateway-dev@kubernetescrd
 
 probes:
   scheme: HTTPS
@@ -43,7 +43,7 @@ config:
   MCPGW_TLS_CERT: "/tls/tls.crt"
   MCPGW_TLS_KEY: "/tls/tls.key"
   MCPGW_TLS_CA: "/tls/ca.crt"
-  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://cruvero.dev/ns/cruvero-dev/sa/"
+  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://<TRUST_DOMAIN>/ns/<APP>-dev/sa/"
   MCPGW_CRUVERO_ENABLED: "true"
   MCPGW_GATEWAY_ID: "mcpgateway-dev"
   MCPGW_RATE_LIMIT_BACKEND: "memory"
@@ -52,9 +52,9 @@ config:
 vault:
   enabled: true
   createAuth: false
-  authRef: default
+  authRef: <VAULT_AUTH>
   mount: secret
-  path: cruvero
+  path: <VAULT_PATH>
   refreshAfter: 30s
 
 secrets:
@@ -63,7 +63,7 @@ secrets:
 
 admin:
   enabled: true
-  externalURL: https://cruvero-mcp-gateway.dev.gchinfo.com
+  externalURL: https://gateway.example.com
   oidc:
     clientID: mcpgateway-admin
   requiredScope: admin
@@ -72,12 +72,12 @@ admin:
 tracing:
   enabled: true
 
-# Ingress: exposes admin dashboard at cruvero-mcp-gateway.dev.gchinfo.com
-# OIDC redirect URI: https://cruvero-mcp-gateway.dev.gchinfo.com/admin/callback
+# Ingress: exposes admin dashboard at gateway.example.com
+# OIDC redirect URI: https://gateway.example.com/admin/callback
 ingress:
   enabled: true
   className: traefik
-  host: cruvero-mcp-gateway.dev.gchinfo.com
+  host: gateway.example.com
   tls: true
   tlsSecretName: mcpgateway-dev-ingress-tls
   annotations:
@@ -105,7 +105,7 @@ networkPolicy:
     otel:
       - namespaceSelector:
           matchLabels:
-            kubernetes.io/metadata.name: cruvero-dev
+            kubernetes.io/metadata.name: <APP>-dev
         podSelector:
           matchLabels:
             app.kubernetes.io/instance: mcpgateway-dev

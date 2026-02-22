@@ -8,12 +8,12 @@ autoscaling:
   maxReplicas: 20
 
 image:
-  repository: harbor.dev.gchinfo.com/cruvero/cruvero-mcp-gateway
+  repository: registry.example.com/<PROJECT>/<IMAGE>
   tag: v1.0.0
   pullPolicy: IfNotPresent
 
 imagePullSecrets:
-  - name: harbor-pull-secret
+  - name: <PULL_SECRET>
 
 resources:
   requests:
@@ -28,14 +28,14 @@ tls:
     enabled: true
     secretName: mcpgateway-prod-tls
     issuerRef:
-      name: vault-mcp-gateway-server
+      name: <CERT_ISSUER>
       kind: ClusterIssuer
       group: cert-manager.io
     dnsNames:
       - mcpgateway-prod
-      - mcpgateway-prod.cruvero-prod
-      - mcpgateway-prod.cruvero-prod.svc
-      - mcpgateway-prod.cruvero-prod.svc.cluster.local
+      - mcpgateway-prod.<APP>-prod
+      - mcpgateway-prod.<APP>-prod.svc
+      - mcpgateway-prod.<APP>-prod.svc.cluster.local
 
 probes:
   scheme: HTTPS
@@ -44,7 +44,7 @@ config:
   MCPGW_TLS_CERT: "/tls/tls.crt"
   MCPGW_TLS_KEY: "/tls/tls.key"
   MCPGW_TLS_CA: "/tls/ca.crt"
-  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://cruvero.dev/ns/cruvero-prod/sa/"
+  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://<TRUST_DOMAIN>/ns/<APP>-prod/sa/"
   MCPGW_CRUVERO_ENABLED: "true"
   MCPGW_GATEWAY_ID: "mcpgateway-prod"
   MCPGW_RATE_LIMIT_BACKEND: "dragonfly"
@@ -61,9 +61,9 @@ dragonfly:
 vault:
   enabled: true
   createAuth: true
-  authRef: mcpgw-vault-auth-prod
+  authRef: <VAULT_AUTH>
   mount: kubernetes
-  path: secret/data/mcpgateway/prod/runtime
+  path: <VAULT_PATH>
   refreshAfter: 1m
 
 secrets:

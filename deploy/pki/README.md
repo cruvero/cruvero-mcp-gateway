@@ -23,6 +23,6 @@ kubectl get clusterissuer vault-mcp-gateway-server vault-mcp-backend-client
 
 Backend client certificates are constrained to URI SANs with prefix:
 
-`spiffe://cruvero.dev/ns/cruvero-dev/sa/`
+`spiffe://<TRUST_DOMAIN>/ns/<APP_NAMESPACE>/sa/`
 
 Gateway validates identities with this prefix using `MCPGW_SPIFFE_ALLOW_PREFIX`.
