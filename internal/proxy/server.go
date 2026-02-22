@@ -40,6 +40,7 @@ type ProxyServer struct {
 	router            *Router
 	mcpServer         *server.MCPServer
 	streamableHandler *server.StreamableHTTPServer
+	discoveryIndex    *DiscoveryIndex
 }
 
 // NewProxyServer creates a new proxy server.
@@ -287,13 +288,40 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 		return fmt.Errorf("aggregate tool definitions: %w", err)
 	}
 
+	if p.config.ProgressiveDiscovery {
+		if p.discoveryIndex == nil {
+			p.discoveryIndex = NewDiscoveryIndex()
+		}
+		p.discoveryIndex.Index(tools)
+	}
+
 	serverTools := make([]server.ServerTool, 0, len(tools))
 	for _, tool := range tools {
-		tool := tool
 		mcpTool := mcp.Tool{
-			Name:           tool.Name,
-			Description:    tool.Description,
-			RawInputSchema: tool.InputSchema,
+			Name:            tool.Name,
+			Description:     tool.Description,
+			RawInputSchema:  tool.InputSchema,
+			RawOutputSchema: tool.OutputSchema,
+			DeferLoading:    tool.DeferLoading,
+			Meta:            tool.Meta,
+		}
+		if tool.Annotations != nil {
+			mcpTool.Annotations = *tool.Annotations
+		}
+		if len(tool.Icons) > 0 {
+			mcpTool.Icons = make([]mcp.Icon, len(tool.Icons))
+			copy(mcpTool.Icons, tool.Icons)
+		}
+		if tool.Execution != nil {
+			execCopy := *tool.Execution
+			mcpTool.Execution = &execCopy
+		}
+
+		if p.config.ProgressiveDiscovery {
+			mcpTool.RawInputSchema = json.RawMessage(`{}`)
+			mcpTool.RawOutputSchema = nil
+			mcpTool.DeferLoading = true
+			mcpTool.Description = extractSummary(tool.Description)
 		}
 
 		serverTools = append(serverTools, server.ServerTool{
@@ -331,8 +359,104 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 		})
 	}
 
+	if p.config.ProgressiveDiscovery {
+		serverTools = append(serverTools, p.buildSearchToolsMeta()...)
+	}
+
 	p.mcpServer.SetTools(serverTools...)
 	return nil
+}
+
+func (p *ProxyServer) buildSearchToolsMeta() []server.ServerTool {
+	searchTool := mcp.NewTool("search_tools",
+		mcp.WithDescription("Search available tools by keyword. Returns matching tool names with summaries."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Search query string")),
+		mcp.WithString("category", mcp.Description("Optional server category filter")),
+		mcp.WithNumber("limit", mcp.Description("Max results to return (default 10, max 50)")),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+	)
+
+	getToolSchema := mcp.NewTool("get_tool_schema",
+		mcp.WithDescription("Retrieve full tool definitions including input schemas for specific tools by name."),
+		mcp.WithArray("names",
+			mcp.Items(map[string]any{"type": "string"}),
+			mcp.Required(),
+			mcp.Description("Tool names to retrieve (max 20)"),
+		),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+	)
+
+	return []server.ServerTool{
+		{
+			Tool: searchTool,
+			Handler: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				args := req.GetArguments()
+				query, queryErr := req.RequireString("query")
+				if queryErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("query parameter is required: %v", queryErr)), nil
+				}
+				category, _ := args["category"].(string)
+				limit := defaultSearchLimit
+				if v, ok := args["limit"].(float64); ok && v > 0 {
+					limit = int(v)
+				}
+
+				results, totalMatches := p.discoveryIndex.Search(query, category, limit)
+
+				type searchResult struct {
+					Tools        []ToolDefinition `json:"tools"`
+					TotalMatches int              `json:"total_matches"`
+					Showing      int              `json:"showing"`
+				}
+				resp := searchResult{
+					Tools:        results,
+					TotalMatches: totalMatches,
+					Showing:      len(results),
+				}
+				bytes, err := json.Marshal(resp)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("marshal search results: %v", err)), nil
+				}
+				return mcp.NewToolResultText(string(bytes)), nil
+			},
+		},
+		{
+			Tool: getToolSchema,
+			Handler: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				args := req.GetArguments()
+				namesRaw, ok := args["names"]
+				if !ok {
+					return mcp.NewToolResultError("names parameter is required"), nil
+				}
+				namesSlice, ok := namesRaw.([]any)
+				if !ok {
+					return mcp.NewToolResultError("names must be an array of strings"), nil
+				}
+				names := make([]string, 0, len(namesSlice))
+				for _, v := range namesSlice {
+					s, ok := v.(string)
+					if !ok {
+						return mcp.NewToolResultError("names must be an array of strings"), nil
+					}
+					names = append(names, s)
+				}
+				if len(names) == 0 {
+					return mcp.NewToolResultError("names must contain at least one string"), nil
+				}
+
+				tools := p.discoveryIndex.GetTools(names)
+				bytes, err := json.Marshal(tools)
+				if err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("marshal tool definitions: %v", err)), nil
+				}
+				return mcp.NewToolResultText(string(bytes)), nil
+			},
+		},
+	}
 }
 
 func (p *ProxyServer) syncMCPResources(ctx context.Context) error {
@@ -347,7 +471,6 @@ func (p *ProxyServer) syncMCPResources(ctx context.Context) error {
 
 	serverResources := make([]server.ServerResource, 0, len(resources))
 	for _, resourceDef := range resources {
-		resourceDef := resourceDef
 		resource := mcp.NewResource(
 			resourceDef.URI,
 			resourceDef.Name,

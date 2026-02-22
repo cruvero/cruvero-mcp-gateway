@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -232,5 +233,318 @@ func recordFromServerURL(t *testing.T, rawURL string) types.ServerRecord {
 		Host:     host,
 		Port:     port,
 		Protocol: strings.ToLower(strings.TrimSpace(parsed.Scheme)),
+	}
+}
+
+func TestToolDefinitionFieldPreservation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		tool       mcp.Tool
+		checkDef   func(t *testing.T, def ToolDefinition)
+	}{
+		{
+			name: "all fields populated",
+			tool: mcp.NewTool("full-tool",
+				mcp.WithDescription("a fully populated tool"),
+				mcp.WithString("input", mcp.Required()),
+				mcp.WithReadOnlyHintAnnotation(true),
+				mcp.WithTitleAnnotation("Full Tool"),
+				mcp.WithDeferLoading(true),
+				mcp.WithToolIcons(mcp.Icon{Src: "https://example.com/icon.png", MIMEType: "image/png"}),
+				mcp.WithTaskSupport(mcp.TaskSupportOptional),
+				mcp.WithRawOutputSchema(json.RawMessage(`{"type":"object","properties":{"result":{"type":"string"}}}`)),
+			),
+			checkDef: func(t *testing.T, def ToolDefinition) {
+				t.Helper()
+				if def.Name != "full-tool" {
+					t.Fatalf("expected name full-tool, got %q", def.Name)
+				}
+				if def.Description != "a fully populated tool" {
+					t.Fatalf("expected description preserved, got %q", def.Description)
+				}
+				if len(def.InputSchema) == 0 {
+					t.Fatal("expected non-empty input schema")
+				}
+				if len(def.OutputSchema) == 0 {
+					t.Fatal("expected non-empty output schema")
+				}
+				if def.Annotations == nil {
+					t.Fatal("expected non-nil annotations")
+				}
+				if def.Annotations.Title != "Full Tool" {
+					t.Fatalf("expected title Full Tool, got %q", def.Annotations.Title)
+				}
+				if def.Annotations.ReadOnlyHint == nil || !*def.Annotations.ReadOnlyHint {
+					t.Fatal("expected read only hint true")
+				}
+				if !def.DeferLoading {
+					t.Fatal("expected defer loading true")
+				}
+				if len(def.Icons) != 1 || def.Icons[0].Src != "https://example.com/icon.png" {
+					t.Fatalf("expected 1 icon, got %+v", def.Icons)
+				}
+				if def.Execution == nil || def.Execution.TaskSupport != mcp.TaskSupportOptional {
+					t.Fatalf("expected execution with optional task support, got %+v", def.Execution)
+				}
+			},
+		},
+		{
+			name: "minimal fields only",
+			tool: mcp.NewTool("minimal",
+				mcp.WithDescription("bare minimum"),
+				mcp.WithString("input"),
+			),
+			checkDef: func(t *testing.T, def ToolDefinition) {
+				t.Helper()
+				if def.Name != "minimal" {
+					t.Fatalf("expected name minimal, got %q", def.Name)
+				}
+				// NewTool sets default annotation hints; annotations should be non-nil
+				if def.Annotations == nil {
+					t.Fatal("expected non-nil annotations from NewTool defaults")
+				}
+				if def.DeferLoading {
+					t.Fatal("expected defer loading false for minimal tool")
+				}
+				if def.OutputSchema != nil {
+					t.Fatalf("expected nil output schema, got %s", string(def.OutputSchema))
+				}
+				if len(def.Icons) != 0 {
+					t.Fatalf("expected empty icons, got %+v", def.Icons)
+				}
+				if def.Execution != nil {
+					t.Fatalf("expected nil execution, got %+v", def.Execution)
+				}
+				if def.Meta != nil {
+					t.Fatalf("expected nil meta, got %+v", def.Meta)
+				}
+			},
+		},
+		{
+			name: "zero-value annotations result in nil pointer",
+			tool: func() mcp.Tool {
+				t := mcp.NewTool("zero-annot", mcp.WithDescription("no annotations set"))
+				t.Annotations = mcp.ToolAnnotation{}
+				return t
+			}(),
+			checkDef: func(t *testing.T, def ToolDefinition) {
+				t.Helper()
+				if def.Annotations != nil {
+					t.Fatalf("expected nil annotations for zero-value, got %+v", def.Annotations)
+				}
+			},
+		},
+		{
+			name: "empty icons slice",
+			tool: func() mcp.Tool {
+				t := mcp.NewTool("empty-icons", mcp.WithDescription("empty icons slice"))
+				t.Icons = []mcp.Icon{}
+				return t
+			}(),
+			checkDef: func(t *testing.T, def ToolDefinition) {
+				t.Helper()
+				if len(def.Icons) != 0 {
+					t.Fatalf("expected empty icons, got %+v", def.Icons)
+				}
+			},
+		},
+		{
+			name: "nil execution",
+			tool: func() mcp.Tool {
+				t := mcp.NewTool("nil-exec", mcp.WithDescription("no execution"))
+				t.Execution = nil
+				return t
+			}(),
+			checkDef: func(t *testing.T, def ToolDefinition) {
+				t.Helper()
+				if def.Execution != nil {
+					t.Fatalf("expected nil execution, got %+v", def.Execution)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpSrv := mcpserver.NewMCPServer("field-test", "1.0.0", mcpserver.WithToolCapabilities(true))
+			mcpSrv.AddTool(tt.tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return mcp.NewToolResultText("ok"), nil
+			})
+
+			handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+			mux := http.NewServeMux()
+			mux.Handle("/mcp", handler)
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			record := recordFromServerURL(t, srv.URL)
+			record.ID = "field-test-" + tt.name
+			record.Status = types.StatusActive
+			record.Protocol = "http"
+
+			client := NewBackendClient(record, nil, 2*time.Second)
+			defer func() { _ = client.Close() }()
+
+			defs, err := client.ListTools(context.Background())
+			if err != nil {
+				t.Fatalf("list tools: %v", err)
+			}
+			if len(defs) != 1 {
+				t.Fatalf("expected 1 tool, got %d", len(defs))
+			}
+			tt.checkDef(t, defs[0])
+		})
+	}
+}
+
+func TestToolOutputSchemaJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		tool     mcp.Tool
+		wantNil  bool
+		wantErr  bool
+		contains string
+	}{
+		{
+			name: "raw output schema set",
+			tool: func() mcp.Tool {
+				t := mcp.NewTool("raw-out")
+				t.RawOutputSchema = json.RawMessage(`{"type":"object"}`)
+				return t
+			}(),
+			contains: `"type":"object"`,
+		},
+		{
+			name: "typed output schema set",
+			tool: func() mcp.Tool {
+				t := mcp.NewTool("typed-out")
+				t.OutputSchema = mcp.ToolOutputSchema{Type: "string"}
+				return t
+			}(),
+			contains: `"type":"string"`,
+		},
+		{
+			name:    "neither set returns nil",
+			tool:    mcp.NewTool("no-out"),
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := toolOutputSchemaJSON(tt.tool)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantNil {
+				if result != nil {
+					t.Fatalf("expected nil, got %s", string(result))
+				}
+				return
+			}
+			if result == nil {
+				t.Fatal("expected non-nil output schema")
+			}
+			if !strings.Contains(string(result), tt.contains) {
+				t.Fatalf("expected output schema to contain %q, got %s", tt.contains, string(result))
+			}
+		})
+	}
+}
+
+func TestAnnotationsFromTool(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		tool    mcp.Tool
+		wantNil bool
+		check   func(t *testing.T, a *mcp.ToolAnnotation)
+	}{
+		{
+			name:    "zero-value annotations",
+			tool:    mcp.Tool{Name: "zero", Annotations: mcp.ToolAnnotation{}},
+			wantNil: true,
+		},
+		{
+			name: "title only",
+			tool: mcp.NewTool("titled", mcp.WithTitleAnnotation("My Tool")),
+			check: func(t *testing.T, a *mcp.ToolAnnotation) {
+				t.Helper()
+				if a.Title != "My Tool" {
+					t.Fatalf("expected title My Tool, got %q", a.Title)
+				}
+			},
+		},
+		{
+			name: "read only hint only",
+			tool: mcp.NewTool("ro", mcp.WithReadOnlyHintAnnotation(true)),
+			check: func(t *testing.T, a *mcp.ToolAnnotation) {
+				t.Helper()
+				if a.ReadOnlyHint == nil || !*a.ReadOnlyHint {
+					t.Fatal("expected read only hint true")
+				}
+			},
+		},
+		{
+			name: "all annotation fields",
+			tool: mcp.NewTool("all",
+				mcp.WithTitleAnnotation("All Hints"),
+				mcp.WithReadOnlyHintAnnotation(false),
+				mcp.WithDestructiveHintAnnotation(true),
+				mcp.WithIdempotentHintAnnotation(true),
+				mcp.WithOpenWorldHintAnnotation(false),
+			),
+			check: func(t *testing.T, a *mcp.ToolAnnotation) {
+				t.Helper()
+				if a.Title != "All Hints" {
+					t.Fatalf("expected title All Hints, got %q", a.Title)
+				}
+				if a.ReadOnlyHint == nil || *a.ReadOnlyHint {
+					t.Fatal("expected read only hint false")
+				}
+				if a.DestructiveHint == nil || !*a.DestructiveHint {
+					t.Fatal("expected destructive hint true")
+				}
+				if a.IdempotentHint == nil || !*a.IdempotentHint {
+					t.Fatal("expected idempotent hint true")
+				}
+				if a.OpenWorldHint == nil || *a.OpenWorldHint {
+					t.Fatal("expected open world hint false")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := annotationsFromTool(tt.tool)
+			if tt.wantNil {
+				if result != nil {
+					t.Fatalf("expected nil, got %+v", result)
+				}
+				return
+			}
+			if result == nil {
+				t.Fatal("expected non-nil annotations")
+			}
+			if tt.check != nil {
+				tt.check(t, result)
+			}
+		})
 	}
 }

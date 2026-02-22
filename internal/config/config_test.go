@@ -93,6 +93,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AdminDevMode {
 		t.Fatal("expected default admin dev mode false")
 	}
+	if cfg.ProgressiveDiscovery {
+		t.Fatal("expected default progressive discovery false")
+	}
 }
 
 func TestLoadAllEnvVars(t *testing.T) {
@@ -173,6 +176,7 @@ func TestLoadParseErrors(t *testing.T) {
 		{name: "invalid audit cleanup interval", key: "MCPGW_AUDIT_CLEANUP_INTERVAL", value: "not-duration"},
 		{name: "invalid shutdown timeout", key: "MCPGW_SHUTDOWN_TIMEOUT", value: "not-duration"},
 		{name: "invalid admin dev mode", key: "MCPGW_ADMIN_DEV_MODE", value: "not-bool"},
+		{name: "invalid progressive discovery", key: "MCPGW_PROGRESSIVE_DISCOVERY", value: "not-bool"},
 	}
 
 	for _, tt := range tests {
@@ -468,6 +472,7 @@ func clearKnownEnv(t *testing.T) {
 		"MCPGW_DEVICE_FLOW_IDP_TOKEN_URL",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_SERVICE_NAME",
+		"MCPGW_PROGRESSIVE_DISCOVERY",
 	}
 
 	for _, key := range keys {
@@ -608,5 +613,19 @@ func TestValidate_AdminDevMode_SkipsOIDCRequirements(t *testing.T) {
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected validation to pass with admin dev mode, got: %v", err)
+	}
+}
+
+func TestLoadProgressiveDiscoveryEnabled(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+	t.Setenv("MCPGW_PROGRESSIVE_DISCOVERY", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed, got: %v", err)
+	}
+	if !cfg.ProgressiveDiscovery {
+		t.Fatal("expected progressive discovery true")
 	}
 }

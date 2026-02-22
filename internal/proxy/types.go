@@ -3,14 +3,22 @@ package proxy
 import (
 	"encoding/json"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
 	coretypes "github.com/cruvero/mcp-gateway/internal/types"
 )
 
 // ToolDefinition describes a tool exposed by a backend MCP server.
 type ToolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string              `json:"name"`
+	Description  string              `json:"description"`
+	InputSchema  json.RawMessage     `json:"input_schema"`
+	OutputSchema json.RawMessage     `json:"output_schema,omitempty"`
+	Annotations  *mcp.ToolAnnotation `json:"annotations,omitempty"`
+	DeferLoading bool                `json:"defer_loading,omitempty"`
+	Icons        []mcp.Icon          `json:"icons,omitempty"`
+	Execution    *mcp.ToolExecution  `json:"execution,omitempty"`
+	Meta         *mcp.Meta           `json:"meta,omitempty"`
 }
 
 // ContentBlock is a normalized tool result content entry.
