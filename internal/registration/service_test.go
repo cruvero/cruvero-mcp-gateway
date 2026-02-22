@@ -694,6 +694,10 @@ func (m *mockServerStore) AcknowledgeRegistration(
 	return nil
 }
 
+func (m *mockServerStore) UpdateRateLimit(_ context.Context, _ string, _, _ *int) error {
+	return nil
+}
+
 func (m *mockServerStore) Delete(ctx context.Context, id string) error {
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, id)

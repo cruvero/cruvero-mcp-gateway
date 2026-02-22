@@ -25,6 +25,7 @@ type ServerStore interface {
 		ackVersion string,
 		ackedAt time.Time,
 	) error
+	UpdateRateLimit(ctx context.Context, id string, rateLimit, rateBurst *int) error
 	Delete(ctx context.Context, id string) error
 	ListStale(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error)
 	ListExpired(ctx context.Context, threshold time.Duration) ([]types.ServerRecord, error)

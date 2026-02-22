@@ -54,6 +54,7 @@ func NewAdminHandler(deps AdminDeps) *AdminHandler {
 	pageFiles := []string{
 		"templates/dashboard.html",
 		"templates/servers.html",
+		"templates/server_ratelimit.html",
 		"templates/audit.html",
 		"templates/ratelimits.html",
 		"templates/tools.html",
@@ -455,6 +456,112 @@ func (h *AdminHandler) HandleServers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, r, "servers.html", data)
+}
+
+// HandleServerRateLimitEdit renders the server rate limit edit form.
+func (h *AdminHandler) HandleServerRateLimitEdit(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if strings.TrimSpace(id) == "" {
+		http.Error(w, "server ID required", http.StatusBadRequest)
+		return
+	}
+
+	var server *types.ServerRecord
+	if h.serverStore != nil {
+		result, err := h.serverStore.Get(r.Context(), id)
+		if err != nil {
+			http.Error(w, "server not found", http.StatusNotFound)
+			return
+		}
+		server = result
+	}
+	if server == nil {
+		http.Error(w, "server not found", http.StatusNotFound)
+		return
+	}
+
+	h.render(w, r, "server_ratelimit.html", map[string]any{
+		"PageTitle": "Rate Limit: " + server.Name,
+		"Server":    server,
+	})
+}
+
+// HandleServerRateLimitUpdate processes server rate limit updates.
+func (h *AdminHandler) HandleServerRateLimitUpdate(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if strings.TrimSpace(id) == "" {
+		http.Error(w, "server ID required", http.StatusBadRequest)
+		return
+	}
+
+	var rateLimit *int
+	var rateBurst *int
+
+	if v := strings.TrimSpace(r.FormValue("rate_limit")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "invalid rate limit value", http.StatusBadRequest)
+			return
+		}
+		rateLimit = &n
+	}
+
+	if v := strings.TrimSpace(r.FormValue("rate_burst")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			http.Error(w, "invalid rate burst value", http.StatusBadRequest)
+			return
+		}
+		rateBurst = &n
+	}
+
+	if rateLimit == nil && rateBurst != nil {
+		http.Error(w, "rate burst requires rate limit", http.StatusBadRequest)
+		return
+	}
+
+	if h.serverStore != nil {
+		if err := h.serverStore.UpdateRateLimit(r.Context(), id, rateLimit, rateBurst); err != nil {
+			h.logger.Error("update server rate limit failed", slog.String("error", err.Error()))
+			http.Error(w, "failed to update rate limit", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	session, _ := SessionFromContext(r.Context())
+	updatedBy := "admin"
+	if session != nil {
+		updatedBy = session.Email
+	}
+
+	if h.auditStore != nil {
+		details := map[string]any{
+			"source": "admin_dashboard",
+		}
+		if rateLimit != nil {
+			details["rate_limit"] = *rateLimit
+		}
+		if rateBurst != nil {
+			details["rate_burst"] = *rateBurst
+		}
+		_ = h.auditStore.Log(r.Context(), &types.AuditEntry{
+			EventType:  "server_rate_limit_updated",
+			ClientID:   updatedBy,
+			ServerName: id,
+			Details:    details,
+		})
+	}
+
+	// Broadcast rate limit update so other pods refresh their capability index.
+	if h.broadcaster != nil {
+		evt := registration.NewRegistrationEvent("server_rate_limit_updated", id)
+		data, err := json.Marshal(evt)
+		if err == nil {
+			_ = h.broadcaster.Publish(registration.SubjectRegistryUpdated, data)
+		}
+	}
+
+	http.Redirect(w, r, "/admin/servers", http.StatusFound)
 }
 
 // HandleServerDeregister removes a server.

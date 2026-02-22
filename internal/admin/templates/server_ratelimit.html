@@ -1,0 +1,22 @@
+{{define "content"}}
+<h1>Rate Limit: {{.Server.Name}}</h1>
+<form method="POST" action="/admin/servers/{{.Server.ID}}/ratelimit">
+  <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+  <div class="form-group">
+    <label for="rate_limit">Rate Limit (requests/second)</label>
+    <input type="number" name="rate_limit" id="rate_limit" min="0"
+           value="{{if .Server.RateLimit}}{{.Server.RateLimit}}{{end}}"
+           placeholder="Leave empty for unlimited">
+    <small>Positive number enforces a limit. 0 blocks all requests. Leave empty for unlimited.</small>
+  </div>
+  <div class="form-group">
+    <label for="rate_burst">Burst Size</label>
+    <input type="number" name="rate_burst" id="rate_burst" min="0"
+           value="{{if .Server.RateBurst}}{{.Server.RateBurst}}{{end}}"
+           placeholder="Defaults to rate limit value">
+    <small>Maximum concurrent burst. Defaults to the rate limit value if not set.</small>
+  </div>
+  <button type="submit" class="btn">Save</button>
+  <a href="/admin/servers" class="btn btn-secondary">Cancel</a>
+</form>
+{{end}}

@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/resilience"
 	"github.com/cruvero/mcp-gateway/internal/types"
@@ -173,4 +174,130 @@ func newResilientClientForTest(serverID string, client *BackendClient) *resilien
 		},
 		nil,
 	)
+}
+
+func intPtr(v int) *int { return &v }
+
+func TestRouterServerRateLimitEnforced(t *testing.T) {
+	t.Parallel()
+
+	record, client, cleanup := buildRoutedToolBackend(t, "server-rl", "tool.echo", "ok")
+	defer cleanup()
+
+	record.RateLimit = intPtr(1)
+	record.RateBurst = intPtr(1)
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record)
+
+	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
+	router.clients.Store(record.ID, newResilientClientForTest(record.ID, client))
+
+	backend := ratelimit.NewMemoryBackend(time.Second, 5*time.Second)
+	defer func() { _ = backend.Close() }()
+	router.SetLimiter(backend)
+
+	// Pre-exhaust the token bucket so the next Route call is rate-limited.
+	// This avoids flakiness from the HTTP round-trip to the test backend
+	// taking long enough (>1s) for the 1-token/s bucket to refill.
+	key := ratelimit.LimiterKey{ClientID: "server:" + record.ID, Route: "global"}
+	_, _, _, _ = backend.Allow(context.Background(), key, 1.0, 1)
+
+	// Route should be rejected — token already exhausted.
+	_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
+	if err == nil {
+		t.Fatal("expected rate limit error after token exhaustion")
+	}
+
+	var rateLimitErr *ServerRateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("expected *ServerRateLimitError, got %T: %v", err, err)
+	}
+	if rateLimitErr.ServerID != record.ID {
+		t.Fatalf("expected server ID %q, got %q", record.ID, rateLimitErr.ServerID)
+	}
+}
+
+func TestRouterServerRateLimitNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	record, client, cleanup := buildRoutedToolBackend(t, "server-norl", "tool.echo", "ok")
+	defer cleanup()
+
+	// RateLimit and RateBurst left nil — no per-server rate limiting.
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record)
+
+	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
+	router.clients.Store(record.ID, newResilientClientForTest(record.ID, client))
+
+	backend := ratelimit.NewMemoryBackend(time.Second, 5*time.Second)
+	defer func() { _ = backend.Close() }()
+	router.SetLimiter(backend)
+
+	// Both calls should succeed — no rate limit configured on server.
+	for i := 0; i < 2; i++ {
+		_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
+		if err != nil {
+			t.Fatalf("call %d should succeed without rate limit: %v", i+1, err)
+		}
+	}
+}
+
+func TestRouterServerRateLimitNoLimiter(t *testing.T) {
+	t.Parallel()
+
+	record, client, cleanup := buildRoutedToolBackend(t, "server-nolim", "tool.echo", "ok")
+	defer cleanup()
+
+	record.RateLimit = intPtr(1)
+	record.RateBurst = intPtr(1)
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record)
+
+	// No limiter set on the router.
+	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
+	router.clients.Store(record.ID, newResilientClientForTest(record.ID, client))
+
+	// Both calls should succeed — no limiter backend wired.
+	for i := 0; i < 2; i++ {
+		_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
+		if err != nil {
+			t.Fatalf("call %d should succeed without limiter: %v", i+1, err)
+		}
+	}
+}
+
+func TestRouterServerRateLimitZeroBlocks(t *testing.T) {
+	t.Parallel()
+
+	record, client, cleanup := buildRoutedToolBackend(t, "server-zerolimit", "tool.echo", "blocked")
+	defer cleanup()
+
+	// RateLimit = 0 should block all requests for this server.
+	record.RateLimit = intPtr(0)
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record)
+
+	router := NewRouter(index, &RoundRobinStrategy{}, nil, 0, nil)
+	router.clients.Store(record.ID, newResilientClientForTest(record.ID, client))
+
+	backend := ratelimit.NewMemoryBackend(time.Second, 5*time.Second)
+	defer func() { _ = backend.Close() }()
+	router.SetLimiter(backend)
+
+	for i := range 2 {
+		_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
+		if err == nil {
+			t.Fatalf("call %d should be blocked by zero rate limit", i+1)
+		}
+
+		var rlErr *ServerRateLimitError
+		if !errors.As(err, &rlErr) {
+			t.Fatalf("call %d expected *ServerRateLimitError, got %T: %v", i+1, err, err)
+		}
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/resilience"
 	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
@@ -25,6 +26,18 @@ var (
 	// ErrToolNotFound indicates no routable backend was found for a tool.
 	ErrToolNotFound = errors.New("tool not found")
 )
+
+// ServerRateLimitError indicates a request was rejected by per-server rate limiting.
+type ServerRateLimitError struct {
+	ServerID   string
+	ServerName string
+	RetryAfter time.Duration
+}
+
+// Error returns the error message.
+func (e *ServerRateLimitError) Error() string {
+	return fmt.Sprintf("server %s rate limit exceeded (retry after %s)", e.ServerName, e.RetryAfter)
+}
 
 // RoutingStrategy selects one backend candidate for a routed request.
 type RoutingStrategy interface {
@@ -53,6 +66,7 @@ type Router struct {
 
 	strategy RoutingStrategy
 	logger   *slog.Logger
+	limiter  ratelimit.LimiterBackend
 
 	tlsConfig      *tls.Config
 	backendTimeout time.Duration
@@ -100,6 +114,13 @@ func NewRouter(
 	}
 }
 
+// SetLimiter configures the per-server rate limit backend for the router.
+func (r *Router) SetLimiter(lb ratelimit.LimiterBackend) {
+	if r != nil {
+		r.limiter = lb
+	}
+}
+
 // Route resolves a tool to a backend and forwards tools/call.
 func (r *Router) Route(ctx context.Context, toolName string, args map[string]any) (*ToolResult, error) {
 	start := time.Now()
@@ -136,6 +157,11 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 		backendLabel = strings.TrimSpace(selected.ID)
 	}
 	span.SetAttributes(attribute.String("backend.name", backendLabel))
+
+	if err := r.checkServerRateLimit(ctx, selected); err != nil {
+		servermetrics.ObserveToolCall(name, backendLabel, "rate_limited", time.Since(start))
+		return nil, err
+	}
 
 	client := r.GetOrCreateClient(*selected)
 	result, err := client.CallTool(ctx, backendToolName, args)
@@ -181,6 +207,39 @@ func splitFederatedToolName(input string) (server string, tool string) {
 		return server, tool
 	}
 	return "", trimmed
+}
+
+func (r *Router) checkServerRateLimit(ctx context.Context, server *types.ServerRecord) error {
+	// Treat a configured rate limit of 0 or negative as "block all".
+	if server.RateLimit != nil && *server.RateLimit <= 0 {
+		return &ServerRateLimitError{
+			ServerID:   server.ID,
+			ServerName: server.Name,
+			RetryAfter: 0,
+		}
+	}
+
+	// A nil limiter backend or nil per-server limit means no per-server rate limiting.
+	if r.limiter == nil || server.RateLimit == nil {
+		return nil
+	}
+	burst := *server.RateLimit
+	if server.RateBurst != nil && *server.RateBurst > 0 {
+		burst = *server.RateBurst
+	}
+	key := ratelimit.LimiterKey{ClientID: "server:" + server.ID, Route: "global"}
+	allowed, _, retryAfter, err := r.limiter.Allow(ctx, key, float64(*server.RateLimit), burst)
+	if err != nil {
+		return fmt.Errorf("server rate limit check: %w", err)
+	}
+	if !allowed {
+		return &ServerRateLimitError{
+			ServerID:   server.ID,
+			ServerName: server.Name,
+			RetryAfter: retryAfter,
+		}
+	}
+	return nil
 }
 
 // GetOrCreateClient returns an existing client or lazily creates one.

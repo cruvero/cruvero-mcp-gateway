@@ -13,7 +13,7 @@ import (
 
 const errServerStore = "server store: %w"
 
-const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, lease_epoch, capability_hash, sync_state, last_platform_ack_version, last_platform_ack_at, created_at, updated_at"
+const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, lease_epoch, capability_hash, sync_state, last_platform_ack_version, last_platform_ack_at, rate_limit, rate_burst, created_at, updated_at"
 
 // PostgresServerStore is a Postgres-backed implementation of ServerStore.
 type PostgresServerStore struct {
@@ -319,6 +319,15 @@ WHERE id = $4
 	return nil
 }
 
+// UpdateRateLimit sets rate limit and burst for a server by ID.
+func (s *PostgresServerStore) UpdateRateLimit(ctx context.Context, id string, rateLimit, rateBurst *int) error {
+	const query = `UPDATE mcp_servers SET rate_limit = $1, rate_burst = $2, updated_at = now() WHERE id = $3`
+	if _, err := s.db.ExecContext(ctx, query, rateLimit, rateBurst, id); err != nil {
+		return fmt.Errorf(errServerStore, err)
+	}
+	return nil
+}
+
 // Delete removes a server record by ID.
 func (s *PostgresServerStore) Delete(ctx context.Context, id string) error {
 	const query = `DELETE FROM mcp_servers WHERE id = $1`
@@ -401,6 +410,8 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 		syncState        string
 		lastHeartbeat    sql.NullTime
 		lastPlatformAck  sql.NullTime
+		rateLimit        sql.NullInt32
+		rateBurst        sql.NullInt32
 	)
 
 	if err := scanner.Scan(
@@ -420,6 +431,8 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 		&syncState,
 		&record.LastPlatformAckVersion,
 		&lastPlatformAck,
+		&rateLimit,
+		&rateBurst,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
@@ -435,6 +448,14 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 	if lastPlatformAck.Valid {
 		t := lastPlatformAck.Time
 		record.LastPlatformAckAt = &t
+	}
+	if rateLimit.Valid {
+		v := int(rateLimit.Int32)
+		record.RateLimit = &v
+	}
+	if rateBurst.Valid {
+		v := int(rateBurst.Int32)
+		record.RateBurst = &v
 	}
 
 	if len(capabilitiesJSON) > 0 {

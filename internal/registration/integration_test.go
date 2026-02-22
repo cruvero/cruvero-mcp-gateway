@@ -247,6 +247,10 @@ func (s *inMemoryServerStore) AcknowledgeRegistration(
 	return nil
 }
 
+func (s *inMemoryServerStore) UpdateRateLimit(_ context.Context, _ string, _, _ *int) error {
+	return nil
+}
+
 func (s *inMemoryServerStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
