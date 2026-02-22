@@ -210,8 +210,8 @@ func splitFederatedToolName(input string) (server string, tool string) {
 }
 
 func (r *Router) checkServerRateLimit(ctx context.Context, server *types.ServerRecord) error {
-	// Treat a configured rate limit of 0 as "block all" instead of "no limit".
-	if server.RateLimit != nil && *server.RateLimit == 0 {
+	// Treat a configured rate limit of 0 or negative as "block all".
+	if server.RateLimit != nil && *server.RateLimit <= 0 {
 		return &ServerRateLimitError{
 			ServerID:   server.ID,
 			ServerName: server.Name,

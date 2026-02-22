@@ -383,8 +383,14 @@ func (p *ProxyServer) makeToolHandler(toolName string) func(context.Context, mcp
 			var rateLimitErr *ServerRateLimitError
 			if errors.As(routeErr, &rateLimitErr) {
 				p.auditToolCall(toolName, "server rate limited", true)
-				msg := fmt.Sprintf("Server %s is rate limited. Retry after %s.",
-					rateLimitErr.ServerName, rateLimitErr.RetryAfter)
+				var msg string
+				if rateLimitErr.RetryAfter == 0 {
+					msg = fmt.Sprintf("Server %s is blocked by configuration and is not accepting requests. Contact an administrator to re-enable this server.",
+						rateLimitErr.ServerName)
+				} else {
+					msg = fmt.Sprintf("Server %s is rate limited. Retry after %s.",
+						rateLimitErr.ServerName, rateLimitErr.RetryAfter)
+				}
 				return mcp.NewToolResultError(msg), nil
 			}
 			p.auditToolCall(toolName, "", true)
