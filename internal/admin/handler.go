@@ -547,6 +547,15 @@ func (h *AdminHandler) HandleServerRateLimitUpdate(w http.ResponseWriter, r *htt
 		})
 	}
 
+	// Broadcast rate limit update so other pods refresh their capability index.
+	if h.broadcaster != nil {
+		evt := registration.NewRegistrationEvent("server_rate_limit_updated", id)
+		data, err := json.Marshal(evt)
+		if err == nil {
+			_ = h.broadcaster.Publish(registration.SubjectRegistryUpdated, data)
+		}
+	}
+
 	http.Redirect(w, r, "/admin/servers", http.StatusFound)
 }
 

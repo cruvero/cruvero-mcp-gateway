@@ -254,6 +254,13 @@ func (s *securityServerStore) AcknowledgeRegistration(
 	_ = ackedAt
 	return nil
 }
+func (s *securityServerStore) UpdateRateLimit(ctx context.Context, id string, rateLimit, rateBurst *int) error {
+	_ = ctx
+	_ = id
+	_ = rateLimit
+	_ = rateBurst
+	return nil
+}
 func (s *securityServerStore) Delete(ctx context.Context, id string) error {
 	_ = ctx
 	_ = id

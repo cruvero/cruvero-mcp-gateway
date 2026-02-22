@@ -1,2 +1,2 @@
-ALTER TABLE mcp_servers ADD COLUMN rate_limit INT;
-ALTER TABLE mcp_servers ADD COLUMN rate_burst INT;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS rate_limit INT;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS rate_burst INT;

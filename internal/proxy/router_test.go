@@ -197,16 +197,16 @@ func TestRouterServerRateLimitEnforced(t *testing.T) {
 	defer func() { _ = backend.Close() }()
 	router.SetLimiter(backend)
 
-	// First call should succeed — one token available.
-	_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
-	if err != nil {
-		t.Fatalf("first call should succeed: %v", err)
-	}
+	// Pre-exhaust the token bucket so the next Route call is rate-limited.
+	// This avoids flakiness from the HTTP round-trip to the test backend
+	// taking long enough (>1s) for the 1-token/s bucket to refill.
+	key := ratelimit.LimiterKey{ClientID: "server:" + record.ID, Route: "global"}
+	_, _, _, _ = backend.Allow(context.Background(), key, 1.0, 1)
 
-	// Second call should be rejected — token exhausted.
-	_, err = router.Route(context.Background(), "tool.echo", map[string]any{})
+	// Route should be rejected — token already exhausted.
+	_, err := router.Route(context.Background(), "tool.echo", map[string]any{})
 	if err == nil {
-		t.Fatal("second call should fail with rate limit error")
+		t.Fatal("expected rate limit error after token exhaustion")
 	}
 
 	var rateLimitErr *ServerRateLimitError

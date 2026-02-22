@@ -941,10 +941,12 @@ func TestHandleServerRateLimitEdit(t *testing.T) {
 func TestHandleServerRateLimitUpdate(t *testing.T) {
 	serverStore := &mockServerStore{}
 	auditStore := &mockAuditStore{}
+	broadcaster := &mockBroadcaster{}
 
 	handler := setupTestHandlerWithStores(t, AdminDeps{
 		ServerStore: serverStore,
 		AuditStore:  auditStore,
+		Broadcaster: broadcaster,
 	})
 
 	t.Run("successful update", func(t *testing.T) {
@@ -973,6 +975,9 @@ func TestHandleServerRateLimitUpdate(t *testing.T) {
 		}
 		if len(auditStore.logged) == 0 {
 			t.Fatalf("expected audit entry")
+		}
+		if len(broadcaster.published) == 0 {
+			t.Fatalf("expected broadcast event for multi-pod sync")
 		}
 	})
 

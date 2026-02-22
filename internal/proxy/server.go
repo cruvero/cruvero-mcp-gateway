@@ -93,7 +93,6 @@ func (p *ProxyServer) Router() *Router {
 	return p.router
 }
 
-
 // ApplyToolMetadata enriches the discovery index with platform-provided metadata.
 func (p *ProxyServer) ApplyToolMetadata(metadata []ToolMetadata) {
 	if p == nil || p.discoveryIndex == nil {
