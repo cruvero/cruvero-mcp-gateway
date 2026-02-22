@@ -208,16 +208,25 @@ CREATE TABLE mcp_servers (
     capabilities    JSONB NOT NULL DEFAULT '{}',
     status          TEXT NOT NULL DEFAULT 'pending',
     policy_profile  TEXT NOT NULL DEFAULT 'default',
+    rate_limit      INT,
+    rate_burst      INT,
     last_heartbeat  TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT chk_mcp_servers_rate_limit_nonnegative
+        CHECK (rate_limit IS NULL OR rate_limit >= 0),
+    CONSTRAINT chk_mcp_servers_rate_burst_nonnegative
+        CHECK (rate_burst IS NULL OR rate_burst >= 0),
+    CONSTRAINT chk_mcp_servers_rate_burst_requires_limit
+        CHECK (rate_burst IS NULL OR rate_limit IS NOT NULL)
 );
 
 CREATE INDEX idx_mcp_servers_status ON mcp_servers (status);
 CREATE INDEX idx_mcp_servers_spiffe_id ON mcp_servers (spiffe_id);
 ```
 
-The `status` column holds one of: `pending`, `approved`, `active`, `stale`, `expired`. The `capabilities` JSONB stores the server's declared tools, resources, and prompts.
+The `status` column holds one of: `pending`, `approved`, `active`, `stale`, `expired`. The `capabilities` JSONB stores the server's declared tools, resources, and prompts. The `rate_limit` and `rate_burst` columns allow per-server rate limit overrides: `NULL` uses global defaults, `0` blocks all requests, and positive values set a custom token-bucket rate.
 
 ### api_keys
 
