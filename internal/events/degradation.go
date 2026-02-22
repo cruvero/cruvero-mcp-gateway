@@ -153,21 +153,27 @@ func (m *DegradationManager) LoadCachedConfig(ctx context.Context) error {
 		}
 	}
 
+	m.applyCachedState(versions, settingsVersion, len(keys))
+
+	return nil
+}
+
+// applyCachedState updates internal state after cached config has been loaded.
+func (m *DegradationManager) applyCachedState(versions map[string]int64, settingsVersion int64, keyCount int) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.lastKnownVersions = versions
-	m.hasCachedConfig = len(keys) > 0
+	m.hasCachedConfig = keyCount > 0
 	if settingsVersion > 0 {
 		m.settingsSyncStatus = "cached"
 		m.settingsConfigVersion = settingsVersion
-	} else if len(keys) > 0 {
+	} else if keyCount > 0 {
 		m.settingsSyncStatus = "cached"
 	}
 	if m.status == DegradationStatusDisconnected && m.hasCachedConfig {
 		m.status = DegradationStatusDegraded
 	}
-	m.mu.Unlock()
-
-	return nil
 }
 
 // Status returns current NATS degradation status.

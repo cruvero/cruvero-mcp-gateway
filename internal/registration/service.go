@@ -209,23 +209,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		servermetrics.AddActiveRegistrations(record.Status.String(), 1)
 	}
 
-	s.logAudit(ctx, &types.AuditEntry{
-		EventType:  "server.registered",
-		ClientID:   caller.ID,
-		ServerName: record.Name,
-		Details: map[string]any{
-			"server_id": record.ID,
-			"spiffe_id": record.SPIFFEID,
-		},
-	})
-	if s.publisher != nil {
-		if err := s.publisher.PublishServerRegistered(ctx, *record); err != nil {
-			s.logger.ErrorContext(ctx, "publish server registered event failed", slog.String("error", err.Error()))
-		}
-	}
-	s.publishBroadcast("registered", record.ID)
-
-	s.classifyNewTools(ctx, req.Capabilities, caller.ID)
+	s.postRegister(ctx, caller.ID, record, req.Capabilities)
 
 	heartbeatIntervalSeconds := heartbeatIntervalSeconds(s.config)
 	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
@@ -243,6 +227,25 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		EffectiveSettings:        effectiveSettings,
 		Status:                   record.Status,
 	}, nil
+}
+
+func (s *Service) postRegister(ctx context.Context, callerID string, record *types.ServerRecord, capabilities types.Capability) {
+	s.logAudit(ctx, &types.AuditEntry{
+		EventType:  "server.registered",
+		ClientID:   callerID,
+		ServerName: record.Name,
+		Details: map[string]any{
+			"server_id": record.ID,
+			"spiffe_id": record.SPIFFEID,
+		},
+	})
+	if s.publisher != nil {
+		if err := s.publisher.PublishServerRegistered(ctx, *record); err != nil {
+			s.logger.ErrorContext(ctx, "publish server registered event failed", slog.String("error", err.Error()))
+		}
+	}
+	s.publishBroadcast("registered", record.ID)
+	s.classifyNewTools(ctx, capabilities, callerID)
 }
 
 // AcknowledgeServerRegistration marks a registration lease as platform-synced.

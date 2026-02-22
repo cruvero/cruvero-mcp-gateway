@@ -80,19 +80,8 @@ func Retry(ctx context.Context, cfg RetryConfig, fn func() error) error {
 			break
 		}
 
-		delay := calculateBackoff(cfg, attempt)
-		if delay <= 0 {
-			continue
-		}
-
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return fmt.Errorf("retry canceled after %d attempt(s): %w", attempt, ctx.Err())
-		case <-timer.C:
+		if err := waitBackoff(ctx, cfg, attempt); err != nil {
+			return err
 		}
 	}
 
@@ -100,6 +89,25 @@ func Retry(ctx context.Context, cfg RetryConfig, fn func() error) error {
 		return fmt.Errorf("retry exhausted: no attempts executed")
 	}
 	return fmt.Errorf("retry failed after %d attempt(s): %w", cfg.MaxAttempts, lastErr)
+}
+
+// waitBackoff sleeps for the calculated backoff duration or returns early on context cancellation.
+func waitBackoff(ctx context.Context, cfg RetryConfig, attempt int) error {
+	delay := calculateBackoff(cfg, attempt)
+	if delay <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return fmt.Errorf("retry canceled after %d attempt(s): %w", attempt, ctx.Err())
+	case <-timer.C:
+		return nil
+	}
 }
 
 // IsRetryable returns true when the error indicates a transient failure.

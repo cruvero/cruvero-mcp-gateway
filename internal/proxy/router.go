@@ -119,13 +119,7 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 	requestedServer, backendToolName := splitFederatedToolName(name)
 	candidates := r.index.LookupTool(backendToolName)
 	if requestedServer != "" {
-		filtered := make([]types.ServerRecord, 0, len(candidates))
-		for _, candidate := range candidates {
-			if strings.EqualFold(strings.TrimSpace(candidate.Name), requestedServer) || strings.EqualFold(strings.TrimSpace(candidate.ID), requestedServer) {
-				filtered = append(filtered, candidate)
-			}
-		}
-		candidates = filtered
+		candidates = filterCandidatesByServer(candidates, requestedServer)
 	}
 	if len(candidates) == 0 {
 		servermetrics.ObserveToolCall(name, backendLabel, "not_found", time.Since(start))
@@ -159,6 +153,16 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 	span.SetAttributes(attribute.Bool("route.success", true))
 
 	return result, nil
+}
+
+func filterCandidatesByServer(candidates []types.ServerRecord, requestedServer string) []types.ServerRecord {
+	filtered := make([]types.ServerRecord, 0, len(candidates))
+	for _, candidate := range candidates {
+		if strings.EqualFold(strings.TrimSpace(candidate.Name), requestedServer) || strings.EqualFold(strings.TrimSpace(candidate.ID), requestedServer) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 func splitFederatedToolName(input string) (server string, tool string) {
