@@ -10,6 +10,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/config"
 	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/store"
+	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
 // Sweeper periodically transitions stale/expired registrations.
@@ -120,90 +121,9 @@ func (s *Sweeper) sweep(ctx context.Context) {
 
 	staleThreshold := s.interval()
 	expiredThreshold := 3 * s.interval()
-	staleCount := 0
-	expiredCount := 0
 
-	staleServers, err := s.store.ListStale(ctx, staleThreshold)
-	if err != nil {
-		s.logger.ErrorContext(ctx, "list stale servers failed", slog.String("error", err.Error()))
-	} else {
-		for _, server := range staleServers {
-			nextStatus, transitionErr := Transition(server.Status, EventHeartbeatMissed)
-			if transitionErr != nil {
-				s.logger.WarnContext(
-					ctx,
-					"skip stale transition",
-					slog.String("server_id", server.ID),
-					slog.String("status", server.Status.String()),
-					slog.String("error", transitionErr.Error()),
-				)
-				continue
-			}
-
-			if err := s.store.UpdateStatus(ctx, server.ID, nextStatus); err != nil {
-				s.logger.ErrorContext(
-					ctx,
-					"mark server stale failed",
-					slog.String("server_id", server.ID),
-					slog.String("error", err.Error()),
-				)
-				continue
-			}
-			servermetrics.AddActiveRegistrations(server.Status.String(), -1)
-			servermetrics.AddActiveRegistrations(nextStatus.String(), 1)
-			if s.publisher != nil {
-				if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
-					s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))
-				}
-			}
-
-			staleCount++
-			s.logger.InfoContext(ctx, "server marked stale", slog.String("server_id", server.ID))
-		}
-	}
-
-	expiredServers, err := s.store.ListExpired(ctx, expiredThreshold)
-	if err != nil {
-		s.logger.ErrorContext(ctx, "list expired servers failed", slog.String("error", err.Error()))
-	} else {
-		for _, server := range expiredServers {
-			nextStatus, transitionErr := Transition(server.Status, EventExpired)
-			if transitionErr != nil {
-				s.logger.WarnContext(
-					ctx,
-					"skip expired transition",
-					slog.String("server_id", server.ID),
-					slog.String("status", server.Status.String()),
-					slog.String("error", transitionErr.Error()),
-				)
-				continue
-			}
-
-			if err := s.store.UpdateStatus(ctx, server.ID, nextStatus); err != nil {
-				s.logger.ErrorContext(
-					ctx,
-					"mark server expired failed",
-					slog.String("server_id", server.ID),
-					slog.String("error", err.Error()),
-				)
-				continue
-			}
-			servermetrics.AddActiveRegistrations(server.Status.String(), -1)
-			servermetrics.AddActiveRegistrations(nextStatus.String(), 1)
-			if s.publisher != nil {
-				if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
-					s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))
-				}
-			}
-
-			if s.index != nil {
-				s.index.Remove(server.ID)
-			}
-
-			expiredCount++
-			s.logger.InfoContext(ctx, "server marked expired", slog.String("server_id", server.ID))
-		}
-	}
+	staleCount := s.sweepStale(ctx, staleThreshold)
+	expiredCount := s.sweepExpired(ctx, expiredThreshold)
 
 	s.logger.InfoContext(
 		ctx,
@@ -211,6 +131,93 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		slog.Int("stale_count", staleCount),
 		slog.Int("expired_count", expiredCount),
 	)
+}
+
+// sweepStale transitions servers that missed heartbeats to stale status.
+func (s *Sweeper) sweepStale(ctx context.Context, threshold time.Duration) int {
+	servers, err := s.store.ListStale(ctx, threshold)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "list stale servers failed", slog.String("error", err.Error()))
+		return 0
+	}
+
+	count := 0
+	for _, server := range servers {
+		if s.transitionServer(ctx, server, EventHeartbeatMissed, "stale") {
+			count++
+		}
+	}
+	return count
+}
+
+// sweepExpired transitions servers past the expiration threshold and removes
+// them from the capability index.
+func (s *Sweeper) sweepExpired(ctx context.Context, threshold time.Duration) int {
+	servers, err := s.store.ListExpired(ctx, threshold)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "list expired servers failed", slog.String("error", err.Error()))
+		return 0
+	}
+
+	count := 0
+	for _, server := range servers {
+		if s.transitionServer(ctx, server, EventExpired, "expired") {
+			if s.index != nil {
+				s.index.Remove(server.ID)
+			}
+			count++
+		}
+	}
+	return count
+}
+
+// transitionServer applies a state-machine transition for a single server,
+// updates the store, adjusts metrics, and publishes a health-changed event.
+// It returns true if the transition succeeded.
+func (s *Sweeper) transitionServer(
+	ctx context.Context,
+	server types.ServerRecord,
+	event Event,
+	label string,
+) bool {
+	nextStatus, transitionErr := Transition(server.Status, event)
+	if transitionErr != nil {
+		s.logger.WarnContext(
+			ctx,
+			"skip "+label+" transition",
+			slog.String("server_id", server.ID),
+			slog.String("status", server.Status.String()),
+			slog.String("error", transitionErr.Error()),
+		)
+		return false
+	}
+
+	if err := s.store.UpdateStatus(ctx, server.ID, nextStatus); err != nil {
+		s.logger.ErrorContext(
+			ctx,
+			"mark server "+label+" failed",
+			slog.String("server_id", server.ID),
+			slog.String("error", err.Error()),
+		)
+		return false
+	}
+
+	servermetrics.AddActiveRegistrations(server.Status.String(), -1)
+	servermetrics.AddActiveRegistrations(nextStatus.String(), 1)
+	s.publishHealthChanged(ctx, server, nextStatus)
+
+	s.logger.InfoContext(ctx, "server marked "+label, slog.String("server_id", server.ID))
+	return true
+}
+
+// publishHealthChanged publishes a health-changed event if a publisher is configured.
+func (s *Sweeper) publishHealthChanged(ctx context.Context, server types.ServerRecord, nextStatus types.ServerStatus) {
+	if s.publisher == nil {
+		return
+	}
+	if err := s.publisher.PublishServerHealthChanged(ctx, server.ID, server.Name, server.Status, nextStatus); err != nil {
+		s.logger.ErrorContext(ctx, "publish server health changed event failed", slog.String("error", err.Error()))
+	}
 }
 
 func (s *Sweeper) interval() time.Duration {
