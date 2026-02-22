@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/policy"
@@ -366,8 +367,10 @@ func (h *ServerRegisteredAckHandler) Handle(ctx context.Context, data []byte) er
 
 // ToolMetadataConfigHandler applies tool metadata enrichment updates from the platform.
 type ToolMetadataConfigHandler struct {
+	mu          sync.Mutex
 	configStore ConfigStore
 	onUpdate    func(ToolMetadataConfigMessage)
+	lastMessage *ToolMetadataConfigMessage
 	logger      *slog.Logger
 }
 
@@ -384,11 +387,19 @@ func NewToolMetadataConfigHandler(store ConfigStore, onUpdate func(ToolMetadataC
 }
 
 // SetOnUpdate sets the callback invoked when tool metadata is updated.
+// If a message was received before the callback was installed, it is replayed immediately.
 func (h *ToolMetadataConfigHandler) SetOnUpdate(fn func(ToolMetadataConfigMessage)) {
 	if h == nil {
 		return
 	}
+	h.mu.Lock()
 	h.onUpdate = fn
+	buffered := h.lastMessage
+	h.mu.Unlock()
+
+	if fn != nil && buffered != nil {
+		fn(*buffered)
+	}
 }
 
 // Handle validates and applies tool metadata config payloads.
@@ -408,8 +419,13 @@ func (h *ToolMetadataConfigHandler) Handle(ctx context.Context, data []byte) err
 		}
 	}
 
-	if h.onUpdate != nil {
-		h.onUpdate(message)
+	h.mu.Lock()
+	h.lastMessage = &message
+	fn := h.onUpdate
+	h.mu.Unlock()
+
+	if fn != nil {
+		fn(message)
 	}
 
 	h.logger.InfoContext(ctx, "tool metadata config updated",

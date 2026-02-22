@@ -45,7 +45,7 @@ func (h *AdminHandler) HandleToolBrowse(w http.ResponseWriter, r *http.Request) 
 	offset := (page - 1) * perPage
 
 	if query != "" {
-		results, totalMatches := h.discoveryIndex.Search(query, category, perPage)
+		results, totalMatches := h.discoveryIndex.Search(query, category, offset, perPage)
 		writeAdminJSON(w, http.StatusOK, map[string]any{
 			"tools":    results,
 			"total":    totalMatches,

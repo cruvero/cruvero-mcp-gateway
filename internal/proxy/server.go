@@ -424,7 +424,7 @@ func (p *ProxyServer) buildSearchToolsMeta() []server.ServerTool {
 					limit = int(v)
 				}
 
-				results, totalMatches := p.discoveryIndex.Search(query, category, limit)
+				results, totalMatches := p.discoveryIndex.Search(query, category, 0, limit)
 
 				type searchResult struct {
 					Tools        []ToolDefinition `json:"tools"`

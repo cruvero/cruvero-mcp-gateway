@@ -9,12 +9,11 @@ import (
 
 // ToolMetadata describes enrichment metadata applied to a tool from the platform.
 type ToolMetadata struct {
-	ToolName    string
-	Category    string
-	DisplayName string
-	Summary     string
-	Tags        []string
-	Priority    int
+	ToolName string
+	Category string
+	Summary  string
+	Tags     []string
+	Priority int
 }
 
 // DiscoveryStats holds aggregate statistics about the discovery index.
@@ -37,8 +36,9 @@ type discoveryEntry struct {
 
 // DiscoveryIndex provides in-memory search over federated tool definitions.
 type DiscoveryIndex struct {
-	mu      sync.RWMutex
-	entries map[string]discoveryEntry
+	mu       sync.RWMutex
+	entries  map[string]discoveryEntry
+	metadata []ToolMetadata // stored metadata for reapplication after Index rebuilds
 }
 
 // NewDiscoveryIndex creates an empty discovery index.
@@ -49,6 +49,7 @@ func NewDiscoveryIndex() *DiscoveryIndex {
 }
 
 // Index rebuilds the full index from the provided tool list.
+// Previously applied metadata is reapplied to the new entries.
 func (d *DiscoveryIndex) Index(tools []ToolDefinition) {
 	entries := make(map[string]discoveryEntry, len(tools))
 	for _, tool := range tools {
@@ -68,6 +69,7 @@ func (d *DiscoveryIndex) Index(tools []ToolDefinition) {
 
 	d.mu.Lock()
 	d.entries = entries
+	d.applyMetadataLocked(d.metadata)
 	d.mu.Unlock()
 }
 
@@ -83,7 +85,7 @@ const (
 
 // Search returns tool definitions matching the query, scored by relevance.
 // Results are stripped to summaries with empty schemas and DeferLoading set.
-func (d *DiscoveryIndex) Search(query, category string, limit int) ([]ToolDefinition, int) {
+func (d *DiscoveryIndex) Search(query, category string, offset, limit int) ([]ToolDefinition, int) {
 	if strings.TrimSpace(query) == "" {
 		return nil, 0
 	}
@@ -137,9 +139,17 @@ func (d *DiscoveryIndex) Search(query, category string, limit int) ([]ToolDefini
 	})
 
 	totalMatches := len(scored)
-	if len(scored) > limit {
-		scored = scored[:limit]
+	if offset < 0 {
+		offset = 0
 	}
+	if offset >= len(scored) {
+		return nil, totalMatches
+	}
+	end := offset + limit
+	if end > len(scored) {
+		end = len(scored)
+	}
+	scored = scored[offset:end]
 
 	results := make([]ToolDefinition, 0, len(scored))
 	for _, s := range scored {
@@ -209,10 +219,17 @@ func extractSummary(description string) string {
 }
 
 // ApplyMetadata enriches indexed entries with platform-provided metadata.
+// The metadata is stored so it can be reapplied after subsequent Index() rebuilds.
 func (d *DiscoveryIndex) ApplyMetadata(metadata []ToolMetadata) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	d.metadata = metadata
+	d.applyMetadataLocked(metadata)
+}
+
+// applyMetadataLocked enriches entries with metadata. Caller must hold d.mu.
+func (d *DiscoveryIndex) applyMetadataLocked(metadata []ToolMetadata) {
 	for _, m := range metadata {
 		entry, ok := d.entries[m.ToolName]
 		if !ok {
@@ -223,6 +240,7 @@ func (d *DiscoveryIndex) ApplyMetadata(metadata []ToolMetadata) {
 		}
 		if m.Summary != "" {
 			entry.summary = m.Summary
+			entry.descLower = strings.ToLower(m.Summary)
 		}
 		if len(m.Tags) > 0 {
 			lower := make([]string, len(m.Tags))
@@ -231,7 +249,9 @@ func (d *DiscoveryIndex) ApplyMetadata(metadata []ToolMetadata) {
 			}
 			entry.tagsLower = lower
 		}
-		entry.priority = m.Priority
+		if m.Priority != 0 {
+			entry.priority = m.Priority
+		}
 		d.entries[m.ToolName] = entry
 	}
 }

@@ -193,12 +193,11 @@ func serveWithContext(ctx context.Context) error {
 			metadata := make([]proxy.ToolMetadata, 0, len(msg.Tools))
 			for _, entry := range msg.Tools {
 				metadata = append(metadata, proxy.ToolMetadata{
-					ToolName:    entry.ToolName,
-					Category:    entry.Category,
-					DisplayName: entry.DisplayName,
-					Summary:     entry.Summary,
-					Tags:        entry.Tags,
-					Priority:    entry.Priority,
+					ToolName: entry.ToolName,
+					Category: entry.Category,
+					Summary:  entry.Summary,
+					Tags:     entry.Tags,
+					Priority: entry.Priority,
 				})
 			}
 			proxyServer.ApplyToolMetadata(metadata)

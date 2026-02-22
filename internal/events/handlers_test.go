@@ -326,6 +326,56 @@ func TestToolMetadataConfigHandler_SetOnUpdateNilReceiver(t *testing.T) {
 	handler.SetOnUpdate(func(_ ToolMetadataConfigMessage) {}) // should not panic
 }
 
+func TestToolMetadataConfigHandler_SetOnUpdateReplaysBuffered(t *testing.T) {
+	t.Parallel()
+
+	handler := NewToolMetadataConfigHandler(nil, nil, nil)
+
+	// Handle a message before any callback is installed.
+	body := []byte(`{"version":42,"tools":[{"tool_name":"tool-a","category":"test"}]}`)
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+
+	// Now install the callback — it should receive the buffered message.
+	var received *ToolMetadataConfigMessage
+	handler.SetOnUpdate(func(msg ToolMetadataConfigMessage) {
+		received = &msg
+	})
+
+	if received == nil {
+		t.Fatal("expected buffered message to be replayed on SetOnUpdate")
+	}
+	if received.Version != 42 {
+		t.Fatalf("expected version 42, got %d", received.Version)
+	}
+	if len(received.Tools) != 1 || received.Tools[0].ToolName != "tool-a" {
+		t.Fatal("expected replayed message to contain the original tool")
+	}
+}
+
+func TestToolMetadataConfigHandler_ConcurrentSafety(t *testing.T) {
+	t.Parallel()
+
+	handler := NewToolMetadataConfigHandler(nil, nil, nil)
+	handler.SetOnUpdate(func(_ ToolMetadataConfigMessage) {})
+
+	body := []byte(`{"version":1,"tools":[{"tool_name":"tool-a","category":"test"}]}`)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 100 {
+			_ = handler.Handle(context.Background(), body)
+		}
+	}()
+
+	for range 100 {
+		handler.SetOnUpdate(func(_ ToolMetadataConfigMessage) {})
+	}
+	<-done
+}
+
 type mockPolicyEngine struct {
 	profiles map[string]*types.PolicyProfile
 }

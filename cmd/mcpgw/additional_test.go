@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -647,4 +648,30 @@ func TestOIDCHelperErrorAndSyncServerNoOpPaths(t *testing.T) {
 	}
 	service.syncServer(context.Background(), "")
 	service.syncServer(context.Background(), "missing-id")
+}
+
+func TestNewIndexedRegistrationService_NilLogger(t *testing.T) {
+	t.Parallel()
+
+	svc := newIndexedRegistrationService(
+		&stubRegistrationService{},
+		&mockServerStore{},
+		registration.NewCapabilityIndex(),
+		nil, // nil logger should be replaced with default
+	)
+	if svc == nil {
+		t.Fatal("expected non-nil service")
+	}
+}
+
+func TestCloseQuietly_NilCloser(t *testing.T) {
+	t.Parallel()
+	closeQuietly(nil) // should not panic
+}
+
+func TestCloseQuietly_WithError(t *testing.T) {
+	t.Parallel()
+	closeQuietly(func() error {
+		return fmt.Errorf("test close error")
+	})
 }

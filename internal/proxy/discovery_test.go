@@ -155,7 +155,7 @@ func TestDiscoveryIndex_Search(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			results, total := idx.Search(tt.query, tt.category, tt.limit)
+			results, total := idx.Search(tt.query, tt.category, 0, tt.limit)
 
 			if tt.wantTotal > 0 && total != tt.wantTotal {
 				t.Errorf("total = %d, want %d", total, tt.wantTotal)
@@ -253,7 +253,7 @@ func TestDiscoveryIndex_Rebuild(t *testing.T) {
 	}
 	idx.Index(toolsV1)
 
-	results, total := idx.Search("issue", "", 10)
+	results, total := idx.Search("issue", "", 0, 10)
 	if total != 1 || len(results) != 1 {
 		t.Fatalf("v1: expected 1 result, got total=%d results=%d", total, len(results))
 	}
@@ -263,12 +263,12 @@ func TestDiscoveryIndex_Rebuild(t *testing.T) {
 	}
 	idx.Index(toolsV2)
 
-	results, total = idx.Search("issue", "", 10)
+	results, total = idx.Search("issue", "", 0, 10)
 	if total != 0 || len(results) != 0 {
 		t.Fatalf("v2: expected 0 results after rebuild, got total=%d results=%d", total, len(results))
 	}
 
-	results, total = idx.Search("message", "", 10)
+	results, total = idx.Search("message", "", 0, 10)
 	if total != 1 || len(results) != 1 {
 		t.Fatalf("v2: expected 1 result for message, got total=%d results=%d", total, len(results))
 	}
@@ -317,7 +317,7 @@ func TestDiscoveryIndex_ApplyMetadata_OverridesSummary(t *testing.T) {
 		{ToolName: "mcp.github.create_issue", Summary: "Custom summary for issue creation"},
 	})
 
-	results, _ := idx.Search("issue", "", 10)
+	results, _ := idx.Search("issue", "", 0, 10)
 	if len(results) == 0 {
 		t.Fatal("expected search results")
 	}
@@ -341,7 +341,7 @@ func TestDiscoveryIndex_ApplyMetadata_TagsSearchable(t *testing.T) {
 	})
 
 	// Search by tag keyword.
-	results, total := idx.Search("tracking", "", 10)
+	results, total := idx.Search("tracking", "", 0, 10)
 	if total != 1 {
 		t.Fatalf("expected 1 match for tag 'tracking', got %d", total)
 	}
@@ -361,7 +361,7 @@ func TestDiscoveryIndex_ApplyMetadata_PriorityAffectsOrder(t *testing.T) {
 	idx.Index(tools)
 
 	// Without priority, both score the same; alphabetical wins.
-	results, _ := idx.Search("issue", "", 10)
+	results, _ := idx.Search("issue", "", 0, 10)
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}
@@ -374,7 +374,7 @@ func TestDiscoveryIndex_ApplyMetadata_PriorityAffectsOrder(t *testing.T) {
 		{ToolName: "mcp.jira.create_issue", Priority: 10},
 	})
 
-	results, _ = idx.Search("issue", "", 10)
+	results, _ = idx.Search("issue", "", 0, 10)
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}
@@ -398,7 +398,7 @@ func TestDiscoveryIndex_ApplyMetadata_UnknownToolSkipped(t *testing.T) {
 	})
 
 	// Original tool should be unaffected.
-	results, _ := idx.Search("issue", "", 10)
+	results, _ := idx.Search("issue", "", 0, 10)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -538,6 +538,100 @@ func TestDiscoveryIndex_Stats_Empty(t *testing.T) {
 	}
 	if len(stats.Categories) != 0 {
 		t.Fatalf("expected 0 categories, got %d", len(stats.Categories))
+	}
+}
+
+func TestDiscoveryIndex_MetadataPreservedAcrossRebuild(t *testing.T) {
+	t.Parallel()
+
+	tools := []ToolDefinition{
+		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	idx := NewDiscoveryIndex()
+	idx.Index(tools)
+
+	idx.ApplyMetadata([]ToolMetadata{
+		{ToolName: "mcp.github.create_issue", Category: "custom-cat", Tags: []string{"important"}, Priority: 5},
+	})
+
+	// Rebuild with same tools — metadata should survive.
+	idx.Index(tools)
+
+	results, _ := idx.Browse("custom-cat", 0, 10)
+	if len(results) != 1 {
+		t.Fatalf("expected metadata category to survive rebuild, got %d results", len(results))
+	}
+
+	// Tags should still be searchable after rebuild.
+	results, total := idx.Search("important", "", 0, 10)
+	if total != 1 {
+		t.Fatalf("expected tag 'important' to survive rebuild, got %d matches", total)
+	}
+	if results[0].Name != "mcp.github.create_issue" {
+		t.Fatalf("expected mcp.github.create_issue, got %q", results[0].Name)
+	}
+}
+
+func TestDiscoveryIndex_SearchPagination(t *testing.T) {
+	t.Parallel()
+
+	tools := []ToolDefinition{
+		{Name: "mcp.github.create_issue", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
+		{Name: "mcp.github.list_issues", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
+		{Name: "mcp.github.close_issue", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
+	}
+	idx := NewDiscoveryIndex()
+	idx.Index(tools)
+
+	// Page 1: offset=0, limit=2.
+	results, total := idx.Search("issue", "", 0, 2)
+	if total != 3 {
+		t.Fatalf("expected 3 total matches, got %d", total)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results on page 1, got %d", len(results))
+	}
+
+	// Page 2: offset=2, limit=2.
+	results, total = idx.Search("issue", "", 2, 2)
+	if total != 3 {
+		t.Fatalf("expected 3 total matches, got %d", total)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result on page 2, got %d", len(results))
+	}
+
+	// Beyond range.
+	results, total = idx.Search("issue", "", 10, 2)
+	if total != 3 {
+		t.Fatalf("expected 3 total matches, got %d", total)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results beyond range, got %d", len(results))
+	}
+}
+
+func TestDiscoveryIndex_ApplyMetadata_SummarySearchable(t *testing.T) {
+	t.Parallel()
+
+	tools := []ToolDefinition{
+		{Name: "mcp.github.create_issue", Description: "Create a new issue.", InputSchema: json.RawMessage(`{}`)},
+	}
+	idx := NewDiscoveryIndex()
+	idx.Index(tools)
+
+	// Apply metadata with a summary containing a unique keyword.
+	idx.ApplyMetadata([]ToolMetadata{
+		{ToolName: "mcp.github.create_issue", Summary: "Open a bug tracker ticket"},
+	})
+
+	// The unique keyword "tracker" should now be searchable.
+	results, total := idx.Search("tracker", "", 0, 10)
+	if total != 1 {
+		t.Fatalf("expected 1 match for 'tracker' in metadata summary, got %d", total)
+	}
+	if results[0].Name != "mcp.github.create_issue" {
+		t.Fatalf("expected mcp.github.create_issue, got %q", results[0].Name)
 	}
 }
 
