@@ -48,9 +48,10 @@ type Server struct {
 	eventSubscriber   *events.Subscriber
 	eventPublisher    *events.Publisher
 	degradation       *events.DegradationManager
-	serverCfgHandler  *events.ServerConfigHandler
-	settingsHandler   *events.ServerSettingsConfigHandler
-	ackHandler        *events.ServerRegisteredAckHandler
+	serverCfgHandler     *events.ServerConfigHandler
+	settingsHandler      *events.ServerSettingsConfigHandler
+	ackHandler           *events.ServerRegisteredAckHandler
+	toolMetadataHandler  *events.ToolMetadataConfigHandler
 }
 
 // New builds a configured HTTP server with middleware and routes.
@@ -131,8 +132,10 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 				}
 				authHandler := events.NewAuthConfigHandler(logger)
 				ackHandler := events.NewServerRegisteredAckHandler(nil, logger)
+				toolMetadataHandler := events.NewToolMetadataConfigHandler(configStore, nil, logger)
 				subscriber.RegisterGatewaySubjects(policyHandler, serverHandler, serverSettingsHandler, authHandler)
 				subscriber.RegisterHandler(events.SubjectForAck(cfg.GatewayID, events.AckScopeServerRegistered), ackHandler)
+				subscriber.RegisterHandler(events.SubjectForConfig(cfg.GatewayID, events.ConfigScopeToolMetadata), toolMetadataHandler)
 				if startErr := subscriber.Start(context.Background()); startErr != nil {
 					logger.Warn("events subscriber start failed", slog.String("error", startErr.Error()))
 				} else {
@@ -140,6 +143,7 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 					srv.serverCfgHandler = serverHandler
 					srv.settingsHandler = serverSettings
 					srv.ackHandler = ackHandler
+					srv.toolMetadataHandler = toolMetadataHandler
 				}
 
 				degradation := events.NewDegradationManager(natsClient, configStore, srv.eventSubscriber, logger)
@@ -601,4 +605,12 @@ func (s *Server) SetDegradationManager(manager *events.DegradationManager) {
 		return
 	}
 	s.degradation = manager
+}
+
+// ToolMetadataHandler returns the tool metadata config handler for late-binding.
+func (s *Server) ToolMetadataHandler() *events.ToolMetadataConfigHandler {
+	if s == nil {
+		return nil
+	}
+	return s.toolMetadataHandler
 }

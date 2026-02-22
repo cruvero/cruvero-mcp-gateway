@@ -17,6 +17,7 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/admin"
 	"github.com/cruvero/mcp-gateway/internal/auth"
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/events"
 	"github.com/cruvero/mcp-gateway/internal/identity"
 	"github.com/cruvero/mcp-gateway/internal/proxy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
@@ -185,6 +186,24 @@ func serveWithContext(ctx context.Context) error {
 	}
 	proxyServer := proxy.NewProxyServer(index, cfg, proxyTLSConfig, 0, logger)
 	proxyServer.SetAuditStore(auditStore)
+
+	// Wire tool metadata enrichment callback for progressive discovery.
+	if toolMetaHandler := gw.ToolMetadataHandler(); toolMetaHandler != nil {
+		toolMetaHandler.SetOnUpdate(func(msg events.ToolMetadataConfigMessage) {
+			metadata := make([]proxy.ToolMetadata, 0, len(msg.Tools))
+			for _, entry := range msg.Tools {
+				metadata = append(metadata, proxy.ToolMetadata{
+					ToolName:    entry.ToolName,
+					Category:    entry.Category,
+					DisplayName: entry.DisplayName,
+					Summary:     entry.Summary,
+					Tags:        entry.Tags,
+					Priority:    entry.Priority,
+				})
+			}
+			proxyServer.ApplyToolMetadata(metadata)
+		})
+	}
 
 	oidcValidator, err := maybeBuildOIDCValidator(ctx, cfg)
 	if err != nil {

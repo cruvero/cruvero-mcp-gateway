@@ -222,6 +222,8 @@ func cacheKeyToSubject(gatewayID string, key string) string {
 		return SubjectForConfig(gatewayID, ConfigScopeServerSettings)
 	case configCacheAuthKey:
 		return SubjectForConfig(gatewayID, ConfigScopeAuth)
+	case configCacheToolMetadataKey:
+		return SubjectForConfig(gatewayID, ConfigScopeToolMetadata)
 	default:
 		return ""
 	}

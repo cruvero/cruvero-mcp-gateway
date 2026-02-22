@@ -19,7 +19,8 @@ const (
 	configCachePolicyKey         = "config.policy"
 	configCacheServersKey        = "config.servers"
 	configCacheServerSettingsKey = "config.server_settings"
-	configCacheAuthKey           = "config.auth"
+	configCacheAuthKey              = "config.auth"
+	configCacheToolMetadataKey      = "config.tool_metadata"
 )
 
 // PolicyConfigMessage describes incoming policy profile updates.
@@ -359,6 +360,61 @@ func (h *ServerRegisteredAckHandler) Handle(ctx context.Context, data []byte) er
 		slog.String("registration_id", message.RegistrationID),
 		slog.Int64("lease_epoch", message.LeaseEpoch),
 		slog.String("registry_version", strings.TrimSpace(message.RegistryVersion)),
+	)
+	return nil
+}
+
+// ToolMetadataConfigHandler applies tool metadata enrichment updates from the platform.
+type ToolMetadataConfigHandler struct {
+	configStore ConfigStore
+	onUpdate    func(ToolMetadataConfigMessage)
+	logger      *slog.Logger
+}
+
+// NewToolMetadataConfigHandler creates a tool metadata config handler.
+func NewToolMetadataConfigHandler(store ConfigStore, onUpdate func(ToolMetadataConfigMessage), logger *slog.Logger) *ToolMetadataConfigHandler {
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	}
+	return &ToolMetadataConfigHandler{
+		configStore: store,
+		onUpdate:    onUpdate,
+		logger:      logger,
+	}
+}
+
+// SetOnUpdate sets the callback invoked when tool metadata is updated.
+func (h *ToolMetadataConfigHandler) SetOnUpdate(fn func(ToolMetadataConfigMessage)) {
+	if h == nil {
+		return
+	}
+	h.onUpdate = fn
+}
+
+// Handle validates and applies tool metadata config payloads.
+func (h *ToolMetadataConfigHandler) Handle(ctx context.Context, data []byte) error {
+	if h == nil {
+		return fmt.Errorf("handle tool metadata config: handler is nil")
+	}
+
+	var message ToolMetadataConfigMessage
+	if err := decodeConfigMessage(data, &message); err != nil {
+		return fmt.Errorf("handle tool metadata config: %w", err)
+	}
+
+	if h.configStore != nil {
+		if err := h.configStore.Save(ctx, configCacheToolMetadataKey, data); err != nil {
+			h.logger.WarnContext(ctx, "tool metadata config persistence failed", slog.String("error", err.Error()))
+		}
+	}
+
+	if h.onUpdate != nil {
+		h.onUpdate(message)
+	}
+
+	h.logger.InfoContext(ctx, "tool metadata config updated",
+		slog.Int64("version", message.Version),
+		slog.Int("tool_count", len(message.Tools)),
 	)
 	return nil
 }
