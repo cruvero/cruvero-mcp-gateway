@@ -81,9 +81,8 @@ func runMigrations(dbURL string, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("create migrator: %w", err)
 	}
-	defer func() {
-		_, _ = migrator.Close()
-	}()
+	// Do not call migrator.Close() here: it closes the underlying *sql.DB
+	// that was passed via WithInstance, which the caller still needs.
 
 	if err := migrator.Up(); err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("apply up migrations: %w", err)

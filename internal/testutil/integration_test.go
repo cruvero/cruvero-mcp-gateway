@@ -94,11 +94,14 @@ func TestFullLifecycle(t *testing.T) {
 	certs := GenerateTestCerts(t)
 	clientCert := parsePEMCertificate(t, certs.ClientCertPEM)
 
+	// Register with a private RFC 1918 IP to satisfy SSRF validation (loopback
+	// is blocked in production). After registration we override the host in
+	// the capability index so the proxy routes to the real httptest backend.
 	registerPayload := registration.RegistrationRequest{
 		ServiceName: backendRecord.Name,
 		Version:     "1.0.0",
 		Listen: registration.ListenConfig{
-			Host:     backendRecord.Host,
+			Host:     "10.0.0.1",
 			Port:     backendRecord.Port,
 			Protocol: "https",
 		},
@@ -139,6 +142,7 @@ func TestFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load registered server: %v", err)
 	}
+	record.Host = backendRecord.Host
 	index.Add(*record)
 
 	mcpGatewayClient, err := mcpclient.NewStreamableHttpClient(httpServer.URL + "/mcp")
