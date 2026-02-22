@@ -53,27 +53,9 @@ func authLoginCommand(args []string) error {
 
 	baseURL := strings.TrimRight(strings.TrimSpace(*gatewayURL), "/")
 
-	// Request device code.
-	form := url.Values{"scope": {"openid profile email"}}
-	resp, err := httpClientForAuth.PostForm(baseURL+"/device/code", form)
+	codeResp, err := requestDeviceCode(baseURL)
 	if err != nil {
-		return fmt.Errorf("auth login: request device code: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("auth login: device code request failed with status %d", resp.StatusCode)
-	}
-
-	var codeResp struct {
-		DeviceCode      string `json:"device_code"`
-		UserCode        string `json:"user_code"`
-		VerificationURI string `json:"verification_uri"`
-		ExpiresIn       int    `json:"expires_in"`
-		Interval        int    `json:"interval"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&codeResp); err != nil {
-		return fmt.Errorf("auth login: decode device code response: %w", err)
+		return err
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Go to: %s\n", codeResp.VerificationURI)
@@ -83,7 +65,37 @@ func authLoginCommand(args []string) error {
 		openBrowser(codeResp.VerificationURI)
 	}
 
-	// Poll for token.
+	return pollForToken(baseURL, codeResp)
+}
+
+type deviceCodeResponse struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	ExpiresIn       int    `json:"expires_in"`
+	Interval        int    `json:"interval"`
+}
+
+func requestDeviceCode(baseURL string) (*deviceCodeResponse, error) {
+	form := url.Values{"scope": {"openid profile email"}}
+	resp, err := httpClientForAuth.PostForm(baseURL+"/device/code", form)
+	if err != nil {
+		return nil, fmt.Errorf("auth login: request device code: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("auth login: device code request failed with status %d", resp.StatusCode)
+	}
+
+	var codeResp deviceCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&codeResp); err != nil {
+		return nil, fmt.Errorf("auth login: decode device code response: %w", err)
+	}
+	return &codeResp, nil
+}
+
+func pollForToken(baseURL string, codeResp *deviceCodeResponse) error {
 	interval := time.Duration(codeResp.Interval) * time.Second
 	if interval < 5*time.Second {
 		interval = 5 * time.Second
@@ -93,55 +105,76 @@ func authLoginCommand(args []string) error {
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 
-		tokenForm := url.Values{
-			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
-			"device_code": {codeResp.DeviceCode},
-		}
-		tokenResp, err := httpClientForAuth.PostForm(baseURL+"/device/token", tokenForm)
+		result, err := pollTokenOnce(baseURL, codeResp.DeviceCode)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "poll error: %v\n", err)
+			return err
+		}
+		if result == pollPending {
 			continue
 		}
-
-		body, _ := io.ReadAll(tokenResp.Body)
-		_ = tokenResp.Body.Close()
-
-		if tokenResp.StatusCode == http.StatusTooEarly {
-			continue
-		}
-
-		if tokenResp.StatusCode == http.StatusOK {
-			var tokenData struct {
-				AccessToken  string `json:"access_token"`
-				RefreshToken string `json:"refresh_token"`
-				IDToken      string `json:"id_token"`
-				TokenType    string `json:"token_type"`
-				ExpiresIn    int    `json:"expires_in"`
-			}
-			if err := json.Unmarshal(body, &tokenData); err != nil {
-				return fmt.Errorf("auth login: decode token response: %w", err)
-			}
-
-			tokens := &auth.CachedTokens{
-				AccessToken:  tokenData.AccessToken,
-				RefreshToken: tokenData.RefreshToken,
-				IDToken:      tokenData.IDToken,
-				TokenType:    tokenData.TokenType,
-				ExpiresAt:    time.Now().Add(time.Duration(tokenData.ExpiresIn) * time.Second),
-				GatewayURL:   baseURL,
-			}
-			if err := auth.SaveTokens(tokens); err != nil {
-				return fmt.Errorf("auth login: save tokens: %w", err)
-			}
-
-			_, _ = fmt.Fprintln(stdout, "Login successful.")
-			return nil
-		}
-
-		return fmt.Errorf("auth login: token request failed with status %d: %s", tokenResp.StatusCode, string(body))
+		return nil
 	}
 
 	return fmt.Errorf("auth login: device code expired")
+}
+
+type pollResult int
+
+const (
+	pollPending pollResult = iota
+	pollSuccess
+)
+
+func pollTokenOnce(baseURL string, deviceCode string) (pollResult, error) {
+	tokenForm := url.Values{
+		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+		"device_code": {deviceCode},
+	}
+	tokenResp, err := httpClientForAuth.PostForm(baseURL+"/device/token", tokenForm)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "poll error: %v\n", err)
+		return pollPending, nil
+	}
+
+	body, _ := io.ReadAll(tokenResp.Body)
+	_ = tokenResp.Body.Close()
+
+	if tokenResp.StatusCode == http.StatusTooEarly {
+		return pollPending, nil
+	}
+	if tokenResp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("auth login: token request failed with status %d: %s", tokenResp.StatusCode, string(body))
+	}
+
+	return pollSuccess, saveTokenResponse(body, baseURL)
+}
+
+func saveTokenResponse(body []byte, baseURL string) error {
+	var tokenData struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int    `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tokenData); err != nil {
+		return fmt.Errorf("auth login: decode token response: %w", err)
+	}
+
+	tokens := &auth.CachedTokens{
+		AccessToken:  tokenData.AccessToken,
+		RefreshToken: tokenData.RefreshToken,
+		IDToken:      tokenData.IDToken,
+		TokenType:    tokenData.TokenType,
+		ExpiresAt:    time.Now().Add(time.Duration(tokenData.ExpiresIn) * time.Second),
+		GatewayURL:   baseURL,
+	}
+	if err := auth.SaveTokens(tokens); err != nil {
+		return fmt.Errorf("auth login: save tokens: %w", err)
+	}
+
+	_, _ = fmt.Fprintln(stdout, "Login successful.")
+	return nil
 }
 
 func authStatusCommand(args []string) error {

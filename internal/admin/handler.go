@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"html/template"
 	"log/slog"
@@ -123,34 +124,8 @@ func (h *AdminHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	riskFilter := strings.TrimSpace(r.URL.Query().Get("risk"))
 
-	var tools []types.ToolClassification
-	if h.classificationStore != nil {
-		if riskFilter != "" {
-			level := types.RiskLevel(riskFilter)
-			if level.IsValid() {
-				result, err := h.classificationStore.GetByRiskLevel(ctx, level)
-				if err == nil {
-					tools = result
-				}
-			}
-		} else {
-			result, err := h.classificationStore.GetAll(ctx)
-			if err == nil {
-				tools = result
-			}
-		}
-	}
-
-	// Filter by search query.
-	if query != "" && len(tools) > 0 {
-		var filtered []types.ToolClassification
-		for _, t := range tools {
-			if strings.Contains(strings.ToLower(t.ToolName), strings.ToLower(query)) {
-				filtered = append(filtered, t)
-			}
-		}
-		tools = filtered
-	}
+	tools := h.fetchTools(ctx, riskFilter)
+	tools = filterToolsByQuery(tools, query)
 
 	data := map[string]any{
 		"PageTitle": "Tools",
@@ -163,6 +138,46 @@ func (h *AdminHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.render(w, r, "tools.html", data)
+}
+
+func (h *AdminHandler) fetchTools(ctx context.Context, riskFilter string) []types.ToolClassification {
+	if h.classificationStore == nil {
+		return nil
+	}
+	if riskFilter != "" {
+		return h.fetchToolsByRisk(ctx, riskFilter)
+	}
+	result, err := h.classificationStore.GetAll(ctx)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+func (h *AdminHandler) fetchToolsByRisk(ctx context.Context, riskFilter string) []types.ToolClassification {
+	level := types.RiskLevel(riskFilter)
+	if !level.IsValid() {
+		return nil
+	}
+	result, err := h.classificationStore.GetByRiskLevel(ctx, level)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+func filterToolsByQuery(tools []types.ToolClassification, query string) []types.ToolClassification {
+	if query == "" || len(tools) == 0 {
+		return tools
+	}
+	lowerQuery := strings.ToLower(query)
+	var filtered []types.ToolClassification
+	for _, t := range tools {
+		if strings.Contains(strings.ToLower(t.ToolName), lowerQuery) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 // HandleToolEdit renders the tool edit form.
