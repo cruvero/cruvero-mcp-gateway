@@ -28,6 +28,7 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 
 **Resilience**
 - Token-bucket rate limiting with three backends (memory, DragonflyDB, NATS)
+- Per-server rate limiting configurable via admin dashboard (block, throttle, or unlimited per backend)
 - Circuit breakers with configurable failure threshold and recovery timeout
 - Automatic retry with backoff on transient failures
 - Graceful degradation when NATS is unavailable
@@ -347,6 +348,7 @@ Enable the admin dashboard with `MCPGW_ADMIN_ENABLED=true`. The dashboard provid
 - **Tool classification** -- search, filter, and set risk levels (read_only, write, destructive)
 - **Audit log viewer** -- paginated logs with filters by client, tool, decision, and date range
 - **CSV export** -- export up to 10,000 audit records with CSV injection prevention
+- **Per-server rate limiting** -- configure requests/second limits and burst capacity per backend server
 - **Rate limit inspection** -- view current rate limit state (when backend supports inspection)
 
 ### Production Setup
@@ -385,6 +387,18 @@ Set via `MCPGW_RATE_LIMIT_BACKEND`. DragonflyDB additionally requires `MCPGW_DRA
 
 Both DragonflyDB and NATS backends fall back to in-memory limiting when their backing service is unavailable. Policy profiles control per-client rate and burst limits -- manage profiles via `mcpgw policy set`.
 
+### Per-Server Rate Limits
+
+In addition to per-client policy-based rate limiting, the gateway supports per-server rate limits configurable via the admin dashboard. These override the global defaults for individual backend servers:
+
+| `rate_limit` Value | `rate_burst` Value | Behavior |
+|--------------------|-------------------|----------|
+| `NULL` | `NULL` | Use global defaults from policy profile |
+| `0` | any | All requests to this server are blocked |
+| `> 0` | `NULL` or `> 0` | Custom rate; burst defaults to rate if not set |
+
+Database CHECK constraints enforce that rate values are non-negative and that `rate_burst` cannot be set without `rate_limit`. When a request is rate-limited, the client receives an MCP-level JSON-RPC error with a retry hint rather than a raw HTTP 429.
+
 ## Observability
 
 ### Prometheus Metrics
@@ -401,11 +415,11 @@ All logs use Go's `slog` package. Configure format (`json`/`text`) via `MCPGW_LO
 
 ## IDE Integration
 
-The gateway supports two authentication modes for IDE integration: Device Code flow (browser-based) and API key (static credential).
+The gateway exposes a single MCP endpoint. IDEs connect via the `mcpgw mcp-proxy` stdio bridge, which translates between stdin/stdout JSON-RPC and the gateway's HTTP transport with automatic token management.
 
-### Device Code Flow (recommended)
+### Authentication Setup
 
-Authenticate via browser -- no API key management required:
+Authenticate once via browser using the Device Code flow -- no API key management required:
 
 ```bash
 # One-time login
@@ -418,7 +432,11 @@ mcpgw auth status
 mcpgw auth logout
 ```
 
-IDE MCP server configuration (e.g. Claude Code `mcp_servers.json`):
+The `mcp-proxy` command reads stdin JSON-RPC, forwards to the gateway with automatic token refresh, and writes responses to stdout.
+
+### Claude Code
+
+**Project-level** (`.claude/mcp.json` in your project root):
 
 ```json
 {
@@ -431,7 +449,63 @@ IDE MCP server configuration (e.g. Claude Code `mcp_servers.json`):
 }
 ```
 
-The `mcp-proxy` command reads stdin JSON-RPC, forwards to the gateway with automatic token refresh, and writes responses to stdout.
+**Global** (`~/.claude/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "gateway": {
+      "command": "mcpgw",
+      "args": ["mcp-proxy", "--gateway-url", "https://gateway.example.com"]
+    }
+  }
+}
+```
+
+### GitHub Copilot (VS Code)
+
+Add to `.vscode/mcp.json` in your project root:
+
+```json
+{
+  "servers": {
+    "gateway": {
+      "command": "mcpgw",
+      "args": ["mcp-proxy", "--gateway-url", "https://gateway.example.com"]
+    }
+  }
+}
+```
+
+### OpenAI Codex CLI
+
+Add to your Codex MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "gateway": {
+      "command": "mcpgw",
+      "args": ["mcp-proxy", "--gateway-url", "https://gateway.example.com"]
+    }
+  }
+}
+```
+
+### API Key Mode (Headless/CI)
+
+For environments without browser access (CI pipelines, headless servers), create an API key and use direct HTTP requests. The `mcp-proxy` bridge does not support API key authentication -- use the HTTP endpoint directly:
+
+```bash
+# Create an API key
+mcpgw apikey create --name ci-pipeline --scopes read,write
+
+# Call the gateway directly
+curl -X POST https://gateway.example.com/mcp \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
 
 ### Federated Tool Routing
 
@@ -456,22 +530,59 @@ The gateway handles authentication, rate limiting, policy enforcement, and circu
 
 If multiple servers expose the same tool name, the gateway uses round-robin selection. Use the federated prefix (`mcp.<server>.`) to target a specific backend.
 
-### API Key Mode
+## Deployment Modes
 
-For environments without browser access:
+### Standalone Mode
 
-```json
-{
-  "mcpServers": {
-    "gateway": {
-      "command": "curl",
-      "args": ["-s", "-X", "POST", "-H", "Authorization: Bearer <API_KEY>",
-               "-H", "Content-Type: application/json",
-               "https://gateway.example.com/mcp"]
-    }
-  }
-}
-```
+The gateway runs as a single binary with PostgreSQL as its only required dependency.
+
+- **Configuration**: environment variables only (`MCPGW_*`)
+- **Rate limiting**: in-memory (single instance) or DragonflyDB (multi-replica)
+- **Policy management**: static, configured via CLI (`mcpgw policy set`)
+- **Server registration**: servers register directly, active immediately after approval
+- **Config updates**: require process restart
+
+### Cruvero Platform Integration
+
+Enable with `MCPGW_CRUVERO_ENABLED=true` and `MCPGW_NATS_URL`.
+
+What changes when Cruvero integration is enabled:
+
+- **NATS event bus** publishes lifecycle events (`server.registered`, `server.deregistered`, `server.health_changed`, `policy.violated`)
+- **Platform-driven config** -- Cruvero pushes policy profiles, auth config, and server settings updates
+- **Multi-gateway coordination** via cross-pod NATS broadcast
+- **Registration includes platform sync** with ack/nack from the control plane
+- **Dynamic policy and rate limit updates** without gateway restart
+- **Graceful degradation** -- gateway caches last-known config when NATS disconnects
+
+### Feature Comparison
+
+| Feature | Standalone | Cruvero |
+|---------|-----------|---------|
+| Server registration | Direct | Platform-synced |
+| Policy management | CLI only | Platform UI + push |
+| Rate limiting | Memory / DragonflyDB | Memory / DragonflyDB / NATS |
+| Multi-gateway sync | DragonflyDB pub/sub | NATS broadcast |
+| Config updates | Restart required | Dynamic via NATS |
+| Observability | Prometheus + OTel | + Platform dashboard |
+
+NATS subject pattern: `mcpgw.{gateway_id}.{category}.{scope}` -- categories: `events`, `config`, `acks`.
+
+## API Reference
+
+| Endpoint Group | Path | Auth | Description |
+|---------------|------|------|-------------|
+| MCP Protocol | `POST /mcp` | API key / OIDC | JSON-RPC endpoint (`tools/list`, `tools/call`, `resources/list`, `resources/read`) |
+| Device Code | `POST /device/code` | None | Request device authorization code |
+| Device Token | `POST /device/token` | None | Poll for / refresh access tokens |
+| Device Verify | `GET /device/verify` | None | Browser verification page |
+| Health | `GET /healthz` | None | Liveness probe (always 200) |
+| Health | `GET /readyz` | None | Readiness probe (checks dependencies) |
+| Registration | `PUT /v1/registrations/{id}` | mTLS | Register an MCP server |
+| Registration | `POST /v1/registrations/{id}/heartbeat` | mTLS | Server keep-alive |
+| Registration | `DELETE /v1/registrations/{id}` | mTLS | Deregister server |
+| Admin | `GET /admin/*` | OIDC session | Web dashboard |
+| Metrics | `GET /metrics` | None | Prometheus metrics (separate port) |
 
 ## Database Migrations
 
@@ -501,6 +612,7 @@ Migration files follow the convention `NNNN_description.{up,down}.sql` in the `m
 | 0007 | Audit log retention index |
 | 0008 | API key policy profile |
 | 0009 | Tool classifications |
+| 0010 | Server rate limit columns + CHECK constraints |
 
 ## Development
 
@@ -577,7 +689,7 @@ cruvero-mcp-gateway/
 │   ├── store/              Postgres store interfaces + implementations
 │   ├── testutil/           Integration, security, and load test suites
 │   └── types/              Shared domain types
-├── migrations/             SQL migrations (0001–0009)
+├── migrations/             SQL migrations (0001–0010)
 ├── charts/
 │   └── mcpgateway/         Helm chart + environment overlays
 ├── deploy/
@@ -590,6 +702,56 @@ cruvero-mcp-gateway/
 ├── Makefile
 ├── go.mod
 └── go.sum
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**"run 'mcpgw auth login' first"**
+
+The `mcp-proxy` stdio bridge requires Device Code authentication. Run:
+
+```bash
+mcpgw auth login --gateway-url https://your-gateway
+```
+
+**Token expired / refresh failed**
+
+Clear stale tokens and re-authenticate:
+
+```bash
+mcpgw auth logout && mcpgw auth login --gateway-url https://your-gateway
+```
+
+**Connection refused on port 8443**
+
+Ensure TLS certificates are configured. The gateway requires `MCPGW_TLS_CERT` + `MCPGW_TLS_KEY` to start with TLS. For local development without TLS, set `MCPGW_LISTEN_ADDR=:8080` (plain HTTP, no mTLS).
+
+**Server shows "inactive" after registration**
+
+Servers must send heartbeats within `MCPGW_HEARTBEAT_TTL` (default 30s). Check backend server logs for heartbeat failures. Inspect server state:
+
+```bash
+mcpgw server inspect <name>
+```
+
+**Rate limited unexpectedly**
+
+Check per-server rate limits in the admin dashboard. Check client rate via policy profile:
+
+```bash
+mcpgw policy list
+```
+
+Default: 10 req/s, burst 20.
+
+**NATS connection failed (Cruvero mode)**
+
+The gateway degrades gracefully and continues with cached config. Check `MCPGW_NATS_URL` and NATS TLS settings. Verify connectivity:
+
+```bash
+mcpgw health
 ```
 
 ## Contributing
