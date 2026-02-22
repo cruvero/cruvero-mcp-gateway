@@ -215,50 +215,12 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("start server: context is nil")
 	}
 
-	defer func() {
-		if s.eventSubscriber != nil {
-			_ = s.eventSubscriber.Stop()
-		}
-		if s.eventsClient != nil {
-			_ = s.eventsClient.Close()
-		}
-	}()
+	defer s.closeEventInfrastructure()
+	s.startMetricsServer()
 
-	if s.metricsSrv != nil {
-		go func() {
-			if err := s.metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				s.logger.Error("metrics server failed", slog.String("error", err.Error()))
-			}
-		}()
-	}
+	shutdownErrCh := s.startShutdownWatcher(ctx)
 
-	// MemoryBackend manages its own cleanup internally; no external cleanup needed.
-
-	shutdownErrCh := make(chan error, 1)
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
-		defer cancel()
-		if s.metricsSrv != nil {
-			if err := s.metricsSrv.Shutdown(shutdownCtx); err != nil {
-				s.logger.Error("metrics shutdown failed", slog.String("error", err.Error()))
-			}
-		}
-		shutdownErrCh <- s.httpServer.Shutdown(shutdownCtx)
-	}()
-
-	var serveErr error
-	if s.cfg != nil && s.cfg.IsTLSConfigured() {
-		tlsCfg, err := buildInboundTLSConfig(s.cfg)
-		if err != nil {
-			return fmt.Errorf("start server: build inbound tls config: %w", err)
-		}
-		s.httpServer.TLSConfig = tlsCfg
-		serveErr = s.httpServer.ListenAndServeTLS("", "")
-	} else {
-		serveErr = s.httpServer.ListenAndServe()
-	}
-
+	serveErr := s.listenAndServe()
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return fmt.Errorf("start server: %w", serveErr)
 	}
@@ -272,6 +234,54 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Server) closeEventInfrastructure() {
+	if s.eventSubscriber != nil {
+		_ = s.eventSubscriber.Stop()
+	}
+	if s.eventsClient != nil {
+		_ = s.eventsClient.Close()
+	}
+}
+
+func (s *Server) startMetricsServer() {
+	if s.metricsSrv == nil {
+		return
+	}
+	go func() {
+		if err := s.metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("metrics server failed", slog.String("error", err.Error()))
+		}
+	}()
+}
+
+func (s *Server) startShutdownWatcher(ctx context.Context) <-chan error {
+	shutdownErrCh := make(chan error, 1)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		defer cancel()
+		if s.metricsSrv != nil {
+			if err := s.metricsSrv.Shutdown(shutdownCtx); err != nil {
+				s.logger.Error("metrics shutdown failed", slog.String("error", err.Error()))
+			}
+		}
+		shutdownErrCh <- s.httpServer.Shutdown(shutdownCtx)
+	}()
+	return shutdownErrCh
+}
+
+func (s *Server) listenAndServe() error {
+	if s.cfg != nil && s.cfg.IsTLSConfigured() {
+		tlsCfg, err := buildInboundTLSConfig(s.cfg)
+		if err != nil {
+			return fmt.Errorf("start server: build inbound tls config: %w", err)
+		}
+		s.httpServer.TLSConfig = tlsCfg
+		return s.httpServer.ListenAndServeTLS("", "")
+	}
+	return s.httpServer.ListenAndServe()
 }
 
 func buildInboundTLSConfig(cfg *config.Config) (*tls.Config, error) {

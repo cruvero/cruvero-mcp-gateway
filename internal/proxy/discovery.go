@@ -90,46 +90,12 @@ func (d *DiscoveryIndex) Search(query, category string, offset, limit int) ([]To
 		return nil, 0
 	}
 
-	if limit <= 0 {
-		limit = defaultSearchLimit
-	}
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
-	}
+	limit = clampLimit(limit)
 
 	q := strings.ToLower(strings.TrimSpace(query))
 	cat := strings.ToLower(strings.TrimSpace(category))
 
-	d.mu.RLock()
-	scored := make([]scoredEntry, 0)
-	for _, entry := range d.entries {
-		if cat != "" && strings.ToLower(entry.category) != cat {
-			continue
-		}
-
-		score := 0
-		if entry.nameLower == q {
-			score += 10
-		} else if strings.Contains(entry.nameLower, q) {
-			score += 5
-		}
-		if strings.Contains(entry.titleLower, q) {
-			score += 3
-		}
-		if strings.Contains(entry.descLower, q) {
-			score += 1
-		}
-		for _, tag := range entry.tagsLower {
-			if strings.Contains(tag, q) {
-				score += 2
-			}
-		}
-		if score > 0 {
-			score += entry.priority
-			scored = append(scored, scoredEntry{entry: entry, score: score})
-		}
-	}
-	d.mu.RUnlock()
+	scored := d.collectScoredEntries(q, cat)
 
 	sort.Slice(scored, func(i, j int) bool {
 		if scored[i].score != scored[j].score {
@@ -139,17 +105,10 @@ func (d *DiscoveryIndex) Search(query, category string, offset, limit int) ([]To
 	})
 
 	totalMatches := len(scored)
-	if offset < 0 {
-		offset = 0
-	}
-	if offset >= len(scored) {
+	scored = paginateScored(scored, offset, limit)
+	if scored == nil {
 		return nil, totalMatches
 	}
-	end := offset + limit
-	if end > len(scored) {
-		end = len(scored)
-	}
-	scored = scored[offset:end]
 
 	results := make([]ToolDefinition, 0, len(scored))
 	for _, s := range scored {
@@ -161,6 +120,69 @@ func (d *DiscoveryIndex) Search(query, category string, offset, limit int) ([]To
 		})
 	}
 	return results, totalMatches
+}
+
+func (d *DiscoveryIndex) collectScoredEntries(q, cat string) []scoredEntry {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	scored := make([]scoredEntry, 0)
+	for _, entry := range d.entries {
+		if cat != "" && strings.ToLower(entry.category) != cat {
+			continue
+		}
+		score := scoreEntry(entry, q)
+		if score > 0 {
+			score += entry.priority
+			scored = append(scored, scoredEntry{entry: entry, score: score})
+		}
+	}
+	return scored
+}
+
+func scoreEntry(entry discoveryEntry, q string) int {
+	score := 0
+	if entry.nameLower == q {
+		score += 10
+	} else if strings.Contains(entry.nameLower, q) {
+		score += 5
+	}
+	if strings.Contains(entry.titleLower, q) {
+		score += 3
+	}
+	if strings.Contains(entry.descLower, q) {
+		score += 1
+	}
+	for _, tag := range entry.tagsLower {
+		if strings.Contains(tag, q) {
+			score += 2
+		}
+	}
+	return score
+}
+
+func clampLimit(limit int) int {
+	if limit <= 0 {
+		return defaultSearchLimit
+	}
+	if limit > maxSearchLimit {
+		return maxSearchLimit
+	}
+	return limit
+}
+
+func paginateScored(scored []scoredEntry, offset, limit int) []scoredEntry {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(scored) {
+		return nil
+	}
+	end := offset + limit
+	if end > len(scored) {
+		end = len(scored)
+	}
+	return scored[offset:end]
 }
 
 const maxGetToolsNames = 20
