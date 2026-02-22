@@ -18,6 +18,8 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+const errMissingIdentity = "missing identity"
+
 // RegistrationService defines service methods used by registration HTTP handlers.
 type RegistrationService interface {
 	Register(ctx context.Context, caller *identitypkg.Identity, req RegistrationRequest) (*RegistrationResponse, error)
@@ -59,7 +61,7 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	caller, ok := identitypkg.FromContext(r.Context())
 	if !ok {
-		writeRegistrationError(w, http.StatusUnauthorized, "missing identity")
+		writeRegistrationError(w, http.StatusUnauthorized, errMissingIdentity)
 		return
 	}
 
@@ -97,7 +99,7 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	caller, ok := identitypkg.FromContext(r.Context())
 	if !ok {
-		writeRegistrationError(w, http.StatusUnauthorized, "missing identity")
+		writeRegistrationError(w, http.StatusUnauthorized, errMissingIdentity)
 		return
 	}
 
@@ -129,7 +131,7 @@ func (h *Handler) handleDeregister(w http.ResponseWriter, r *http.Request) {
 
 	caller, ok := identitypkg.FromContext(r.Context())
 	if !ok {
-		writeRegistrationError(w, http.StatusUnauthorized, "missing identity")
+		writeRegistrationError(w, http.StatusUnauthorized, errMissingIdentity)
 		return
 	}
 

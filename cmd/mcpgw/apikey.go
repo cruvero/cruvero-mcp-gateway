@@ -147,42 +147,50 @@ func apikeyListCommand(args []string) error {
 
 	switch strings.ToLower(strings.TrimSpace(*format)) {
 	case "json":
-		safe := make([]map[string]any, 0, len(keys))
-		for _, key := range keys {
-			safe = append(safe, safeAPIKeyView(key))
-		}
-		encoder := json.NewEncoder(stdout)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(safe); err != nil {
-			return fmt.Errorf("encode api key list: %w", err)
-		}
-		return nil
+		return apikeyListJSON(keys)
 	case "table", "":
-		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "ID\tNAME\tCLIENT_ID\tSCOPES\tEXPIRES_AT\tCREATED_AT")
-		for _, key := range keys {
-			expiresAt := "never"
-			if key.ExpiresAt != nil {
-				expiresAt = key.ExpiresAt.UTC().Format(time.RFC3339)
-			}
-			_, _ = fmt.Fprintf(
-				tw,
-				"%s\t%s\t%s\t%s\t%s\t%s\n",
-				key.ID,
-				key.Name,
-				key.ClientID,
-				strings.Join(key.Scopes, ","),
-				expiresAt,
-				key.CreatedAt.UTC().Format(time.RFC3339),
-			)
-		}
-		if err := tw.Flush(); err != nil {
-			return fmt.Errorf("flush api key list: %w", err)
-		}
-		return nil
+		return apikeyListTable(keys)
 	default:
 		return fmt.Errorf("invalid format %q: expected table or json", *format)
 	}
+}
+
+func apikeyListJSON(keys []types.APIKey) error {
+	safe := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		safe = append(safe, safeAPIKeyView(key))
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(safe); err != nil {
+		return fmt.Errorf("encode api key list: %w", err)
+	}
+	return nil
+}
+
+func apikeyListTable(keys []types.APIKey) error {
+	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "ID\tNAME\tCLIENT_ID\tSCOPES\tEXPIRES_AT\tCREATED_AT")
+	for _, key := range keys {
+		expiresAt := "never"
+		if key.ExpiresAt != nil {
+			expiresAt = key.ExpiresAt.UTC().Format(time.RFC3339)
+		}
+		_, _ = fmt.Fprintf(
+			tw,
+			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			key.ID,
+			key.Name,
+			key.ClientID,
+			strings.Join(key.Scopes, ","),
+			expiresAt,
+			key.CreatedAt.UTC().Format(time.RFC3339),
+		)
+	}
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("flush api key list: %w", err)
+	}
+	return nil
 }
 
 func apikeyRevokeCommand(args []string) error {

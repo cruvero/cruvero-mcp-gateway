@@ -18,6 +18,8 @@ import (
 const (
 	deviceFlowMaxBodyBytes = 4096
 	deviceGrantType        = "urn:ietf:params:oauth:grant-type:device_code"
+	contentTypeJSON        = "application/json"
+	headerContentType      = "Content-Type"
 )
 
 var verifyPageTemplate = template.Must(template.New("verify").Parse(`<!DOCTYPE html>
@@ -91,7 +93,7 @@ func (h *DeviceFlowHandler) handleDeviceCode(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
@@ -159,7 +161,7 @@ func (h *DeviceFlowHandler) handleDeviceToken(w http.ResponseWriter, r *http.Req
 		h.logger.Info("device flow token issued")
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	w.WriteHeader(statusCode)
 	_, _ = w.Write(body)
 }
@@ -176,14 +178,14 @@ func (h *DeviceFlowHandler) handleVerify(w http.ResponseWriter, r *http.Request)
 		VerificationURI: verificationURI,
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set(headerContentType, "text/html; charset=utf-8")
 	if err := verifyPageTemplate.Execute(w, data); err != nil {
 		h.logger.Error("render verify page failed", slog.String("error", err.Error()))
 	}
 }
 
 func writeDeviceError(w http.ResponseWriter, status int, errorCode, description string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, contentTypeJSON)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":             errorCode,

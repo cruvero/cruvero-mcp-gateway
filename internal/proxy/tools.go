@@ -126,53 +126,74 @@ func (p *ProxyServer) handleListTools(ctx context.Context) ([]ToolDefinition, er
 		return []ToolDefinition{}, nil
 	}
 
-	result := make([]ToolDefinition, 0, len(toolNames))
-	seen := make(map[string]struct{}, len(toolNames))
-	backendDefs := make(map[string]map[string]ToolDefinition)
+	agg := &toolAggregator{
+		proxy:       p,
+		result:      make([]ToolDefinition, 0, len(toolNames)),
+		seen:        make(map[string]struct{}, len(toolNames)),
+		backendDefs: make(map[string]map[string]ToolDefinition),
+	}
+
 	for _, toolName := range toolNames {
 		toolName = strings.TrimSpace(toolName)
 		if toolName == "" {
 			continue
 		}
-
-		candidates := p.index.LookupTool(toolName)
-		if len(candidates) == 0 {
-			continue
-		}
-
-		for _, backend := range candidates {
-			federatedName := federatedToolName(backend, toolName)
-			if federatedName == "" {
-				continue
-			}
-			if _, exists := seen[federatedName]; exists {
-				continue
-			}
-
-			if cached, ok := p.toolCache.Get(federatedName); ok {
-				result = append(result, cached)
-				seen[federatedName] = struct{}{}
-				continue
-			}
-
-			definitionsByName, err := p.loadBackendDefinitions(ctx, backend, backendDefs)
-			if err != nil {
-				return nil, err
-			}
-
-			selected, ok := definitionsByName[toolName]
-			if !ok {
-				return nil, fmt.Errorf("list tools: backend %s missing definition for tool %s", backend.ID, toolName)
-			}
-
-			selected.Name = federatedName
-			p.toolCache.Set(federatedName, selected, backend.ID)
-			result = append(result, selected)
-			seen[federatedName] = struct{}{}
+		if err := agg.aggregateTool(ctx, toolName); err != nil {
+			return nil, err
 		}
 	}
 
-	return result, nil
+	return agg.result, nil
+}
+
+type toolAggregator struct {
+	proxy       *ProxyServer
+	result      []ToolDefinition
+	seen        map[string]struct{}
+	backendDefs map[string]map[string]ToolDefinition
+}
+
+func (a *toolAggregator) aggregateTool(ctx context.Context, toolName string) error {
+	candidates := a.proxy.index.LookupTool(toolName)
+	for _, backend := range candidates {
+		federatedName := federatedToolName(backend, toolName)
+		if federatedName == "" {
+			continue
+		}
+		if _, exists := a.seen[federatedName]; exists {
+			continue
+		}
+
+		if cached, ok := a.proxy.toolCache.Get(federatedName); ok {
+			a.result = append(a.result, cached)
+			a.seen[federatedName] = struct{}{}
+			continue
+		}
+
+		def, err := a.resolveFromBackend(ctx, backend, toolName, federatedName)
+		if err != nil {
+			return err
+		}
+		a.result = append(a.result, def)
+		a.seen[federatedName] = struct{}{}
+	}
+	return nil
+}
+
+func (a *toolAggregator) resolveFromBackend(ctx context.Context, backend types.ServerRecord, toolName, federatedName string) (ToolDefinition, error) {
+	definitionsByName, err := a.proxy.loadBackendDefinitions(ctx, backend, a.backendDefs)
+	if err != nil {
+		return ToolDefinition{}, err
+	}
+
+	selected, ok := definitionsByName[toolName]
+	if !ok {
+		return ToolDefinition{}, fmt.Errorf("list tools: backend %s missing definition for tool %s", backend.ID, toolName)
+	}
+
+	selected.Name = federatedName
+	a.proxy.toolCache.Set(federatedName, selected, backend.ID)
+	return selected, nil
 }
 
 func (p *ProxyServer) loadBackendDefinitions(

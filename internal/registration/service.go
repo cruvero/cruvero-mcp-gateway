@@ -24,6 +24,8 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
 
+const errDeregisterFmt = "deregister: %w"
+
 var (
 	// ErrInvalidRequest indicates request payload validation failed.
 	ErrInvalidRequest = errors.New("invalid request")
@@ -195,12 +197,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		if updateErr := s.serverStore.Update(ctx, record); updateErr != nil {
 			return nil, fmt.Errorf("register: update existing registration: %w", updateErr)
 		}
-	case errors.Is(err, sql.ErrNoRows):
-		if createErr := s.serverStore.Create(ctx, record); createErr != nil {
-			return nil, fmt.Errorf("register: create registration: %w", createErr)
-		}
-		created = true
-	case err != nil:
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return nil, fmt.Errorf("register: lookup by spiffe id: %w", err)
 	default:
 		if createErr := s.serverStore.Create(ctx, record); createErr != nil {
@@ -212,23 +209,7 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		servermetrics.AddActiveRegistrations(record.Status.String(), 1)
 	}
 
-	s.logAudit(ctx, &types.AuditEntry{
-		EventType:  "server.registered",
-		ClientID:   caller.ID,
-		ServerName: record.Name,
-		Details: map[string]any{
-			"server_id": record.ID,
-			"spiffe_id": record.SPIFFEID,
-		},
-	})
-	if s.publisher != nil {
-		if err := s.publisher.PublishServerRegistered(ctx, *record); err != nil {
-			s.logger.ErrorContext(ctx, "publish server registered event failed", slog.String("error", err.Error()))
-		}
-	}
-	s.publishBroadcast("registered", record.ID)
-
-	s.classifyNewTools(ctx, req.Capabilities, caller.ID)
+	s.postRegister(ctx, caller.ID, record, req.Capabilities)
 
 	heartbeatIntervalSeconds := heartbeatIntervalSeconds(s.config)
 	configVersion, effectiveSettings := s.effectiveSettingsForServer(record.Name)
@@ -246,6 +227,25 @@ func (s *Service) Register(ctx context.Context, caller *identitypkg.Identity, re
 		EffectiveSettings:        effectiveSettings,
 		Status:                   record.Status,
 	}, nil
+}
+
+func (s *Service) postRegister(ctx context.Context, callerID string, record *types.ServerRecord, capabilities types.Capability) {
+	s.logAudit(ctx, &types.AuditEntry{
+		EventType:  "server.registered",
+		ClientID:   callerID,
+		ServerName: record.Name,
+		Details: map[string]any{
+			"server_id": record.ID,
+			"spiffe_id": record.SPIFFEID,
+		},
+	})
+	if s.publisher != nil {
+		if err := s.publisher.PublishServerRegistered(ctx, *record); err != nil {
+			s.logger.ErrorContext(ctx, "publish server registered event failed", slog.String("error", err.Error()))
+		}
+	}
+	s.publishBroadcast("registered", record.ID)
+	s.classifyNewTools(ctx, capabilities, callerID)
 }
 
 // AcknowledgeServerRegistration marks a registration lease as platform-synced.
@@ -299,13 +299,13 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 		return fmt.Errorf("deregister: %w: missing id", ErrInvalidRequest)
 	}
 	if caller == nil {
-		return fmt.Errorf("deregister: %w", ErrUnauthorized)
+		return fmt.Errorf(errDeregisterFmt, ErrUnauthorized)
 	}
 
 	record, err := s.serverStore.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("deregister: %w", ErrNotFound)
+			return fmt.Errorf(errDeregisterFmt, ErrNotFound)
 		}
 		return fmt.Errorf("deregister: get registration: %w", err)
 	}
@@ -313,7 +313,7 @@ func (s *Service) Deregister(ctx context.Context, caller *identitypkg.Identity, 
 	isAdmin := caller.HasScope(identitypkg.ScopeAdmin)
 	isSelf := caller.Type == identitypkg.IdentityMTLS && caller.ID == record.SPIFFEID
 	if !isAdmin && !isSelf {
-		return fmt.Errorf("deregister: %w", ErrForbidden)
+		return fmt.Errorf(errDeregisterFmt, ErrForbidden)
 	}
 
 	if err := s.serverStore.Delete(ctx, id); err != nil {

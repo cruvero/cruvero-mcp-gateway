@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+const logKeyAuthType = "auth.type"
+
 // AuthOptions configures unified authentication middleware.
 type AuthOptions struct {
 	APIKeyStore   store.APIKeyStore `json:"api_key_store"`
@@ -27,58 +29,79 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 	}
 
 	return func(next http.Handler) http.Handler {
-		apiKeyHandler := APIKeyMiddleware(opts.APIKeyStore, logger)(next)
-		oidcHandler := OIDCMiddleware(opts.OIDCValidator, logger)(next)
-
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := otel.Tracer("mcpgw/auth").Start(r.Context(), "auth.authenticate")
-			defer span.End()
-			r = r.WithContext(ctx)
-
-			if _, ok := identity.FromContext(r.Context()); ok {
-				span.SetAttributes(attribute.String("auth.type", "mtls"))
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			token, ok := extractBearerToken(r.Header.Get("Authorization"))
-			if !ok {
-				// Support API keys passed via X-API-Key by normalizing to bearer form.
-				if xAPIKey := strings.TrimSpace(r.Header.Get("X-API-Key")); xAPIKey != "" {
-					span.SetAttributes(attribute.String("auth.type", "api_key"))
-					if opts.APIKeyStore == nil {
-						writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
-						return
-					}
-					cloned := r.Clone(r.Context())
-					cloned.Header = r.Header.Clone()
-					cloned.Header.Set("Authorization", "Bearer "+xAPIKey)
-					apiKeyHandler.ServeHTTP(w, cloned)
-					return
-				}
-				span.SetAttributes(attribute.String("auth.type", "missing"))
-				writeAuthJSONError(w, http.StatusUnauthorized, "missing authorization header")
-				return
-			}
-
-			if isJWTToken(token) {
-				span.SetAttributes(attribute.String("auth.type", "oidc"))
-				if opts.OIDCValidator == nil {
-					writeAuthJSONError(w, http.StatusUnauthorized, "oidc validator is not configured")
-					return
-				}
-				oidcHandler.ServeHTTP(w, r)
-				return
-			}
-
-			span.SetAttributes(attribute.String("auth.type", "api_key"))
-			if opts.APIKeyStore == nil {
-				writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
-				return
-			}
-			apiKeyHandler.ServeHTTP(w, r)
-		})
+		d := &authDispatcher{
+			opts:          opts,
+			next:          next,
+			apiKeyHandler: APIKeyMiddleware(opts.APIKeyStore, logger)(next),
+			oidcHandler:   OIDCMiddleware(opts.OIDCValidator, logger)(next),
+		}
+		return http.HandlerFunc(d.serveHTTP)
 	}
+}
+
+type authDispatcher struct {
+	opts          AuthOptions
+	next          http.Handler
+	apiKeyHandler http.Handler
+	oidcHandler   http.Handler
+}
+
+func (d *authDispatcher) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, span := otel.Tracer("mcpgw/auth").Start(r.Context(), "auth.authenticate")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	if _, ok := identity.FromContext(r.Context()); ok {
+		span.SetAttributes(attribute.String(logKeyAuthType, "mtls"))
+		d.next.ServeHTTP(w, r)
+		return
+	}
+
+	token, ok := extractBearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		d.handleXAPIKeyFallback(w, r, span)
+		return
+	}
+
+	d.handleBearerToken(w, r, token, span)
+}
+
+func (d *authDispatcher) handleXAPIKeyFallback(w http.ResponseWriter, r *http.Request, span interface{ SetAttributes(...attribute.KeyValue) }) {
+	xAPIKey := strings.TrimSpace(r.Header.Get("X-API-Key"))
+	if xAPIKey == "" {
+		span.SetAttributes(attribute.String(logKeyAuthType, "missing"))
+		writeAuthJSONError(w, http.StatusUnauthorized, "missing authorization header")
+		return
+	}
+
+	span.SetAttributes(attribute.String(logKeyAuthType, "api_key"))
+	if d.opts.APIKeyStore == nil {
+		writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
+		return
+	}
+	cloned := r.Clone(r.Context())
+	cloned.Header = r.Header.Clone()
+	cloned.Header.Set("Authorization", "Bearer "+xAPIKey)
+	d.apiKeyHandler.ServeHTTP(w, cloned)
+}
+
+func (d *authDispatcher) handleBearerToken(w http.ResponseWriter, r *http.Request, token string, span interface{ SetAttributes(...attribute.KeyValue) }) {
+	if isJWTToken(token) {
+		span.SetAttributes(attribute.String(logKeyAuthType, "oidc"))
+		if d.opts.OIDCValidator == nil {
+			writeAuthJSONError(w, http.StatusUnauthorized, "oidc validator is not configured")
+			return
+		}
+		d.oidcHandler.ServeHTTP(w, r)
+		return
+	}
+
+	span.SetAttributes(attribute.String(logKeyAuthType, "api_key"))
+	if d.opts.APIKeyStore == nil {
+		writeAuthJSONError(w, http.StatusUnauthorized, "api key store is not configured")
+		return
+	}
+	d.apiKeyHandler.ServeHTTP(w, r)
 }
 
 func isJWTToken(token string) bool {

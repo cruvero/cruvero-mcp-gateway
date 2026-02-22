@@ -25,6 +25,8 @@ import (
 )
 
 const (
+	metricUpstreamSuccess = "upstream.success"
+
 	defaultBackendTimeout = 30 * time.Second
 )
 
@@ -86,7 +88,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 
 	client, err := c.ensureInitialized(ctx)
 	if err != nil {
-		span.SetAttributes(attribute.Bool("upstream.success", false))
+		span.SetAttributes(attribute.Bool(metricUpstreamSuccess, false))
 		return nil, fmt.Errorf("call tool: %w", err)
 	}
 
@@ -97,7 +99,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 		},
 	})
 	if err != nil {
-		span.SetAttributes(attribute.Bool("upstream.success", false))
+		span.SetAttributes(attribute.Bool(metricUpstreamSuccess, false))
 		return nil, fmt.Errorf("call tool: backend call: %w", err)
 	}
 
@@ -115,7 +117,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 		default:
 			bytes, marshalErr := json.Marshal(content)
 			if marshalErr != nil {
-				span.SetAttributes(attribute.Bool("upstream.success", false))
+				span.SetAttributes(attribute.Bool(metricUpstreamSuccess, false))
 				return nil, fmt.Errorf("call tool: marshal content block: %w", marshalErr)
 			}
 			out.Content = append(out.Content, ContentBlock{
@@ -124,7 +126,7 @@ func (c *BackendClient) CallTool(ctx context.Context, name string, args map[stri
 			})
 		}
 	}
-	span.SetAttributes(attribute.Bool("upstream.success", true))
+	span.SetAttributes(attribute.Bool(metricUpstreamSuccess, true))
 
 	return out, nil
 }

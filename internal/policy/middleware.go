@@ -34,52 +34,67 @@ func PolicyMiddleware(engine *Engine, logger *slog.Logger) func(http.Handler) ht
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
 
+	pe := &policyEnforcer{engine: engine, logger: logger}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if engine == nil || r == nil || r.Body == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			body, err := io.ReadAll(r.Body)
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			if err != nil || len(body) == 0 {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			req, ok := parsePolicyRequest(r, body)
-			if !ok {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			decision, evalErr := engine.Evaluate(r.Context(), req)
-			if evalErr != nil {
-				writePolicyError(w, http.StatusInternalServerError, "policy evaluation failed", nil)
-				return
-			}
-
-			if decision.Allowed {
-				w.Header().Set(headerPolicyDecision, "allowed")
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			w.Header().Set(headerPolicyDecision, "denied")
-			writePolicyError(w, http.StatusForbidden, "policy denied", decision.Violations)
-			reason := "policy_denied"
-			if len(decision.Violations) > 0 {
-				reason = string(decision.Violations[0].Type)
-			}
-			notifyPolicyDenied(reason, req.ToolName)
-			logger.WarnContext(r.Context(), "policy denied request",
-				slog.String("tool", req.ToolName),
-				slog.String("client_id", req.ClientID),
-				slog.Int("violations", len(decision.Violations)),
-			)
+			pe.serve(w, r, next)
 		})
 	}
+}
+
+// policyEnforcer holds policy evaluation state for the middleware.
+type policyEnforcer struct {
+	engine *Engine
+	logger *slog.Logger
+}
+
+func (pe *policyEnforcer) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if pe.engine == nil || r == nil || r.Body == nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) == 0 {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	req, ok := parsePolicyRequest(r, body)
+	if !ok {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	decision, evalErr := pe.engine.Evaluate(r.Context(), req)
+	if evalErr != nil {
+		writePolicyError(w, http.StatusInternalServerError, "policy evaluation failed", nil)
+		return
+	}
+
+	if decision.Allowed {
+		w.Header().Set(headerPolicyDecision, "allowed")
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	pe.handleDenied(w, r, req, decision)
+}
+
+func (pe *policyEnforcer) handleDenied(w http.ResponseWriter, r *http.Request, req PolicyRequest, decision *PolicyDecision) {
+	w.Header().Set(headerPolicyDecision, "denied")
+	writePolicyError(w, http.StatusForbidden, "policy denied", decision.Violations)
+	reason := "policy_denied"
+	if len(decision.Violations) > 0 {
+		reason = string(decision.Violations[0].Type)
+	}
+	notifyPolicyDenied(reason, req.ToolName)
+	pe.logger.WarnContext(r.Context(), "policy denied request",
+		slog.String("tool", req.ToolName),
+		slog.String("client_id", req.ClientID),
+		slog.Int("violations", len(decision.Violations)),
+	)
 }
 
 func notifyPolicyDenied(reason string, tool string) {

@@ -58,9 +58,7 @@ func serveWithContext(ctx context.Context) error {
 	}
 
 	logger := newLogger(cfg.LogFormat, cfg.LogLevel)
-	server.SetTracingVersion(version)
-	server.SetTracingEndpoint(cfg.OTLPExporterEndpoint)
-	shutdownTracing, err := server.InitTracer(context.Background(), cfg.OTELServiceName)
+	shutdownTracing, err := initTracing(cfg)
 	if err != nil {
 		return fmt.Errorf("serve command: initialize tracer: %w", err)
 	}
@@ -76,190 +74,62 @@ func serveWithContext(ctx context.Context) error {
 		}
 	}()
 
-	serverStore := storepkg.NewPostgresServerStore(db)
-	apiKeyStore := storepkg.NewPostgresAPIKeyStore(db)
-	auditStore := storepkg.NewPostgresAuditStore(db)
-
+	stores := initStores(db, cfg)
 	index := registration.NewCapabilityIndex()
-	activeServers, err := listActiveServers(ctx, serverStore)
+	activeServers, err := listActiveServers(ctx, stores.serverStore)
 	if err != nil {
 		return fmt.Errorf("serve command: list active servers: %w", err)
 	}
 	index.Rebuild(activeServers)
 
-	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
-	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
-	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
-
-	classificationStore := storepkg.NewPostgresToolClassificationStore(db)
-
 	gw := server.New(cfg, logger, db)
 
-	// Rate limit backend override.
-	var dragonflyBackend *ratelimit.DragonflyBackend
-	switch cfg.RateLimitBackend {
-	case "dragonfly":
-		fallback := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
-		rb, rbErr := ratelimit.NewDragonflyBackend(cfg.DragonflyURL,
-			ratelimit.WithDragonflyFallback(fallback),
-			ratelimit.WithDragonflyLogger(logger),
-		)
-		if rbErr != nil {
-			_ = fallback.Close()
-			return fmt.Errorf("serve command: create dragonfly rate limit backend: %w", rbErr)
-		}
-		dragonflyBackend = rb
-		gw.SetRateLimitBackend(rb)
-		defer func() { _ = rb.Close() }()
-		logger.Info("rate limit backend: dragonfly")
-	case "nats":
-		evClient := gw.EventsClient()
-		if evClient == nil || !evClient.IsConnected() {
-			return fmt.Errorf("serve command: nats rate limit backend requires active NATS connection")
-		}
-		js, jsErr := evClient.JetStream()
-		if jsErr != nil {
-			return fmt.Errorf("serve command: get jetstream context: %w", jsErr)
-		}
-		fallback := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
-		nb, nbErr := ratelimit.NewNATSBackend(js,
-			ratelimit.WithNATSFallback(fallback),
-			ratelimit.WithNATSLogger(logger),
-		)
-		if nbErr != nil {
-			_ = fallback.Close()
-			return fmt.Errorf("serve command: create nats rate limit backend: %w", nbErr)
-		}
-		gw.SetRateLimitBackend(nb)
-		logger.Info("rate limit backend: nats")
-	default:
-		logger.Info("rate limit backend: memory")
+	dragonflyBackend, err := initRateLimitBackend(cfg, gw, logger)
+	if err != nil {
+		return err
 	}
-	gw.SetAuditStore(auditStore)
-	gw.SetClassificationStore(classificationStore)
+	if dragonflyBackend != nil {
+		defer func() { _ = dragonflyBackend.Close() }()
+	}
+	gw.SetAuditStore(stores.auditStore)
+	gw.SetClassificationStore(stores.classificationStore)
 	eventPublisher := gw.EventPublisher()
 
-	registrationService := registration.NewService(serverStore, auditStore, cfg, logger)
-	registrationService.SetClassificationStore(classificationStore)
+	registrationService := registration.NewService(stores.serverStore, stores.auditStore, cfg, logger)
+	registrationService.SetClassificationStore(stores.classificationStore)
 	registrationService.SetLifecycleEventPublisher(eventPublisher)
 	gw.BindRegistrationService(registrationService)
 
-	// Broadcaster selection for cross-pod sync.
-	var broadcaster registration.Broadcaster
-	eventsClient := gw.EventsClient()
-	switch {
-	case cfg.CruveroEnabled && eventsClient != nil && eventsClient.IsConnected():
-		broadcaster = registration.NewNATSBroadcaster(eventsClient.Conn(), logger)
-		logger.Info("broadcaster: nats")
-	case dragonflyBackend != nil:
-		broadcaster = registration.NewDragonflyBroadcaster(dragonflyBackend.DragonflyClient(), logger)
-		logger.Info("broadcaster: dragonfly")
-	default:
-		broadcaster = registration.NewNoopBroadcaster()
-		logger.Info("broadcaster: noop")
-	}
+	broadcaster := selectBroadcaster(cfg, gw, dragonflyBackend, logger)
 	defer func() { _ = broadcaster.Close() }()
 
 	registrationService.SetBroadcaster(broadcaster)
+	startSyncSubscribers(ctx, broadcaster, index, stores.serverStore, gw, logger)
 
-	// Start cross-pod sync subscribers.
-	regSubscriber := registration.NewRegistrationSubscriber(broadcaster, index, serverStore, logger)
-	if err := regSubscriber.Start(ctx); err != nil {
-		logger.Warn("registration subscriber start failed", slog.String("error", err.Error()))
-	}
-
-	if policyEngine := gw.PolicyEngine(); policyEngine != nil {
-		classSubscriber := registration.NewClassificationSubscriber(broadcaster, policyEngine.ClassificationCache(), logger)
-		if err := classSubscriber.Start(ctx); err != nil {
-			logger.Warn("classification subscriber start failed", slog.String("error", err.Error()))
-		}
-	}
-
-	sweeper := registration.NewSweeper(serverStore, index, cfg, logger)
+	sweeper := registration.NewSweeper(stores.serverStore, index, cfg, logger)
 	sweeper.SetLifecycleEventPublisher(eventPublisher)
 	sweeper.Start(ctx)
 	defer sweeper.Stop()
 
-	proxyTLSConfig, err := buildProxyTLSConfig(cfg)
+	proxyServer, err := initProxyServer(ctx, cfg, index, stores, gw, logger)
 	if err != nil {
-		return fmt.Errorf("serve command: build proxy tls config: %w", err)
-	}
-	proxyServer := proxy.NewProxyServer(index, cfg, proxyTLSConfig, 0, logger)
-	proxyServer.SetAuditStore(auditStore)
-
-	// Wire tool metadata enrichment callback for progressive discovery.
-	if toolMetaHandler := gw.ToolMetadataHandler(); toolMetaHandler != nil {
-		toolMetaHandler.SetOnUpdate(func(msg events.ToolMetadataConfigMessage) {
-			metadata := make([]proxy.ToolMetadata, 0, len(msg.Tools))
-			for _, entry := range msg.Tools {
-				metadata = append(metadata, proxy.ToolMetadata{
-					ToolName: entry.ToolName,
-					Category: entry.Category,
-					Summary:  entry.Summary,
-					Tags:     entry.Tags,
-					Priority: entry.Priority,
-				})
-			}
-			proxyServer.ApplyToolMetadata(metadata)
-		})
-	}
-
-	oidcValidator, err := maybeBuildOIDCValidator(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("serve command: build oidc validator: %w", err)
+		return err
 	}
 
 	gw.SetProxyAuthMiddleware(auth.AuthMiddleware(auth.AuthOptions{
-		APIKeyStore:   apiKeyStore,
-		OIDCValidator: oidcValidator,
+		APIKeyStore:   stores.apiKeyStore,
+		OIDCValidator: proxyServer.oidcValidator,
 		Logger:        logger,
 	}))
 
 	regHandler := registration.NewHandler(
-		newIndexedRegistrationService(registrationService, serverStore, index, logger),
+		newIndexedRegistrationService(registrationService, stores.serverStore, index, logger),
 		logger,
 	)
 	gw.MountRegistrationRoutes(regHandler.Routes())
-	gw.MountProxyRoutes(proxyServer.Handler())
-
-	if cfg.DeviceFlowEnabled {
-		deviceFlowHandler := auth.NewDeviceFlowHandler(cfg, logger)
-		gw.MountDeviceFlowRoutes(deviceFlowHandler.Routes())
-		logger.Info("device flow enabled")
-	}
-
-	if cfg.AdminEnabled {
-		var adminAuth *admin.AdminAuth
-		if cfg.AdminDevMode {
-			logger.Warn("ADMIN DEV MODE ENABLED - authentication bypassed, do not use in production")
-			if strings.TrimSpace(cfg.TLSCAPath) != "" {
-				caLower := strings.ToLower(cfg.TLSCAPath)
-				if !strings.Contains(caLower, "dev") && !strings.Contains(caLower, "local") {
-					logger.Warn("admin dev mode with non-dev TLS CA path",
-						slog.String("tls_ca_path", cfg.TLSCAPath))
-				}
-			}
-		} else {
-			var adminErr error
-			adminAuth, adminErr = admin.NewAdminAuth(cfg, logger)
-			if adminErr != nil {
-				return fmt.Errorf("serve command: initialize admin auth: %w", adminErr)
-			}
-		}
-		adminRouter := admin.NewRouter(admin.AdminDeps{
-			Auth:                 adminAuth,
-			DevMode:              cfg.AdminDevMode,
-			Logger:               logger,
-			ServerStore:          serverStore,
-			AuditStore:           auditStore,
-			ClassificationStore:  classificationStore,
-			Broadcaster:          broadcaster,
-			RateLimitBackend:     gw.RateLimitBackend(),
-			DiscoveryIndex:       proxyServer.DiscoveryIndex(),
-			ProgressiveDiscovery: cfg.ProgressiveDiscovery,
-		})
-		gw.MountAdmin(adminRouter)
-		logger.Info("admin dashboard enabled", slog.Bool("dev_mode", cfg.AdminDevMode))
+	gw.MountProxyRoutes(proxyServer.proxy.Handler())
+	if err := mountOptionalRoutes(cfg, gw, proxyServer.proxy, stores, broadcaster, logger); err != nil {
+		return err
 	}
 
 	go storepkg.StartAuditRetention(ctx, db, cfg.AuditRetentionDays, cfg.AuditCleanupInterval, logger)
@@ -275,6 +145,212 @@ func serveWithContext(ctx context.Context) error {
 		return fmt.Errorf("serve command: start gateway: %w", err)
 	}
 	return nil
+}
+
+// serveStores groups the data stores used during serve initialization.
+type serveStores struct {
+	serverStore         storepkg.ServerStore
+	apiKeyStore         storepkg.APIKeyStore
+	auditStore          storepkg.AuditStore
+	classificationStore storepkg.ToolClassificationStore
+}
+
+func initStores(db *sql.DB, cfg *config.Config) serveStores {
+	db.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	db.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	db.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	return serveStores{
+		serverStore:         storepkg.NewPostgresServerStore(db),
+		apiKeyStore:         storepkg.NewPostgresAPIKeyStore(db),
+		auditStore:          storepkg.NewPostgresAuditStore(db),
+		classificationStore: storepkg.NewPostgresToolClassificationStore(db),
+	}
+}
+
+func initTracing(cfg *config.Config) (func(), error) {
+	server.SetTracingVersion(version)
+	server.SetTracingEndpoint(cfg.OTLPExporterEndpoint)
+	shutdownTracing, err := server.InitTracer(context.Background(), cfg.OTELServiceName)
+	if err != nil {
+		return nil, err
+	}
+	return shutdownTracing, nil
+}
+
+func initRateLimitBackend(cfg *config.Config, gw *server.Server, logger *slog.Logger) (*ratelimit.DragonflyBackend, error) {
+	switch cfg.RateLimitBackend {
+	case "dragonfly":
+		return initDragonflyBackend(cfg, gw, logger)
+	case "nats":
+		return nil, initNATSRateLimitBackend(gw, logger)
+	default:
+		logger.Info("rate limit backend: memory")
+		return nil, nil
+	}
+}
+
+func initDragonflyBackend(cfg *config.Config, gw *server.Server, logger *slog.Logger) (*ratelimit.DragonflyBackend, error) {
+	fallback := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	rb, rbErr := ratelimit.NewDragonflyBackend(cfg.DragonflyURL,
+		ratelimit.WithDragonflyFallback(fallback),
+		ratelimit.WithDragonflyLogger(logger),
+	)
+	if rbErr != nil {
+		_ = fallback.Close()
+		return nil, fmt.Errorf("serve command: create dragonfly rate limit backend: %w", rbErr)
+	}
+	gw.SetRateLimitBackend(rb)
+	logger.Info("rate limit backend: dragonfly")
+	return rb, nil
+}
+
+func initNATSRateLimitBackend(gw *server.Server, logger *slog.Logger) error {
+	evClient := gw.EventsClient()
+	if evClient == nil || !evClient.IsConnected() {
+		return fmt.Errorf("serve command: nats rate limit backend requires active NATS connection")
+	}
+	js, jsErr := evClient.JetStream()
+	if jsErr != nil {
+		return fmt.Errorf("serve command: get jetstream context: %w", jsErr)
+	}
+	fallback := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
+	nb, nbErr := ratelimit.NewNATSBackend(js,
+		ratelimit.WithNATSFallback(fallback),
+		ratelimit.WithNATSLogger(logger),
+	)
+	if nbErr != nil {
+		_ = fallback.Close()
+		return fmt.Errorf("serve command: create nats rate limit backend: %w", nbErr)
+	}
+	gw.SetRateLimitBackend(nb)
+	logger.Info("rate limit backend: nats")
+	return nil
+}
+
+func selectBroadcaster(cfg *config.Config, gw *server.Server, dragonflyBackend *ratelimit.DragonflyBackend, logger *slog.Logger) registration.Broadcaster {
+	eventsClient := gw.EventsClient()
+	switch {
+	case cfg.CruveroEnabled && eventsClient != nil && eventsClient.IsConnected():
+		logger.Info("broadcaster: nats")
+		return registration.NewNATSBroadcaster(eventsClient.Conn(), logger)
+	case dragonflyBackend != nil:
+		logger.Info("broadcaster: dragonfly")
+		return registration.NewDragonflyBroadcaster(dragonflyBackend.DragonflyClient(), logger)
+	default:
+		logger.Info("broadcaster: noop")
+		return registration.NewNoopBroadcaster()
+	}
+}
+
+func startSyncSubscribers(ctx context.Context, broadcaster registration.Broadcaster, index *registration.CapabilityIndex, serverStore storepkg.ServerStore, gw *server.Server, logger *slog.Logger) {
+	regSubscriber := registration.NewRegistrationSubscriber(broadcaster, index, serverStore, logger)
+	if err := regSubscriber.Start(ctx); err != nil {
+		logger.Warn("registration subscriber start failed", slog.String("error", err.Error()))
+	}
+	if policyEngine := gw.PolicyEngine(); policyEngine != nil {
+		classSubscriber := registration.NewClassificationSubscriber(broadcaster, policyEngine.ClassificationCache(), logger)
+		if err := classSubscriber.Start(ctx); err != nil {
+			logger.Warn("classification subscriber start failed", slog.String("error", err.Error()))
+		}
+	}
+}
+
+// proxySetup holds the proxy server and its associated OIDC validator.
+type proxySetup struct {
+	proxy         *proxy.ProxyServer
+	oidcValidator *auth.OIDCValidator
+}
+
+func initProxyServer(ctx context.Context, cfg *config.Config, index *registration.CapabilityIndex, stores serveStores, gw *server.Server, logger *slog.Logger) (*proxySetup, error) {
+	proxyTLSConfig, err := buildProxyTLSConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("serve command: build proxy tls config: %w", err)
+	}
+	proxyServer := proxy.NewProxyServer(index, cfg, proxyTLSConfig, 0, logger)
+	proxyServer.SetAuditStore(stores.auditStore)
+	wireToolMetadataCallback(gw, proxyServer)
+
+	oidcValidator, err := maybeBuildOIDCValidator(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("serve command: build oidc validator: %w", err)
+	}
+	return &proxySetup{proxy: proxyServer, oidcValidator: oidcValidator}, nil
+}
+
+func wireToolMetadataCallback(gw *server.Server, proxyServer *proxy.ProxyServer) {
+	toolMetaHandler := gw.ToolMetadataHandler()
+	if toolMetaHandler == nil {
+		return
+	}
+	toolMetaHandler.SetOnUpdate(func(msg events.ToolMetadataConfigMessage) {
+		metadata := make([]proxy.ToolMetadata, 0, len(msg.Tools))
+		for _, entry := range msg.Tools {
+			metadata = append(metadata, proxy.ToolMetadata{
+				ToolName: entry.ToolName,
+				Category: entry.Category,
+				Summary:  entry.Summary,
+				Tags:     entry.Tags,
+				Priority: entry.Priority,
+			})
+		}
+		proxyServer.ApplyToolMetadata(metadata)
+	})
+}
+
+func mountOptionalRoutes(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer, stores serveStores, broadcaster registration.Broadcaster, logger *slog.Logger) error {
+	if cfg.DeviceFlowEnabled {
+		deviceFlowHandler := auth.NewDeviceFlowHandler(cfg, logger)
+		gw.MountDeviceFlowRoutes(deviceFlowHandler.Routes())
+		logger.Info("device flow enabled")
+	}
+	if cfg.AdminEnabled {
+		if err := mountAdmin(cfg, gw, proxyServer, stores, broadcaster, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mountAdmin(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer, stores serveStores, broadcaster registration.Broadcaster, logger *slog.Logger) error {
+	adminAuth, err := buildAdminAuth(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("serve command: initialize admin auth: %w", err)
+	}
+	adminRouter := admin.NewRouter(admin.AdminDeps{
+		Auth:                 adminAuth,
+		DevMode:              cfg.AdminDevMode,
+		Logger:               logger,
+		ServerStore:          stores.serverStore,
+		AuditStore:           stores.auditStore,
+		ClassificationStore:  stores.classificationStore,
+		Broadcaster:          broadcaster,
+		RateLimitBackend:     gw.RateLimitBackend(),
+		DiscoveryIndex:       proxyServer.DiscoveryIndex(),
+		ProgressiveDiscovery: cfg.ProgressiveDiscovery,
+	})
+	gw.MountAdmin(adminRouter)
+	logger.Info("admin dashboard enabled", slog.Bool("dev_mode", cfg.AdminDevMode))
+	return nil
+}
+
+func buildAdminAuth(cfg *config.Config, logger *slog.Logger) (*admin.AdminAuth, error) {
+	if cfg.AdminDevMode {
+		logger.Warn("ADMIN DEV MODE ENABLED - authentication bypassed, do not use in production")
+		warnNonDevTLSCA(cfg, logger)
+		return nil, nil
+	}
+	return admin.NewAdminAuth(cfg, logger)
+}
+
+func warnNonDevTLSCA(cfg *config.Config, logger *slog.Logger) {
+	if strings.TrimSpace(cfg.TLSCAPath) == "" {
+		return
+	}
+	caLower := strings.ToLower(cfg.TLSCAPath)
+	if !strings.Contains(caLower, "dev") && !strings.Contains(caLower, "local") {
+		logger.Warn("admin dev mode with non-dev TLS CA path",
+			slog.String("tls_ca_path", cfg.TLSCAPath))
+	}
 }
 
 func openPostgresDB(ctx context.Context, dbURL string) (*sql.DB, error) {

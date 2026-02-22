@@ -25,6 +25,8 @@ const (
 	stateCookieName   = "__mcpgw_state"
 	sessionCookieName = "__mcpgw_admin"
 	pkceVerifierLen   = 64
+	errInternalError  = "internal error"
+	adminPathPrefix   = "/admin/"
 )
 
 // AdminSession holds the decrypted session data.
@@ -109,7 +111,7 @@ func (a *AdminAuth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	verifier, err := generatePKCEVerifier()
 	if err != nil {
 		a.logger.Error("generate PKCE verifier failed", slog.String("error", err.Error()))
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(w, errInternalError, http.StatusInternalServerError)
 		return
 	}
 	challenge := pkceS256Challenge(verifier)
@@ -117,14 +119,14 @@ func (a *AdminAuth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := a.generateState(verifier)
 	if err != nil {
 		a.logger.Error("generate state failed", slog.String("error", err.Error()))
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(w, errInternalError, http.StatusInternalServerError)
 		return
 	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
 		Value:    state,
-		Path:     "/admin/",
+		Path:     adminPathPrefix,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
@@ -162,7 +164,7 @@ func (a *AdminAuth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
 		Value:    "",
-		Path:     "/admin/",
+		Path:     adminPathPrefix,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
@@ -216,7 +218,7 @@ func (a *AdminAuth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	csrfToken, err := generateRandomBase64(32)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(w, errInternalError, http.StatusInternalServerError)
 		return
 	}
 
@@ -231,14 +233,14 @@ func (a *AdminAuth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	encrypted, err := a.encryptSession(session)
 	if err != nil {
 		a.logger.Error("encrypt session failed", slog.String("error", err.Error()))
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(w, errInternalError, http.StatusInternalServerError)
 		return
 	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    encrypted,
-		Path:     "/admin/",
+		Path:     adminPathPrefix,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
@@ -246,7 +248,7 @@ func (a *AdminAuth) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	a.logger.Info("admin login", slog.String("sub", claims.Subject), slog.String("email", claims.Email))
-	http.Redirect(w, r, "/admin/", http.StatusFound)
+	http.Redirect(w, r, adminPathPrefix, http.StatusFound)
 }
 
 // DecryptSession decrypts and validates the admin session cookie.

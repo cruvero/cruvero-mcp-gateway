@@ -257,25 +257,42 @@ func (h *ServerSettingsConfigHandler) Handle(ctx context.Context, data []byte) e
 		return fmt.Errorf("handle server settings config: config_version must be positive")
 	}
 
-	settingsByServer := make(map[string]map[string]any, len(message.Servers))
-	for _, serverSettings := range message.Servers {
+	settingsByServer, err := buildValidatedServerSettings(message.Servers)
+	if err != nil {
+		return fmt.Errorf("handle server settings config: %w", err)
+	}
+
+	if err := h.applyAndPersistSettings(ctx, message.ConfigVersion, settingsByServer, data); err != nil {
+		return err
+	}
+
+	h.logger.InfoContext(ctx, "server settings config updated", slog.Int64("config_version", message.ConfigVersion), slog.Int("server_count", len(settingsByServer)))
+	return nil
+}
+
+func buildValidatedServerSettings(servers []ServerSettingsConfig) (map[string]map[string]any, error) {
+	out := make(map[string]map[string]any, len(servers))
+	for _, serverSettings := range servers {
 		serverName := strings.TrimSpace(serverSettings.ServerName)
 		if serverName == "" {
-			return fmt.Errorf("handle server settings config: server_name is required")
+			return nil, fmt.Errorf("server_name is required")
 		}
 		if len(serverSettings.EffectiveSettings) == 0 {
-			return fmt.Errorf("handle server settings config: effective_settings cannot be empty for %q", serverName)
+			return nil, fmt.Errorf("effective_settings cannot be empty for %q", serverName)
 		}
 		for key, value := range serverSettings.EffectiveSettings {
 			if err := validateNonSecretSetting(key, value); err != nil {
-				return fmt.Errorf("handle server settings config: server %q setting %q: %w", serverName, key, err)
+				return nil, fmt.Errorf("server %q setting %q: %w", serverName, key, err)
 			}
 		}
-		settingsByServer[serverName] = cloneSettingsMap(serverSettings.EffectiveSettings)
+		out[serverName] = cloneSettingsMap(serverSettings.EffectiveSettings)
 	}
+	return out, nil
+}
 
+func (h *ServerSettingsConfigHandler) applyAndPersistSettings(ctx context.Context, configVersion int64, settingsByServer map[string]map[string]any, data []byte) error {
 	if h.registrationService != nil {
-		if err := h.registrationService.UpdateEffectiveSettings(message.ConfigVersion, settingsByServer); err != nil {
+		if err := h.registrationService.UpdateEffectiveSettings(configVersion, settingsByServer); err != nil {
 			return fmt.Errorf("handle server settings config: apply settings: %w", err)
 		}
 	}
@@ -284,8 +301,6 @@ func (h *ServerSettingsConfigHandler) Handle(ctx context.Context, data []byte) e
 			return fmt.Errorf("handle server settings config: persist config: %w", err)
 		}
 	}
-
-	h.logger.InfoContext(ctx, "server settings config updated", slog.Int64("config_version", message.ConfigVersion), slog.Int("server_count", len(settingsByServer)))
 	return nil
 }
 

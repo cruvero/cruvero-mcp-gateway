@@ -50,76 +50,107 @@ func RateLimitMiddleware(
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	}
 
+	rl := &rateLimitEnforcer{backend: backend, resolver: resolver, logger: logger}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, span := otel.Tracer("mcpgw/ratelimit").Start(r.Context(), "ratelimit.check")
-			defer span.End()
-			r = r.WithContext(ctx)
-
-			if backend == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			id, ok := identity.FromContext(r.Context())
-			clientID := "anonymous"
-			if ok && strings.TrimSpace(id.ID) != "" {
-				clientID = strings.TrimSpace(id.ID)
-			}
-
-			var limit float64
-			var burst int
-			if resolver != nil {
-				if profile := resolver.Resolve(id); profile != nil {
-					if profile.RateLimit > 0 {
-						limit = float64(profile.RateLimit)
-					}
-					if profile.RateBurst > 0 {
-						burst = profile.RateBurst
-					}
-				}
-			}
-
-			key := LimiterKey{
-				ClientID: clientID,
-				Route:    resolveRouteKey(r),
-			}
-			span.SetAttributes(
-				attribute.String("client.id", clientID),
-				attribute.String("route", key.Route),
-			)
-
-			allowed, remaining, retryAfter, err := backend.Allow(ctx, key, limit, burst)
-			if err != nil {
-				logger.ErrorContext(ctx, "rate limit backend error", slog.String("error", err.Error()))
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			setBackendHeaders(w.Header(), limit, remaining)
-
-			if allowed {
-				next.ServeHTTP(w, r)
-				return
-			}
-			span.SetAttributes(attribute.Bool("rate_limited", true))
-
-			retryAfterSecs := int(math.Ceil(retryAfter.Seconds()))
-			if retryAfterSecs <= 0 {
-				retryAfterSecs = 1
-			}
-			w.Header().Set(headerRetryAfter, strconv.Itoa(retryAfterSecs))
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			payload := map[string]any{
-				"error":       "rate limit exceeded",
-				"retry_after": retryAfterSecs,
-			}
-			if encErr := json.NewEncoder(w).Encode(payload); encErr != nil {
-				logger.ErrorContext(r.Context(), "write ratelimit response failed", slog.String("error", encErr.Error()))
-			}
-			notifyRateLimited(clientID, key.Route)
+			rl.serve(w, r, next)
 		})
+	}
+}
+
+// rateLimitEnforcer holds rate limit evaluation state for the middleware.
+type rateLimitEnforcer struct {
+	backend  LimiterBackend
+	resolver ProfileResolver
+	logger   *slog.Logger
+}
+
+func (rl *rateLimitEnforcer) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	ctx, span := otel.Tracer("mcpgw/ratelimit").Start(r.Context(), "ratelimit.check")
+	defer span.End()
+	r = r.WithContext(ctx)
+
+	if rl.backend == nil {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	clientID := resolveClientID(r)
+	limit, burst := rl.resolveProfile(r)
+
+	key := LimiterKey{
+		ClientID: clientID,
+		Route:    resolveRouteKey(r),
+	}
+	span.SetAttributes(
+		attribute.String("client.id", clientID),
+		attribute.String("route", key.Route),
+	)
+
+	allowed, remaining, retryAfter, err := rl.backend.Allow(ctx, key, limit, burst)
+	if err != nil {
+		rl.logger.ErrorContext(ctx, "rate limit backend error", slog.String("error", err.Error()))
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	setBackendHeaders(w.Header(), limit, remaining)
+
+	if allowed {
+		next.ServeHTTP(w, r)
+		return
+	}
+	span.SetAttributes(attribute.Bool("rate_limited", true))
+
+	rl.writeLimitedResponse(w, r, retryAfter)
+	notifyRateLimited(clientID, key.Route)
+}
+
+// resolveClientID extracts the client identity from the request context.
+func resolveClientID(r *http.Request) string {
+	id, ok := identity.FromContext(r.Context())
+	if ok && strings.TrimSpace(id.ID) != "" {
+		return strings.TrimSpace(id.ID)
+	}
+	return "anonymous"
+}
+
+// resolveProfile resolves rate limit and burst from the identity's policy profile.
+func (rl *rateLimitEnforcer) resolveProfile(r *http.Request) (float64, int) {
+	if rl.resolver == nil {
+		return 0, 0
+	}
+	id, _ := identity.FromContext(r.Context())
+	profile := rl.resolver.Resolve(id)
+	if profile == nil {
+		return 0, 0
+	}
+	var limit float64
+	var burst int
+	if profile.RateLimit > 0 {
+		limit = float64(profile.RateLimit)
+	}
+	if profile.RateBurst > 0 {
+		burst = profile.RateBurst
+	}
+	return limit, burst
+}
+
+// writeLimitedResponse writes the 429 Too Many Requests response.
+func (rl *rateLimitEnforcer) writeLimitedResponse(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	retryAfterSecs := int(math.Ceil(retryAfter.Seconds()))
+	if retryAfterSecs <= 0 {
+		retryAfterSecs = 1
+	}
+	w.Header().Set(headerRetryAfter, strconv.Itoa(retryAfterSecs))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	payload := map[string]any{
+		"error":       "rate limit exceeded",
+		"retry_after": retryAfterSecs,
+	}
+	if encErr := json.NewEncoder(w).Encode(payload); encErr != nil {
+		rl.logger.ErrorContext(r.Context(), "write ratelimit response failed", slog.String("error", encErr.Error()))
 	}
 }
 

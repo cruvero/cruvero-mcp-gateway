@@ -23,51 +23,59 @@ var readOnlyKeywords = []string{
 	"download", "export", "head", "ping", "health", "version",
 }
 
+// classifyByName checks whether any token from the tool name matches a keyword
+// list, returning the matched keyword or empty string.
+func classifyByName(tokens []string, keywords []string) string {
+	for _, token := range tokens {
+		for _, keyword := range keywords {
+			if token == keyword {
+				return keyword
+			}
+		}
+	}
+	return ""
+}
+
+// classifyByDescription checks whether the description contains any keyword,
+// returning the matched keyword or empty string.
+func classifyByDescription(desc string, keywords []string) string {
+	for _, keyword := range keywords {
+		if strings.Contains(desc, keyword) {
+			return keyword
+		}
+	}
+	return ""
+}
+
+// nameClassificationRules defines the ordered set of keyword lists and their
+// corresponding risk levels for tool-name classification.
+var nameClassificationRules = []struct {
+	keywords []string
+	level    types.RiskLevel
+	label    string
+}{
+	{destructiveKeywords, types.RiskDestructive, "destructive"},
+	{readOnlyKeywords, types.RiskReadOnly, "read-only"},
+	{writeKeywords, types.RiskWrite, "write"},
+}
+
 // AutoClassify returns a deterministic risk level for a tool based on its name
 // and optional description. It splits the name on common delimiters and checks
 // keyword lists in order: destructive > read_only > write > unknown.
 func AutoClassify(toolName string, toolDescription string) (types.RiskLevel, string) {
 	tokens := splitToolName(toolName)
 
-	for _, token := range tokens {
-		for _, keyword := range destructiveKeywords {
-			if token == keyword {
-				return types.RiskDestructive, "name contains destructive keyword: " + keyword
-			}
-		}
-	}
-
-	for _, token := range tokens {
-		for _, keyword := range readOnlyKeywords {
-			if token == keyword {
-				return types.RiskReadOnly, "name contains read-only keyword: " + keyword
-			}
-		}
-	}
-
-	for _, token := range tokens {
-		for _, keyword := range writeKeywords {
-			if token == keyword {
-				return types.RiskWrite, "name contains write keyword: " + keyword
-			}
+	for _, rule := range nameClassificationRules {
+		if keyword := classifyByName(tokens, rule.keywords); keyword != "" {
+			return rule.level, "name contains " + rule.label + " keyword: " + keyword
 		}
 	}
 
 	desc := strings.ToLower(strings.TrimSpace(toolDescription))
 	if desc != "" {
-		for _, keyword := range destructiveKeywords {
-			if strings.Contains(desc, keyword) {
-				return types.RiskDestructive, "description contains destructive keyword: " + keyword
-			}
-		}
-		for _, keyword := range readOnlyKeywords {
-			if strings.Contains(desc, keyword) {
-				return types.RiskReadOnly, "description contains read-only keyword: " + keyword
-			}
-		}
-		for _, keyword := range writeKeywords {
-			if strings.Contains(desc, keyword) {
-				return types.RiskWrite, "description contains write keyword: " + keyword
+		for _, rule := range nameClassificationRules {
+			if keyword := classifyByDescription(desc, rule.keywords); keyword != "" {
+				return rule.level, "description contains " + rule.label + " keyword: " + keyword
 			}
 		}
 	}

@@ -119,49 +119,65 @@ func sendMCPRequest(ctx context.Context, endpoint, accessToken string, body []by
 			continue
 		}
 
-		respBody, readErr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if readErr != nil {
-			lastErr = readErr
+		result, newToken, retryErr, fatalErr := handleMCPResponse(ctx, resp)
+		if fatalErr != nil {
+			return nil, fatalErr
+		}
+		if retryErr != nil {
+			lastErr = retryErr
+			if newToken != "" {
+				accessToken = newToken
+			}
 			continue
 		}
-
-		switch resp.StatusCode {
-		case http.StatusOK:
-			// Check for SSE response.
-			if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-				return extractSSEData(respBody), nil
-			}
-			return respBody, nil
-		case http.StatusUnauthorized:
-			tokens, refreshErr := ensureValidToken()
-			if refreshErr != nil {
-				return nil, fmt.Errorf("auth failed and refresh failed: %w", refreshErr)
-			}
-			accessToken = tokens.AccessToken
-			continue
-		case http.StatusTooManyRequests:
-			retryAfter := resp.Header.Get("Retry-After")
-			if retryAfter != "" {
-				if d, parseErr := time.ParseDuration(retryAfter + "s"); parseErr == nil {
-					select {
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					case <-time.After(d):
-					}
-				}
-			}
-			lastErr = fmt.Errorf("rate limited (status 429)")
-			continue
-		default:
-			return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
-		}
+		return result, nil
 	}
 
 	if lastErr != nil {
 		return nil, fmt.Errorf("after retries: %w", lastErr)
 	}
 	return nil, fmt.Errorf("request failed after retries")
+}
+
+func handleMCPResponse(ctx context.Context, resp *http.Response) (result []byte, newToken string, retryErr error, fatalErr error) {
+	respBody, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, "", readErr, nil
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			return extractSSEData(respBody), "", nil, nil
+		}
+		return respBody, "", nil, nil
+	case http.StatusUnauthorized:
+		tokens, refreshErr := ensureValidToken()
+		if refreshErr != nil {
+			return nil, "", nil, fmt.Errorf("auth failed and refresh failed: %w", refreshErr)
+		}
+		return nil, tokens.AccessToken, fmt.Errorf("unauthorized"), nil
+	case http.StatusTooManyRequests:
+		waitForRetryAfter(ctx, resp.Header.Get("Retry-After"))
+		return nil, "", fmt.Errorf("rate limited (status 429)"), nil
+	default:
+		return nil, "", nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(respBody))
+	}
+}
+
+func waitForRetryAfter(ctx context.Context, retryAfter string) {
+	if retryAfter == "" {
+		return
+	}
+	d, parseErr := time.ParseDuration(retryAfter + "s")
+	if parseErr != nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
 }
 
 func extractSSEData(body []byte) []byte {

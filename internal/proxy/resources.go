@@ -26,30 +26,45 @@ func (p *ProxyServer) handleListResources(ctx context.Context) ([]ResourceDefini
 		return []ResourceDefinition{}, nil
 	}
 
+	serverByID := p.deduplicateServers(prefixes)
+	serverIDs := sortedKeys(serverByID)
+
+	resourcesByURI, err := p.collectResources(ctx, serverIDs, serverByID)
+	if err != nil {
+		return nil, err
+	}
+
+	uris := sortedMapKeys(resourcesByURI)
+	out := make([]ResourceDefinition, 0, len(uris))
+	for _, uri := range uris {
+		out = append(out, resourcesByURI[uri])
+	}
+	return out, nil
+}
+
+// deduplicateServers builds a unique map of servers from resource prefixes.
+func (p *ProxyServer) deduplicateServers(prefixes []string) map[string]types.ServerRecord {
 	serverByID := make(map[string]types.ServerRecord)
 	for _, prefix := range prefixes {
-		servers := p.index.LookupResource(prefix)
-		for _, server := range servers {
-			if _, exists := serverByID[server.ID]; !exists {
-				serverByID[server.ID] = server
+		for _, srv := range p.index.LookupResource(prefix) {
+			if _, exists := serverByID[srv.ID]; !exists {
+				serverByID[srv.ID] = srv
 			}
 		}
 	}
+	return serverByID
+}
 
-	serverIDs := make([]string, 0, len(serverByID))
-	for id := range serverByID {
-		serverIDs = append(serverIDs, id)
-	}
-	sort.Strings(serverIDs)
-
+// collectResources fetches resources from each server, deduplicating by URI.
+func (p *ProxyServer) collectResources(ctx context.Context, serverIDs []string, serverByID map[string]types.ServerRecord) (map[string]ResourceDefinition, error) {
 	resourcesByURI := make(map[string]ResourceDefinition)
 	for _, serverID := range serverIDs {
-		server := serverByID[serverID]
-		client := p.getOrCreateClient(server)
+		srv := serverByID[serverID]
+		client := p.getOrCreateClient(srv)
 
 		resources, err := client.ListResources(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list resources: backend %s: %w", server.ID, err)
+			return nil, fmt.Errorf("list resources: backend %s: %w", srv.ID, err)
 		}
 		for _, resource := range resources {
 			if _, exists := resourcesByURI[resource.URI]; !exists {
@@ -57,18 +72,25 @@ func (p *ProxyServer) handleListResources(ctx context.Context) ([]ResourceDefini
 			}
 		}
 	}
+	return resourcesByURI, nil
+}
 
-	uris := make([]string, 0, len(resourcesByURI))
-	for uri := range resourcesByURI {
-		uris = append(uris, uri)
+func sortedKeys(m map[string]types.ServerRecord) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	sort.Strings(uris)
+	sort.Strings(keys)
+	return keys
+}
 
-	out := make([]ResourceDefinition, 0, len(uris))
-	for _, uri := range uris {
-		out = append(out, resourcesByURI[uri])
+func sortedMapKeys(m map[string]ResourceDefinition) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	return out, nil
+	sort.Strings(keys)
+	return keys
 }
 
 // handleReadResource routes resources/read to the backend matching the longest URI prefix.

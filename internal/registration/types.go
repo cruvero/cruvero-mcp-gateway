@@ -68,22 +68,22 @@ func (r RegistrationRequest) Validate() error {
 		return fmt.Errorf("at least one capability must be provided")
 	}
 
-	for _, tool := range r.Capabilities.Tools {
-		if strings.TrimSpace(tool) == "" {
-			return fmt.Errorf("capabilities.tools cannot contain empty names")
-		}
+	if err := validateCapabilityNames("tools", r.Capabilities.Tools); err != nil {
+		return err
 	}
-	for _, resource := range r.Capabilities.Resources {
-		if strings.TrimSpace(resource) == "" {
-			return fmt.Errorf("capabilities.resources cannot contain empty names")
-		}
+	if err := validateCapabilityNames("resources", r.Capabilities.Resources); err != nil {
+		return err
 	}
-	for _, prompt := range r.Capabilities.Prompts {
-		if strings.TrimSpace(prompt) == "" {
-			return fmt.Errorf("capabilities.prompts cannot contain empty names")
-		}
-	}
+	return validateCapabilityNames("prompts", r.Capabilities.Prompts)
+}
 
+// validateCapabilityNames checks that no capability name in the list is blank.
+func validateCapabilityNames(kind string, names []string) error {
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("capabilities.%s cannot contain empty names", kind)
+		}
+	}
 	return nil
 }
 
@@ -110,21 +110,9 @@ func validateHost(host string) error {
 		}
 	}
 
-	ip := net.ParseIP(host)
-	if ip != nil {
-		// Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to IPv4.
-		if v4 := ip.To4(); v4 != nil {
-			ip = v4
-		}
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("loopback and link-local addresses not allowed")
-		}
-		if ip.IsUnspecified() {
-			return fmt.Errorf("unspecified address not allowed")
-		}
-		// Re-check metadata IP after normalization.
-		if ip.Equal(net.ParseIP("169.254.169.254")) {
-			return fmt.Errorf("cloud metadata endpoint not allowed")
+	if ip := net.ParseIP(host); ip != nil {
+		if err := validateIP(ip); err != nil {
+			return err
 		}
 	}
 
@@ -132,5 +120,24 @@ func validateHost(host string) error {
 		return fmt.Errorf("localhost not allowed")
 	}
 
+	return nil
+}
+
+// validateIP checks a parsed IP for SSRF-prone addresses.
+func validateIP(ip net.IP) error {
+	// Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to IPv4.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("loopback and link-local addresses not allowed")
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("unspecified address not allowed")
+	}
+	// Re-check metadata IP after normalization.
+	if ip.Equal(net.ParseIP("169.254.169.254")) {
+		return fmt.Errorf("cloud metadata endpoint not allowed")
+	}
 	return nil
 }

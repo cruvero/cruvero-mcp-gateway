@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"html/template"
 	"log/slog"
@@ -17,6 +18,8 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/types"
 	"github.com/go-chi/chi/v5"
 )
+
+const headerHXRequest = "HX-Request"
 
 // AdminHandler serves admin dashboard pages.
 type AdminHandler struct {
@@ -60,7 +63,7 @@ func (h *AdminHandler) render(w http.ResponseWriter, r *http.Request, name strin
 	}
 
 	// HTMX partial response.
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		if err := h.templates.ExecuteTemplate(w, name, data); err != nil {
 			h.logger.Error("render partial failed", slog.String("template", name), slog.String("error", err.Error()))
 			http.Error(w, "render failed", http.StatusInternalServerError)
@@ -121,46 +124,60 @@ func (h *AdminHandler) HandleTools(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	riskFilter := strings.TrimSpace(r.URL.Query().Get("risk"))
 
-	var tools []types.ToolClassification
-	if h.classificationStore != nil {
-		if riskFilter != "" {
-			level := types.RiskLevel(riskFilter)
-			if level.IsValid() {
-				result, err := h.classificationStore.GetByRiskLevel(ctx, level)
-				if err == nil {
-					tools = result
-				}
-			}
-		} else {
-			result, err := h.classificationStore.GetAll(ctx)
-			if err == nil {
-				tools = result
-			}
-		}
-	}
-
-	// Filter by search query.
-	if query != "" && len(tools) > 0 {
-		var filtered []types.ToolClassification
-		for _, t := range tools {
-			if strings.Contains(strings.ToLower(t.ToolName), strings.ToLower(query)) {
-				filtered = append(filtered, t)
-			}
-		}
-		tools = filtered
-	}
+	tools := h.fetchTools(ctx, riskFilter)
+	tools = filterToolsByQuery(tools, query)
 
 	data := map[string]any{
 		"PageTitle": "Tools",
 		"Tools":     tools,
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "tools_table", data)
 		return
 	}
 
 	h.render(w, r, "tools.html", data)
+}
+
+func (h *AdminHandler) fetchTools(ctx context.Context, riskFilter string) []types.ToolClassification {
+	if h.classificationStore == nil {
+		return nil
+	}
+	if riskFilter != "" {
+		return h.fetchToolsByRisk(ctx, riskFilter)
+	}
+	result, err := h.classificationStore.GetAll(ctx)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+func (h *AdminHandler) fetchToolsByRisk(ctx context.Context, riskFilter string) []types.ToolClassification {
+	level := types.RiskLevel(riskFilter)
+	if !level.IsValid() {
+		return nil
+	}
+	result, err := h.classificationStore.GetByRiskLevel(ctx, level)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+func filterToolsByQuery(tools []types.ToolClassification, query string) []types.ToolClassification {
+	if query == "" || len(tools) == 0 {
+		return tools
+	}
+	lowerQuery := strings.ToLower(query)
+	var filtered []types.ToolClassification
+	for _, t := range tools {
+		if strings.Contains(strings.ToLower(t.ToolName), lowerQuery) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 // HandleToolEdit renders the tool edit form.
@@ -267,7 +284,7 @@ func (h *AdminHandler) HandleRateLimits(w http.ResponseWriter, r *http.Request) 
 		data["Entries"] = inspector.Snapshot()
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "ratelimits_table", data)
 		return
 	}
@@ -336,7 +353,7 @@ func (h *AdminHandler) HandleAudit(w http.ResponseWriter, r *http.Request) {
 		"CurrentPage": page,
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "audit_table", data)
 		return
 	}
@@ -390,7 +407,7 @@ func (h *AdminHandler) HandleServers(w http.ResponseWriter, r *http.Request) {
 		"Servers":   servers,
 	}
 
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(headerHXRequest) == "true" {
 		h.render(w, r, "servers_table", data)
 		return
 	}

@@ -150,33 +150,8 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 
 	// Step 0: tool risk classification check.
 	// Destructive tools are ALWAYS blocked regardless of profile mode.
-	if classificationStore != nil {
-		riskLevel := e.resolveRiskLevel(ctx, toolName, classificationStore, classificationCache)
-		if riskLevel == types.RiskDestructive {
-			decision := &PolicyDecision{
-				Allowed: false,
-				Reason:  "tool classified as destructive",
-				Violations: []Violation{{
-					Type:     ViolationDestructive,
-					Detail:   fmt.Sprintf("tool %q is classified as destructive and is blocked", toolName),
-					Severity: SeverityCritical,
-				}},
-				EnforcementMode: types.ModeEnforce,
-			}
-			span.SetAttributes(
-				attribute.Bool("policy.allowed", false),
-				attribute.String("policy.reason", decision.Reason),
-			)
-			if err := LogDecision(ctx, auditStore, req, decision); err != nil {
-				e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
-			}
-			return decision, nil
-		}
-		if riskLevel == types.RiskUnknown {
-			e.logger.WarnContext(ctx, "tool has unknown risk classification",
-				slog.String("tool", toolName),
-			)
-		}
+	if decision := e.checkDestructiveRisk(ctx, toolName, classificationStore, classificationCache, auditStore, req, span); decision != nil {
+		return decision, nil
 	}
 
 	profile := e.resolveProfile(req.ProfileName)
@@ -185,6 +160,60 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 		mode = types.ModeEnforce
 	}
 
+	violations := e.collectViolations(profile, toolName, req)
+	decision := buildDecision(violations, mode)
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.String("policy.reason", decision.Reason),
+	)
+
+	e.logAndPublishDecision(ctx, auditStore, req, decision, toolName, violations)
+	return decision, nil
+}
+
+func (e *Engine) checkDestructiveRisk(
+	ctx context.Context,
+	toolName string,
+	classificationStore store.ToolClassificationStore,
+	classificationCache *ClassificationCache,
+	auditStore store.AuditStore,
+	req PolicyRequest,
+	span interface{ SetAttributes(...attribute.KeyValue) },
+) *PolicyDecision {
+	if classificationStore == nil {
+		return nil
+	}
+	riskLevel := e.resolveRiskLevel(ctx, toolName, classificationStore, classificationCache)
+	if riskLevel == types.RiskUnknown {
+		e.logger.WarnContext(ctx, "tool has unknown risk classification",
+			slog.String("tool", toolName),
+		)
+	}
+	if riskLevel != types.RiskDestructive {
+		return nil
+	}
+
+	decision := &PolicyDecision{
+		Allowed: false,
+		Reason:  "tool classified as destructive",
+		Violations: []Violation{{
+			Type:     ViolationDestructive,
+			Detail:   fmt.Sprintf("tool %q is classified as destructive and is blocked", toolName),
+			Severity: SeverityCritical,
+		}},
+		EnforcementMode: types.ModeEnforce,
+	}
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", false),
+		attribute.String("policy.reason", decision.Reason),
+	)
+	if err := LogDecision(ctx, auditStore, req, decision); err != nil {
+		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
+	}
+	return decision
+}
+
+func (e *Engine) collectViolations(profile *types.PolicyProfile, toolName string, req PolicyRequest) []Violation {
 	violations := make([]Violation, 0)
 
 	if len(profile.ToolAllowlist) > 0 && !contains(profile.ToolAllowlist, toolName) {
@@ -194,7 +223,6 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 			Severity: SeverityHigh,
 		})
 	}
-
 	if contains(profile.ToolDenylist, toolName) {
 		violations = append(violations, Violation{
 			Type:     ViolationDenylist,
@@ -205,7 +233,10 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 
 	violations = append(violations, CheckDangerous(req.Arguments, e.dangerousPatterns)...)
 	violations = append(violations, ValidateArguments(req.Arguments, req.Schema)...)
+	return violations
+}
 
+func buildDecision(violations []Violation, mode types.EnforcementMode) *PolicyDecision {
 	allowed := len(violations) == 0
 	reason := "allowed"
 	if len(violations) > 0 {
@@ -215,36 +246,32 @@ func (e *Engine) Evaluate(ctx context.Context, req PolicyRequest) (*PolicyDecisi
 		allowed = true
 		reason = "policy violations detected (audit mode)"
 	}
-
-	decision := &PolicyDecision{
+	return &PolicyDecision{
 		Allowed:         allowed,
 		Reason:          reason,
 		Violations:      violations,
 		EnforcementMode: mode,
 	}
-	span.SetAttributes(
-		attribute.Bool("policy.allowed", decision.Allowed),
-		attribute.String("policy.reason", decision.Reason),
-	)
+}
 
+func (e *Engine) logAndPublishDecision(ctx context.Context, auditStore store.AuditStore, req PolicyRequest, decision *PolicyDecision, toolName string, violations []Violation) {
 	if err := LogDecision(ctx, auditStore, req, decision); err != nil {
 		e.logger.ErrorContext(ctx, "policy decision audit log failed", slog.String("error", err.Error()))
 	}
-	if len(violations) > 0 && e.publisher != nil {
-		violationTexts := make([]string, 0, len(violations))
-		for _, violation := range violations {
-			violationTexts = append(violationTexts, violation.Detail)
-		}
-		decisionLabel := "denied"
-		if decision.Allowed {
-			decisionLabel = "allowed"
-		}
-		if err := e.publisher.PublishPolicyViolated(ctx, req.ClientID, toolName, violationTexts, decisionLabel); err != nil {
-			e.logger.ErrorContext(ctx, "publish policy violated event failed", slog.String("error", err.Error()))
-		}
+	if len(violations) == 0 || e.publisher == nil {
+		return
 	}
-
-	return decision, nil
+	violationTexts := make([]string, 0, len(violations))
+	for _, violation := range violations {
+		violationTexts = append(violationTexts, violation.Detail)
+	}
+	decisionLabel := "denied"
+	if decision.Allowed {
+		decisionLabel = "allowed"
+	}
+	if err := e.publisher.PublishPolicyViolated(ctx, req.ClientID, toolName, violationTexts, decisionLabel); err != nil {
+		e.logger.ErrorContext(ctx, "publish policy violated event failed", slog.String("error", err.Error()))
+	}
 }
 
 func (e *Engine) resolveProfile(name string) *types.PolicyProfile {
