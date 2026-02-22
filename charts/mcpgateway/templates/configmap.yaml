@@ -28,6 +28,9 @@ data:
   MCPGW_ADMIN_OIDC_CLIENT_ID: {{ .Values.admin.oidc.clientID | quote }}
   MCPGW_ADMIN_REQUIRED_SCOPE: {{ .Values.admin.requiredScope | quote }}
   MCPGW_ADMIN_SESSION_TTL: {{ .Values.admin.sessionTTL | quote }}
+  {{- if .Values.admin.externalURL }}
+  MCPGW_ADMIN_EXTERNAL_URL: {{ .Values.admin.externalURL | quote }}
+  {{- end }}
   {{- end }}
   {{- if .Values.deviceFlow.enabled }}
   MCPGW_DEVICE_FLOW_ENABLED: "true"

@@ -80,6 +80,7 @@ type Config struct {
 	DeviceFlowClientID     string `json:"device_flow_client_id"`
 	DeviceFlowClientSecret string `json:"device_flow_client_secret"`
 	AdminEnabled           bool          `json:"admin_enabled"`
+	AdminExternalURL       string        `json:"admin_external_url"`
 	AdminOIDCClientID      string        `json:"admin_oidc_client_id"`
 	AdminOIDCClientSecret  string        `json:"admin_oidc_client_secret"`
 	AdminRequiredScope     string        `json:"admin_required_scope"`
@@ -159,6 +160,7 @@ func Load() (*Config, error) {
 		DeviceFlowClientID:     os.Getenv("MCPGW_DEVICE_FLOW_CLIENT_ID"),
 		DeviceFlowClientSecret: os.Getenv("MCPGW_DEVICE_FLOW_CLIENT_SECRET"),
 		AdminEnabled:           bools.adminEnabled,
+		AdminExternalURL:       os.Getenv("MCPGW_ADMIN_EXTERNAL_URL"),
 		AdminOIDCClientID:      os.Getenv("MCPGW_ADMIN_OIDC_CLIENT_ID"),
 		AdminOIDCClientSecret:  os.Getenv("MCPGW_ADMIN_OIDC_CLIENT_SECRET"),
 		AdminRequiredScope:     getEnv("MCPGW_ADMIN_REQUIRED_SCOPE", "admin"),

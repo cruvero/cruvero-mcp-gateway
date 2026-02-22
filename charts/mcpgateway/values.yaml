@@ -126,6 +126,8 @@ deviceFlow:
 admin:
   # -- Enable the admin dashboard.
   enabled: false
+  # -- External base URL for OIDC redirect (e.g. https://gateway.example.com).
+  externalURL: ""
   oidc:
     # -- OIDC client ID for admin dashboard authentication.
     clientID: ""

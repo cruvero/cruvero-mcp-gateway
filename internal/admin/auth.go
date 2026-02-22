@@ -66,9 +66,12 @@ func NewAdminAuth(cfg *config.Config, logger *slog.Logger) (*AdminAuth, error) {
 		return nil, fmt.Errorf("new admin auth: discover oidc provider: %w", err)
 	}
 
-	callbackURL := strings.TrimRight(cfg.ListenAddr, "/") + "/admin/callback"
-	if strings.HasPrefix(cfg.ListenAddr, ":") {
-		callbackURL = "/admin/callback"
+	callbackURL := strings.TrimRight(cfg.AdminExternalURL, "/") + "/admin/callback"
+	if callbackURL == "/admin/callback" {
+		callbackURL = strings.TrimRight(cfg.ListenAddr, "/") + "/admin/callback"
+		if strings.HasPrefix(cfg.ListenAddr, ":") {
+			callbackURL = "/admin/callback"
+		}
 	}
 
 	oauth2Cfg := oauth2.Config{

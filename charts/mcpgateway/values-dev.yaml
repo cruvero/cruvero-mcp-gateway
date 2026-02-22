@@ -63,6 +63,7 @@ secrets:
 
 admin:
   enabled: true
+  externalURL: https://cruvero-mcp-gateway.dev.gchinfo.com
   oidc:
     clientID: mcpgateway-admin
   requiredScope: admin
