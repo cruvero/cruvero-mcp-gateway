@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/cruvero/mcp-gateway/internal/proxy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/store"
@@ -21,14 +22,16 @@ var staticFS embed.FS
 
 // AdminDeps holds all dependencies required by the admin dashboard.
 type AdminDeps struct {
-	Auth                *AdminAuth
-	DevMode             bool
-	Logger              *slog.Logger
-	ServerStore         store.ServerStore
-	AuditStore          store.AuditStore
-	ClassificationStore store.ToolClassificationStore
-	Broadcaster         registration.Broadcaster
-	RateLimitBackend    ratelimit.LimiterBackend
+	Auth                 *AdminAuth
+	DevMode              bool
+	Logger               *slog.Logger
+	ServerStore          store.ServerStore
+	AuditStore           store.AuditStore
+	ClassificationStore  store.ToolClassificationStore
+	Broadcaster          registration.Broadcaster
+	RateLimitBackend     ratelimit.LimiterBackend
+	DiscoveryIndex       *proxy.DiscoveryIndex
+	ProgressiveDiscovery bool
 }
 
 // NewRouter creates the admin dashboard chi router.
@@ -70,7 +73,10 @@ func NewRouter(deps AdminDeps) chi.Router {
 
 		r.Get("/", handler.HandleDashboard)
 		r.Get("/tools", handler.HandleTools)
+		r.Get("/tools/browse", handler.HandleToolBrowse)
+		r.Get("/tools/discovery/stats", handler.HandleDiscoveryStats)
 		r.Get("/tools/{name}", handler.HandleToolEdit)
+		r.Get("/tools/{name}/schema", handler.HandleToolSchema)
 		r.Post("/tools/{name}", handler.HandleToolUpdate)
 		r.Get("/ratelimits", handler.HandleRateLimits)
 		r.Get("/audit", handler.HandleAudit)

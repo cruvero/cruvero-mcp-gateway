@@ -248,14 +248,16 @@ func serveWithContext(ctx context.Context) error {
 			}
 		}
 		adminRouter := admin.NewRouter(admin.AdminDeps{
-			Auth:                adminAuth,
-			DevMode:             cfg.AdminDevMode,
-			Logger:              logger,
-			ServerStore:         serverStore,
-			AuditStore:          auditStore,
-			ClassificationStore: classificationStore,
-			Broadcaster:         broadcaster,
-			RateLimitBackend:    gw.RateLimitBackend(),
+			Auth:                 adminAuth,
+			DevMode:              cfg.AdminDevMode,
+			Logger:               logger,
+			ServerStore:          serverStore,
+			AuditStore:           auditStore,
+			ClassificationStore:  classificationStore,
+			Broadcaster:          broadcaster,
+			RateLimitBackend:     gw.RateLimitBackend(),
+			DiscoveryIndex:       proxyServer.DiscoveryIndex(),
+			ProgressiveDiscovery: cfg.ProgressiveDiscovery,
 		})
 		gw.MountAdmin(adminRouter)
 		logger.Info("admin dashboard enabled", slog.Bool("dev_mode", cfg.AdminDevMode))
