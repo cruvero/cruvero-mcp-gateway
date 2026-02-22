@@ -685,6 +685,69 @@ func TestBuildSearchToolsMetaHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("search_tools handler missing query", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["search_tools"]
+		if st == nil {
+			t.Fatal("search_tools not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "search_tools",
+				Arguments: map[string]any{},
+			},
+		})
+		if err != nil {
+			t.Fatalf("search_tools handler: %v", err)
+		}
+		if !result.IsError {
+			t.Error("expected error result when query is missing")
+		}
+	})
+
+	t.Run("get_tool_schema handler non-string element in names", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["get_tool_schema"]
+		if st == nil {
+			t.Fatal("get_tool_schema not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{42}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_tool_schema handler: %v", err)
+		}
+		if !result.IsError {
+			t.Error("expected error result when names contains non-string")
+		}
+	})
+
+	t.Run("get_tool_schema handler empty names array", func(t *testing.T) {
+		t.Parallel()
+		st := proxyServer.mcpServer.ListTools()["get_tool_schema"]
+		if st == nil {
+			t.Fatal("get_tool_schema not registered")
+		}
+
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("get_tool_schema handler: %v", err)
+		}
+		if !result.IsError {
+			t.Error("expected error result when names is empty")
+		}
+	})
+
 	t.Run("get_tool_schema handler missing names", func(t *testing.T) {
 		t.Parallel()
 		st := proxyServer.mcpServer.ListTools()["get_tool_schema"]

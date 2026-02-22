@@ -289,9 +289,10 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 	}
 
 	if p.config.ProgressiveDiscovery {
-		idx := NewDiscoveryIndex()
-		idx.Index(tools)
-		p.discoveryIndex = idx
+		if p.discoveryIndex == nil {
+			p.discoveryIndex = NewDiscoveryIndex()
+		}
+		p.discoveryIndex.Index(tools)
 	}
 
 	serverTools := make([]server.ServerTool, 0, len(tools))
@@ -394,7 +395,10 @@ func (p *ProxyServer) buildSearchToolsMeta() []server.ServerTool {
 			Tool: searchTool,
 			Handler: func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				args := req.GetArguments()
-				query, _ := req.RequireString("query")
+				query, queryErr := req.RequireString("query")
+				if queryErr != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("query parameter is required: %v", queryErr)), nil
+				}
 				category, _ := args["category"].(string)
 				limit := defaultSearchLimit
 				if v, ok := args["limit"].(float64); ok && v > 0 {
@@ -434,9 +438,14 @@ func (p *ProxyServer) buildSearchToolsMeta() []server.ServerTool {
 				}
 				names := make([]string, 0, len(namesSlice))
 				for _, v := range namesSlice {
-					if s, ok := v.(string); ok {
-						names = append(names, s)
+					s, ok := v.(string)
+					if !ok {
+						return mcp.NewToolResultError("names must be an array of strings"), nil
 					}
+					names = append(names, s)
+				}
+				if len(names) == 0 {
+					return mcp.NewToolResultError("names must contain at least one string"), nil
 				}
 
 				tools := p.discoveryIndex.GetTools(names)

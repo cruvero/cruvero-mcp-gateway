@@ -147,11 +147,15 @@ func (c *BackendClient) ListTools(ctx context.Context) ([]ToolDefinition, error)
 		if schemaErr != nil {
 			return nil, fmt.Errorf("list tools: encode schema for %s: %w", tool.Name, schemaErr)
 		}
+		outSchema, outErr := toolOutputSchemaJSON(tool)
+		if outErr != nil {
+			return nil, fmt.Errorf("list tools: encode output schema for %s: %w", tool.Name, outErr)
+		}
 		def := ToolDefinition{
 			Name:         tool.Name,
 			Description:  tool.Description,
 			InputSchema:  schema,
-			OutputSchema: toolOutputSchemaJSON(tool),
+			OutputSchema: outSchema,
 			Annotations:  annotationsFromTool(tool),
 			DeferLoading: tool.DeferLoading,
 			Meta:         tool.Meta,
@@ -309,21 +313,21 @@ func toolInputSchemaJSON(tool mcp.Tool) (json.RawMessage, error) {
 	return json.RawMessage(bytes), nil
 }
 
-func toolOutputSchemaJSON(tool mcp.Tool) json.RawMessage {
+func toolOutputSchemaJSON(tool mcp.Tool) (json.RawMessage, error) {
 	if len(tool.RawOutputSchema) > 0 {
 		out := make([]byte, len(tool.RawOutputSchema))
 		copy(out, tool.RawOutputSchema)
-		return out
+		return out, nil
 	}
 
 	if tool.OutputSchema.Type != "" {
 		bytes, err := json.Marshal(tool.OutputSchema)
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		return json.RawMessage(bytes)
+		return json.RawMessage(bytes), nil
 	}
-	return nil
+	return nil, nil
 }
 
 func annotationsFromTool(tool mcp.Tool) *mcp.ToolAnnotation {

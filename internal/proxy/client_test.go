@@ -408,6 +408,7 @@ func TestToolOutputSchemaJSON(t *testing.T) {
 		name     string
 		tool     mcp.Tool
 		wantNil  bool
+		wantErr  bool
 		contains string
 	}{
 		{
@@ -429,8 +430,8 @@ func TestToolOutputSchemaJSON(t *testing.T) {
 			contains: `"type":"string"`,
 		},
 		{
-			name: "neither set returns nil",
-			tool: mcp.NewTool("no-out"),
+			name:    "neither set returns nil",
+			tool:    mcp.NewTool("no-out"),
 			wantNil: true,
 		},
 	}
@@ -438,7 +439,16 @@ func TestToolOutputSchemaJSON(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := toolOutputSchemaJSON(tt.tool)
+			result, err := toolOutputSchemaJSON(tt.tool)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if tt.wantNil {
 				if result != nil {
 					t.Fatalf("expected nil, got %s", string(result))
