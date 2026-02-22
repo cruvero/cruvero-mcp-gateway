@@ -395,7 +395,7 @@ In addition to per-client policy-based rate limiting, the gateway supports per-s
 |--------------------|-------------------|----------|
 | `NULL` | `NULL` | Use global defaults from policy profile |
 | `0` | any | All requests to this server are blocked |
-| `> 0` | `NULL` or `> 0` | Custom rate; burst defaults to 2x rate if not set |
+| `> 0` | `NULL` or `> 0` | Custom rate; burst defaults to rate if not set |
 
 Database CHECK constraints enforce that rate values are non-negative and that `rate_burst` cannot be set without `rate_limit`. When a request is rate-limited, the client receives an MCP-level JSON-RPC error with a retry hint rather than a raw HTTP 429.
 
