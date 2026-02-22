@@ -62,14 +62,16 @@ func migrateCommand(args []string) error {
 		}
 	}()
 
-	if err := applyMigrations(runner, resolvedDirection, *steps); err != nil {
-		if err == migrate.ErrNoChange {
-			_, _ = fmt.Fprintln(stdout, "no migrations to apply")
-		} else {
-			return err
-		}
+	if err := applyMigrations(runner, resolvedDirection, *steps); err != nil && err != migrate.ErrNoChange {
+		return err
+	} else if err == migrate.ErrNoChange {
+		_, _ = fmt.Fprintln(stdout, "no migrations to apply")
 	}
 
+	return reportMigrationVersion(runner)
+}
+
+func reportMigrationVersion(runner migrateRunner) error {
 	version, dirty, err := runner.Version()
 	if err != nil {
 		if err == migrate.ErrNilVersion {
