@@ -149,6 +149,183 @@ func TestServerRegisteredAckHandler(t *testing.T) {
 	}
 }
 
+// --- ToolMetadataConfigHandler tests ---
+
+type savingConfigStore struct {
+	saved   map[string][]byte
+	saveErr error
+}
+
+func newSavingConfigStore() *savingConfigStore {
+	return &savingConfigStore{saved: make(map[string][]byte)}
+}
+
+func (s *savingConfigStore) Save(_ context.Context, key string, value []byte) error {
+	if s.saveErr != nil {
+		return s.saveErr
+	}
+	s.saved[key] = append([]byte(nil), value...)
+	return nil
+}
+
+func (s *savingConfigStore) Load(_ context.Context, key string) ([]byte, error) {
+	v, ok := s.saved[key]
+	if !ok {
+		return nil, fmt.Errorf("not found")
+	}
+	return v, nil
+}
+
+func (s *savingConfigStore) Keys(_ context.Context) ([]string, error) {
+	keys := make([]string, 0, len(s.saved))
+	for k := range s.saved {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+func TestToolMetadataConfigHandler_ValidPayload(t *testing.T) {
+	t.Parallel()
+
+	store := newSavingConfigStore()
+	var received *ToolMetadataConfigMessage
+	handler := NewToolMetadataConfigHandler(store, func(msg ToolMetadataConfigMessage) {
+		received = &msg
+	}, nil)
+
+	payload := ToolMetadataConfigMessage{
+		Version: 1,
+		Tools: []ToolMetadataEntry{
+			{ToolName: "mcp.github.create_issue", Category: "github", Tags: []string{"vcs", "issues"}, Priority: 5},
+			{ToolName: "mcp.slack.send_message", Category: "slack", Summary: "Send message to channel"},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if received == nil {
+		t.Fatal("expected onUpdate to be called")
+	}
+	if received.Version != 1 {
+		t.Fatalf("expected version 1, got %d", received.Version)
+	}
+	if len(received.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(received.Tools))
+	}
+
+	// Verify ConfigStore persisted.
+	if _, ok := store.saved[configCacheToolMetadataKey]; !ok {
+		t.Fatal("expected ConfigStore.Save to be called")
+	}
+}
+
+func TestToolMetadataConfigHandler_InvalidPayload(t *testing.T) {
+	t.Parallel()
+
+	var called bool
+	handler := NewToolMetadataConfigHandler(nil, func(_ ToolMetadataConfigMessage) {
+		called = true
+	}, nil)
+
+	if err := handler.Handle(context.Background(), []byte(`{invalid json`)); err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if called {
+		t.Fatal("onUpdate should not be called on invalid payload")
+	}
+}
+
+func TestToolMetadataConfigHandler_EmptyToolsList(t *testing.T) {
+	t.Parallel()
+
+	var received *ToolMetadataConfigMessage
+	handler := NewToolMetadataConfigHandler(nil, func(msg ToolMetadataConfigMessage) {
+		received = &msg
+	}, nil)
+
+	body := []byte(`{"version":1,"tools":[]}`)
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if received == nil {
+		t.Fatal("expected onUpdate to be called even with empty tools")
+	}
+	if len(received.Tools) != 0 {
+		t.Fatalf("expected 0 tools, got %d", len(received.Tools))
+	}
+}
+
+func TestToolMetadataConfigHandler_PersistenceError(t *testing.T) {
+	t.Parallel()
+
+	store := newSavingConfigStore()
+	store.saveErr = fmt.Errorf("db unavailable")
+
+	var received *ToolMetadataConfigMessage
+	handler := NewToolMetadataConfigHandler(store, func(msg ToolMetadataConfigMessage) {
+		received = &msg
+	}, nil)
+
+	body := []byte(`{"version":2,"tools":[{"tool_name":"tool-a","category":"test"}]}`)
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatalf("handle should succeed despite persistence error: %v", err)
+	}
+	if received == nil {
+		t.Fatal("onUpdate should still be called when persistence fails")
+	}
+}
+
+func TestToolMetadataConfigHandler_NilOnUpdate(t *testing.T) {
+	t.Parallel()
+
+	handler := NewToolMetadataConfigHandler(nil, nil, nil)
+
+	body := []byte(`{"version":1,"tools":[{"tool_name":"tool-a","category":"test"}]}`)
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatalf("handle should not panic with nil onUpdate: %v", err)
+	}
+}
+
+func TestToolMetadataConfigHandler_SetOnUpdate(t *testing.T) {
+	t.Parallel()
+
+	handler := NewToolMetadataConfigHandler(nil, nil, nil)
+
+	var called bool
+	handler.SetOnUpdate(func(_ ToolMetadataConfigMessage) {
+		called = true
+	})
+
+	body := []byte(`{"version":1,"tools":[{"tool_name":"tool-a","category":"test"}]}`)
+	if err := handler.Handle(context.Background(), body); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if !called {
+		t.Fatal("expected late-bound onUpdate to be called")
+	}
+}
+
+func TestToolMetadataConfigHandler_NilHandler(t *testing.T) {
+	t.Parallel()
+
+	var handler *ToolMetadataConfigHandler
+	if err := handler.Handle(context.Background(), []byte(`{}`)); err == nil {
+		t.Fatal("expected error for nil handler")
+	}
+}
+
+func TestToolMetadataConfigHandler_SetOnUpdateNilReceiver(t *testing.T) {
+	t.Parallel()
+
+	var handler *ToolMetadataConfigHandler
+	handler.SetOnUpdate(func(_ ToolMetadataConfigMessage) {}) // should not panic
+}
+
 type mockPolicyEngine struct {
 	profiles map[string]*types.PolicyProfile
 }
