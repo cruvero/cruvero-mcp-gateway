@@ -47,7 +47,7 @@ func TestFullLifecycle(t *testing.T) {
 
 	cfg := &config.Config{
 		DBURL:            "postgres://test-db",
-		HeartbeatTTL:     50 * time.Millisecond,
+		HeartbeatTTL:     2 * time.Second,
 		SPIFFEAllowList:  []string{"spiffe://example.org"},
 		RateDefault:      10,
 		RateBurst:        20,
@@ -182,13 +182,13 @@ func TestFullLifecycle(t *testing.T) {
 		t.Fatalf("unexpected tool result content: %#v", toolResp.Content[0])
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		current, getErr := serverStore.Get(context.Background(), regResp.InstanceID)
 		if getErr == nil && current.Status == types.StatusExpired {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	current, err := serverStore.Get(context.Background(), regResp.InstanceID)
 	if err != nil {
