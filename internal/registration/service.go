@@ -110,6 +110,17 @@ func (s *Service) SetClassificationStore(classificationStore store.ToolClassific
 	s.classificationStore = classificationStore
 }
 
+// SyncClassifications reconciles tool classifications for all provided servers.
+// It is idempotent — classifyNewTools uses upsert and preserves manual classifications.
+func (s *Service) SyncClassifications(ctx context.Context, servers []types.ServerRecord) {
+	if s == nil || s.classificationStore == nil {
+		return
+	}
+	for _, srv := range servers {
+		s.classifyNewTools(ctx, srv.Capabilities, srv.SPIFFEID)
+	}
+}
+
 // UpdateSPIFFEAllowList replaces the registration SPIFFE prefix allowlist.
 func (s *Service) UpdateSPIFFEAllowList(prefixes []string) {
 	if s == nil {
@@ -379,7 +390,28 @@ func (s *Service) classifyNewTools(ctx context.Context, cap types.Capability, ca
 				slog.String("tool", name),
 				slog.String("error", err.Error()),
 			)
+			continue
 		}
+		s.publishClassificationBroadcast(name, string(riskLevel), callerID)
+	}
+}
+
+func (s *Service) publishClassificationBroadcast(toolName, riskLevel, updatedBy string) {
+	if s.broadcaster == nil {
+		return
+	}
+
+	evt := NewClassificationEvent(toolName, riskLevel, updatedBy)
+	data, err := json.Marshal(evt)
+	if err != nil {
+		s.logger.Error("marshal classification broadcast failed", slog.String("error", err.Error()))
+		return
+	}
+	if err := s.broadcaster.Publish(SubjectClassificationUpdated, data); err != nil {
+		s.logger.Error("publish classification broadcast failed",
+			slog.String("tool", toolName),
+			slog.String("error", err.Error()),
+		)
 	}
 }
 

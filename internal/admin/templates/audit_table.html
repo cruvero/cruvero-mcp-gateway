@@ -1,11 +1,36 @@
 {{define "audit_table"}}
+<div class="table-actions">
+  <a href="/admin/audit/export?client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by={{$.SortBy | urlquery}}&sort_dir={{$.SortDir | urlquery}}"
+     class="btn btn-secondary">Export CSV</a>
+</div>
 <table>
   <thead>
     <tr>
-      <th>Time</th>
-      <th>Event Type</th>
+      <th>
+        <a class="sortable{{if eq $.SortBy "created_at"}} sort-active{{end}}"
+           href="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=created_at&sort_dir={{if and (eq $.SortBy "created_at") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-get="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=created_at&sort_dir={{if and (eq $.SortBy "created_at") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-target="#audit-table">Time{{if eq $.SortBy "created_at"}} ({{$.SortDir}}){{end}}</a>
+      </th>
+      <th>
+        <a class="sortable{{if eq $.SortBy "event_type"}} sort-active{{end}}"
+           href="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=event_type&sort_dir={{if and (eq $.SortBy "event_type") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-get="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=event_type&sort_dir={{if and (eq $.SortBy "event_type") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-target="#audit-table">Event Type{{if eq $.SortBy "event_type"}} ({{$.SortDir}}){{end}}</a>
+      </th>
       <th>Client ID</th>
-      <th>Server</th>
+      <th>
+        <a class="sortable{{if eq $.SortBy "username"}} sort-active{{end}}"
+           href="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=username&sort_dir={{if and (eq $.SortBy "username") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-get="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=username&sort_dir={{if and (eq $.SortBy "username") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-target="#audit-table">Username{{if eq $.SortBy "username"}} ({{$.SortDir}}){{end}}</a>
+      </th>
+      <th>
+        <a class="sortable{{if eq $.SortBy "server_name"}} sort-active{{end}}"
+           href="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=server_name&sort_dir={{if and (eq $.SortBy "server_name") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-get="/admin/audit?page=1&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by=server_name&sort_dir={{if and (eq $.SortBy "server_name") (eq $.SortDir "asc")}}desc{{else}}asc{{end}}"
+           hx-target="#audit-table">Server{{if eq $.SortBy "server_name"}} ({{$.SortDir}}){{end}}</a>
+      </th>
       <th>Details</th>
     </tr>
   </thead>
@@ -15,12 +40,29 @@
       <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
       <td>{{.EventType}}</td>
       <td>{{.ClientID}}</td>
+      <td>{{if .Username}}{{.Username}}{{else}}system{{end}}</td>
       <td>{{.ServerName}}</td>
-      <td><code>{{.DetailsJSON}}</code></td>
+      <td>
+        <div x-data="{expanded: false}" class="details-cell">
+          <button class="btn btn-sm btn-secondary" @click="expanded = !expanded"
+                  x-text="expanded ? 'Collapse' : 'Expand'">Expand</button>
+          <pre x-show="expanded" x-cloak><code>{{.DetailsPretty}}</code></pre>
+          <code x-show="!expanded">{{.DetailsJSON}}</code>
+        </div>
+      </td>
     </tr>
     {{else}}
-    <tr><td colspan="5">No audit entries found.</td></tr>
+    <tr><td colspan="6">No audit entries found.</td></tr>
     {{end}}
   </tbody>
 </table>
+{{if gt .TotalPages 1}}
+<div class="pagination">
+  {{range .PageNumbers}}
+  <a href="/admin/audit?page={{.}}&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by={{$.SortBy | urlquery}}&sort_dir={{$.SortDir | urlquery}}"
+     hx-get="/admin/audit?page={{.}}&client_id={{$.ClientID | urlquery}}&username={{$.Username | urlquery}}&tool_name={{$.ToolName | urlquery}}&decision={{$.Decision | urlquery}}&details={{$.DetailsSearch | urlquery}}&since={{$.Since | urlquery}}&until={{$.Until | urlquery}}&sort_by={{$.SortBy | urlquery}}&sort_dir={{$.SortDir | urlquery}}" hx-target="#audit-table"
+     {{if eq . $.CurrentPage}}class="page-active"{{end}}>{{.}}</a>
+  {{end}}
+</div>
+{{end}}
 {{end}}

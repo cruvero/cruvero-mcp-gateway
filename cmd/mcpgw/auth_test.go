@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/auth"
+	"github.com/cruvero/mcp-gateway/internal/config"
 )
 
 func TestAuthCommand_NoSubcommand(t *testing.T) {
@@ -319,7 +320,210 @@ func TestAuthLogin_TokenEndpointNon425Error(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for forbidden token response")
 	}
-	if !strings.Contains(err.Error(), "status 403") {
-		t.Fatalf("expected status 403 error, got: %v", err)
+	if !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected access denied error, got: %v", err)
+	}
+}
+
+func TestPollTokenOnce_Expired(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte(`{"error":"expired_token"}`))
+	}))
+	defer idp.Close()
+
+	_, err := pollTokenOnce(idp.URL, "expired-code")
+	if err == nil {
+		t.Fatal("expected error for expired token")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expired error, got: %v", err)
+	}
+}
+
+func TestPollTokenOnce_Forbidden(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"access_denied"}`))
+	}))
+	defer idp.Close()
+
+	_, err := pollTokenOnce(idp.URL, "denied-code")
+	if err == nil {
+		t.Fatal("expected error for denied token")
+	}
+	if !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected access denied error, got: %v", err)
+	}
+}
+
+func TestParseErrorDescription(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "with description",
+			body: `{"error":"invalid_grant","error_description":"The device code has expired"}`,
+			want: "The device code has expired",
+		},
+		{
+			name: "without description",
+			body: `{"error":"invalid_grant"}`,
+			want: "",
+		},
+		{
+			name: "invalid json",
+			body: `not-json`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseErrorDescription([]byte(tt.body))
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestPerformLogin(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/device/code":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"device_code":      "perf-code",
+				"user_code":        "PERF-5678",
+				"verification_uri": "https://idp.example.com/verify",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case "/device/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "perf-access",
+				"refresh_token": "perf-refresh",
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			})
+		}
+	}))
+	defer idp.Close()
+
+	var buf bytes.Buffer
+	err := performLogin(idp.URL, loginOptions{noBrowser: true, msgWriter: &buf})
+	if err != nil {
+		t.Fatalf("performLogin: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "PERF-5678") {
+		t.Fatalf("expected user code in output, got %q", output)
+	}
+	if !strings.Contains(output, "Login successful") {
+		t.Fatalf("expected success message in output, got %q", output)
+	}
+
+	tokens, err := auth.LoadTokens()
+	if err != nil {
+		t.Fatalf("load tokens after performLogin: %v", err)
+	}
+	if tokens.AccessToken != "perf-access" {
+		t.Fatalf("expected perf-access, got %q", tokens.AccessToken)
+	}
+}
+
+func TestAuthLogin_LargeTokenResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Generate large JWT-sized tokens (~20KB each, total >60KB) to stress-test
+	// the full-read path without LimitReader.
+	fakeJWT := func(size int) string {
+		return "eyJhbGciOiJSUzI1NiJ9." + strings.Repeat("a", size) + ".sig"
+	}
+	accessToken := fakeJWT(20000)
+	idToken := fakeJWT(20000)
+	refreshToken := fakeJWT(15000)
+
+	// Mock IdP returning large JWT tokens.
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/device/authorize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"device_code":      "large-token-code",
+				"user_code":        "LRG-9999",
+				"verification_uri": "https://idp.example.com/verify",
+				"expires_in":       600,
+				"interval":         1,
+			})
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  accessToken,
+				"id_token":      idToken,
+				"refresh_token": refreshToken,
+				"token_type":    "Bearer",
+				"expires_in":    3600,
+			})
+		}
+	}))
+	defer idp.Close()
+
+	// Real gateway handler proxying to mock IdP — exercises the LimitReader fix.
+	cfg := &config.Config{
+		DeviceFlowEnabled:      true,
+		DeviceFlowIDPDeviceURL: idp.URL + "/device/authorize",
+		DeviceFlowIDPTokenURL:  idp.URL + "/token",
+		DeviceFlowClientID:     "test-client",
+	}
+	handler := auth.NewDeviceFlowHandler(cfg, nil)
+	mux := http.NewServeMux()
+	mux.Handle("/device/", http.StripPrefix("/device", handler.Routes()))
+	gw := httptest.NewServer(mux)
+	defer gw.Close()
+
+	var buf bytes.Buffer
+	err := performLogin(gw.URL, loginOptions{noBrowser: true, msgWriter: &buf})
+	if err != nil {
+		t.Fatalf("performLogin with large tokens: %v", err)
+	}
+
+	tokens, err := auth.LoadTokens()
+	if err != nil {
+		t.Fatalf("load tokens: %v", err)
+	}
+	if tokens.AccessToken != accessToken {
+		t.Fatalf("access token mismatch: got %d bytes, want %d bytes", len(tokens.AccessToken), len(accessToken))
+	}
+	if tokens.IDToken != idToken {
+		t.Fatalf("id token mismatch: got %d bytes, want %d bytes", len(tokens.IDToken), len(idToken))
+	}
+	if tokens.RefreshToken != refreshToken {
+		t.Fatalf("refresh token mismatch: got %d bytes, want %d bytes", len(tokens.RefreshToken), len(refreshToken))
+	}
+}
+
+func TestPerformLogin_DeviceCodeFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	err := performLogin(srv.URL, loginOptions{noBrowser: true, msgWriter: &buf})
+	if err == nil {
+		t.Fatal("expected error when device code request fails")
+	}
+	if !strings.Contains(err.Error(), "status 502") {
+		t.Fatalf("expected status 502 error, got: %v", err)
 	}
 }

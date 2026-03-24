@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/lib/pq"
 )
@@ -43,7 +44,7 @@ func SetupTestDB(t *testing.T) *sql.DB {
 		t.Skipf("skipping Postgres integration setup: ping test db: %v", err)
 	}
 
-	if err := runMigrations(dbURL); err != nil {
+	if err := runMigrations(dbURL, db); err != nil {
 		_ = db.Close()
 		t.Skipf("skipping Postgres integration setup: run migrations: %v", err)
 	}
@@ -65,19 +66,24 @@ func SetupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// runMigrations uses a dedicated database URL (not a shared *sql.DB) so the
-// migrator can be fully closed without affecting the caller's connection pool.
-func runMigrations(dbURL string) error {
+func runMigrations(dbURL string, db *sql.DB) error {
+	driver, err := postgres.WithInstance(db, &postgres.Config{})
+	if err != nil {
+		return fmt.Errorf("build migrate postgres driver: %w", err)
+	}
+
 	migrationsPath, err := migrationsSourceURL()
 	if err != nil {
 		return fmt.Errorf("resolve migrations path: %w", err)
 	}
 
-	migrator, err := migrate.New(migrationsPath, dbURL)
+	migrator, err := migrate.NewWithDatabaseInstance(migrationsPath, "postgres", driver)
 	if err != nil {
 		return fmt.Errorf("create migrator: %w", err)
 	}
-	defer migrator.Close()
+	defer func() {
+		_, _ = migrator.Close()
+	}()
 
 	if err := migrator.Up(); err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("apply up migrations: %w", err)

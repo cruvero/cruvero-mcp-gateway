@@ -92,7 +92,7 @@ func TestRouterRoutesFederatedToolToNamedBackend(t *testing.T) {
 	router.clients.Store(record1.ID, newResilientClientForTest(record1.ID, client1))
 	router.clients.Store(record2.ID, newResilientClientForTest(record2.ID, client2))
 
-	result, err := router.Route(context.Background(), "mcp.server-2.tool.shared", map[string]any{})
+	result, err := router.Route(context.Background(), "server-2.tool.shared", map[string]any{})
 	if err != nil {
 		t.Fatalf("route federated tool: %v", err)
 	}

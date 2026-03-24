@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,11 +12,10 @@ import (
 func TestSubscriberRegisterGatewaySubjects(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-subjects")
+	client, err := NewClient(natsServerURL(t, srv), "gw-subjects")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -53,11 +51,10 @@ func TestSubscriberRegisterGatewaySubjects(t *testing.T) {
 func TestSubscriberRoutesMessageToRegisteredHandler(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-route")
+	client, err := NewClient(natsServerURL(t, srv), "gw-route")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -96,11 +93,10 @@ func TestSubscriberRoutesMessageToRegisteredHandler(t *testing.T) {
 func TestSubscriberStartStopLifecycle(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-life")
+	client, err := NewClient(natsServerURL(t, srv), "gw-life")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -149,10 +145,9 @@ func TestSubscriberStartErrors(t *testing.T) {
 		t.Fatal("expected error for nil client")
 	}
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-errors")
+	client, err := NewClient(natsServerURL(t, srv), "gw-errors")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -167,11 +162,10 @@ func TestSubscriberStartErrors(t *testing.T) {
 func TestSubscriberLoadCachedConfig(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-cache")
+	client, err := NewClient(natsServerURL(t, srv), "gw-cache")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -220,11 +214,10 @@ func TestSubscriberLoadCachedConfigErrors(t *testing.T) {
 		t.Fatal("expected error for nil client")
 	}
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-cache-errors")
+	client, err := NewClient(natsServerURL(t, srv), "gw-cache-errors")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

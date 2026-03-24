@@ -60,10 +60,17 @@ func (s *ClassificationSubscriber) handle(ctx context.Context, data []byte) {
 	}
 
 	if s.cache != nil {
-		s.cache.Invalidate(toolName)
-		s.logger.DebugContext(ctx, "invalidated classification cache",
-			slog.String("tool", toolName),
-			slog.String("risk_level", evt.RiskLevel),
-		)
+		if toolName == "*" {
+			s.cache.InvalidateAll()
+			s.logger.DebugContext(ctx, "invalidated entire classification cache",
+				slog.String("risk_level", evt.RiskLevel),
+			)
+		} else {
+			s.cache.Invalidate(toolName)
+			s.logger.DebugContext(ctx, "invalidated classification cache",
+				slog.String("tool", toolName),
+				slog.String("risk_level", evt.RiskLevel),
+			)
+		}
 	}
 }

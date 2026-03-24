@@ -1,11 +1,24 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/cruvero/mcp-gateway/internal/search"
 )
+
+type failingSearchEngine struct{}
+
+func (f failingSearchEngine) Index(_ context.Context, _ []search.Document) error { return nil }
+func (f failingSearchEngine) Search(_ context.Context, _ string, _ int) ([]search.ScoredResult, error) {
+	return nil, fmt.Errorf("boom")
+}
+func (f failingSearchEngine) Remove(_ string) {}
+func (f failingSearchEngine) Ready() bool     { return true }
 
 func TestExtractSummary(t *testing.T) {
 	t.Parallel()
@@ -56,16 +69,18 @@ func TestCategoryFromFederatedName(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
+		name  string
 		input string
 		want  string
 	}{
-		{name: "standard federated name", input: "mcp.github.create_issue", want: "github"},
-		{name: "no prefix", input: "toolname", want: ""},
+		{name: "new format", input: "github.create_issue", want: "github"},
+		{name: "new format nested", input: "k8s.ns.list_pods", want: "k8s"},
+		{name: "no dot", input: "toolname", want: ""},
 		{name: "empty", input: "", want: ""},
-		{name: "mcp prefix only", input: "mcp.", want: ""},
-		{name: "mcp prefix with server only", input: "mcp.github", want: ""},
-		{name: "nested dots", input: "mcp.server.ns.tool", want: "server"},
+		{name: "legacy mcp prefix only", input: "mcp.", want: ""},
+		{name: "legacy mcp prefix with server only", input: "mcp.github", want: ""},
+		{name: "legacy mcp format", input: "mcp.server.ns.tool", want: "server"},
+		{name: "legacy mcp standard", input: "mcp.github.create_issue", want: "github"},
 	}
 
 	for _, tt := range tests {
@@ -84,31 +99,31 @@ func TestDiscoveryIndex_Search(t *testing.T) {
 
 	roHint := mcp.ToBoolPtr(true)
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create a new issue in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Create Issue", ReadOnlyHint: roHint}},
-		{Name: "mcp.github.list_issues", Description: "List issues in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "List Issues"}},
-		{Name: "mcp.github.close_issue", Description: "Close an existing issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.send_message", Description: "Send a message to a Slack channel.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Send Message"}},
-		{Name: "mcp.slack.list_channels", Description: "List available Slack channels.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.jira.create_ticket", Description: "Create a Jira ticket for issue tracking.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create a new issue in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Create Issue", ReadOnlyHint: roHint}},
+		{Name: "github.list_issues", Description: "List issues in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "List Issues"}},
+		{Name: "github.close_issue", Description: "Close an existing issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.send_message", Description: "Send a message to a Slack channel.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Send Message"}},
+		{Name: "slack.list_channels", Description: "List available Slack channels.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "jira.create_ticket", Description: "Create a Jira ticket for issue tracking.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
 
 	tests := []struct {
-		name            string
-		query           string
-		category        string
-		limit           int
-		wantMinResults  int
-		wantMaxResults  int
-		wantTotal       int
-		wantFirstName   string
-		checkDeferred   bool
+		name           string
+		query          string
+		category       string
+		limit          int
+		wantMinResults int
+		wantMaxResults int
+		wantTotal      int
+		wantFirstName  string
+		checkDeferred  bool
 	}{
 		{
-			name: "exact name match", query: "mcp.github.create_issue",
-			wantMinResults: 1, wantFirstName: "mcp.github.create_issue", checkDeferred: true,
+			name: "exact name match", query: "github.create_issue",
+			wantMinResults: 1, wantFirstName: "github.create_issue", checkDeferred: true,
 		},
 		{
 			name: "name contains match", query: "issue",
@@ -187,9 +202,9 @@ func TestDiscoveryIndex_GetTools(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)},
-		{Name: "mcp.github.list_issues", Description: "List issues", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.send_message", Description: "Send message", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)},
+		{Name: "github.list_issues", Description: "List issues", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.send_message", Description: "Send message", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 
 	idx := NewDiscoveryIndex()
@@ -200,9 +215,9 @@ func TestDiscoveryIndex_GetTools(t *testing.T) {
 		names     []string
 		wantCount int
 	}{
-		{name: "single found", names: []string{"mcp.github.create_issue"}, wantCount: 1},
-		{name: "multiple found", names: []string{"mcp.github.create_issue", "mcp.slack.send_message"}, wantCount: 2},
-		{name: "some not found", names: []string{"mcp.github.create_issue", "nonexistent"}, wantCount: 1},
+		{name: "single found", names: []string{"github.create_issue"}, wantCount: 1},
+		{name: "multiple found", names: []string{"github.create_issue", "slack.send_message"}, wantCount: 2},
+		{name: "some not found", names: []string{"github.create_issue", "nonexistent"}, wantCount: 1},
 		{name: "none found", names: []string{"nonexistent"}, wantCount: 0},
 		{name: "empty input", names: nil, wantCount: 0},
 	}
@@ -220,7 +235,7 @@ func TestDiscoveryIndex_GetTools(t *testing.T) {
 	// Verify full definition is returned (not stripped)
 	t.Run("full definition preserved", func(t *testing.T) {
 		t.Parallel()
-		results := idx.GetTools([]string{"mcp.github.create_issue"})
+		results := idx.GetTools([]string{"github.create_issue"})
 		if len(results) != 1 {
 			t.Fatalf("expected 1 result, got %d", len(results))
 		}
@@ -234,7 +249,7 @@ func TestDiscoveryIndex_GetTools(t *testing.T) {
 		t.Parallel()
 		names := make([]string, 25)
 		for i := range names {
-			names[i] = "mcp.github.create_issue"
+			names[i] = "github.create_issue"
 		}
 		results := idx.GetTools(names)
 		if len(results) > maxGetToolsNames {
@@ -249,7 +264,7 @@ func TestDiscoveryIndex_Rebuild(t *testing.T) {
 	idx := NewDiscoveryIndex()
 
 	toolsV1 := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue", InputSchema: json.RawMessage(`{}`)},
+		{Name: "github.create_issue", Description: "Create issue", InputSchema: json.RawMessage(`{}`)},
 	}
 	idx.Index(toolsV1)
 
@@ -259,7 +274,7 @@ func TestDiscoveryIndex_Rebuild(t *testing.T) {
 	}
 
 	toolsV2 := []ToolDefinition{
-		{Name: "mcp.slack.send_message", Description: "Send message", InputSchema: json.RawMessage(`{}`)},
+		{Name: "slack.send_message", Description: "Send message", InputSchema: json.RawMessage(`{}`)},
 	}
 	idx.Index(toolsV2)
 
@@ -274,11 +289,29 @@ func TestDiscoveryIndex_Rebuild(t *testing.T) {
 	}
 }
 
+func TestDiscoveryIndex_EngineErrorFallbackCounter(t *testing.T) {
+	t.Parallel()
+
+	idx := NewDiscoveryIndex()
+	idx.SetEngine(failingSearchEngine{})
+	idx.Index([]ToolDefinition{
+		{Name: "github.create_issue", Description: "Create issue", InputSchema: json.RawMessage(`{}`)},
+	})
+
+	results, total := idx.Search("issue", "", 0, 10)
+	if total == 0 || len(results) == 0 {
+		t.Fatalf("expected substring fallback results, got total=%d len=%d", total, len(results))
+	}
+	if got := idx.EngineErrorFallbacks(); got != 1 {
+		t.Fatalf("expected engine fallback count 1, got %d", got)
+	}
+}
+
 func TestDiscoveryIndex_ApplyMetadata_OverridesCategory(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create a new issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create a new issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
@@ -291,7 +324,7 @@ func TestDiscoveryIndex_ApplyMetadata_OverridesCategory(t *testing.T) {
 
 	// Apply metadata overriding category.
 	idx.ApplyMetadata([]ToolMetadata{
-		{ToolName: "mcp.github.create_issue", Category: "issue-management"},
+		{ToolName: "github.create_issue", Category: "issue-management"},
 	})
 
 	results, _ = idx.Browse("github", 0, 10)
@@ -308,13 +341,13 @@ func TestDiscoveryIndex_ApplyMetadata_OverridesSummary(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create a new issue in a GitHub repository. Supports labels and assignees.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create a new issue in a GitHub repository. Supports labels and assignees.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
 
 	idx.ApplyMetadata([]ToolMetadata{
-		{ToolName: "mcp.github.create_issue", Summary: "Custom summary for issue creation"},
+		{ToolName: "github.create_issue", Summary: "Custom summary for issue creation"},
 	})
 
 	results, _ := idx.Search("issue", "", 0, 10)
@@ -330,14 +363,14 @@ func TestDiscoveryIndex_ApplyMetadata_TagsSearchable(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.send_message", Description: "Send message.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.send_message", Description: "Send message.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
 
 	idx.ApplyMetadata([]ToolMetadata{
-		{ToolName: "mcp.github.create_issue", Tags: []string{"vcs", "tracking"}},
+		{ToolName: "github.create_issue", Tags: []string{"vcs", "tracking"}},
 	})
 
 	// Search by tag keyword.
@@ -345,8 +378,8 @@ func TestDiscoveryIndex_ApplyMetadata_TagsSearchable(t *testing.T) {
 	if total != 1 {
 		t.Fatalf("expected 1 match for tag 'tracking', got %d", total)
 	}
-	if results[0].Name != "mcp.github.create_issue" {
-		t.Fatalf("expected mcp.github.create_issue, got %q", results[0].Name)
+	if results[0].Name != "github.create_issue" {
+		t.Fatalf("expected github.create_issue, got %q", results[0].Name)
 	}
 }
 
@@ -354,8 +387,8 @@ func TestDiscoveryIndex_ApplyMetadata_PriorityAffectsOrder(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.jira.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "jira.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
@@ -365,20 +398,20 @@ func TestDiscoveryIndex_ApplyMetadata_PriorityAffectsOrder(t *testing.T) {
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}
-	if results[0].Name != "mcp.github.create_issue" {
+	if results[0].Name != "github.create_issue" {
 		t.Fatalf("expected github first (alphabetical), got %q", results[0].Name)
 	}
 
 	// Apply higher priority to jira.
 	idx.ApplyMetadata([]ToolMetadata{
-		{ToolName: "mcp.jira.create_issue", Priority: 10},
+		{ToolName: "jira.create_issue", Priority: 10},
 	})
 
 	results, _ = idx.Search("issue", "", 0, 10)
 	if len(results) < 2 {
 		t.Fatalf("expected at least 2 results, got %d", len(results))
 	}
-	if results[0].Name != "mcp.jira.create_issue" {
+	if results[0].Name != "jira.create_issue" {
 		t.Fatalf("expected jira first with higher priority, got %q", results[0].Name)
 	}
 }
@@ -387,7 +420,7 @@ func TestDiscoveryIndex_ApplyMetadata_UnknownToolSkipped(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
@@ -408,13 +441,13 @@ func TestDiscoveryIndex_ApplyMetadata_Idempotent(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
 
 	metadata := []ToolMetadata{
-		{ToolName: "mcp.github.create_issue", Category: "custom", Tags: []string{"tag1"}, Priority: 5},
+		{ToolName: "github.create_issue", Category: "custom", Tags: []string{"tag1"}, Priority: 5},
 	}
 
 	idx.ApplyMetadata(metadata)
@@ -434,10 +467,10 @@ func TestDiscoveryIndex_Browse(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.github.list_issues", Description: "List issues.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.send_message", Description: "Send message.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.jira.create_ticket", Description: "Create ticket.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.list_issues", Description: "List issues.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.send_message", Description: "Send message.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "jira.create_ticket", Description: "Create ticket.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
@@ -452,8 +485,8 @@ func TestDiscoveryIndex_Browse(t *testing.T) {
 			t.Fatalf("expected 4 results, got %d", len(results))
 		}
 		// Should be alphabetically sorted.
-		if results[0].Name != "mcp.github.create_issue" {
-			t.Fatalf("expected first result mcp.github.create_issue, got %q", results[0].Name)
+		if results[0].Name != "github.create_issue" {
+			t.Fatalf("expected first result github.create_issue, got %q", results[0].Name)
 		}
 	})
 
@@ -520,9 +553,9 @@ func TestDiscoveryIndex_Stats(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.github.list_issues", Description: "List issues.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.send_message", Description: "Send message.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.list_issues", Description: "List issues.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.send_message", Description: "Send message.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
@@ -556,13 +589,13 @@ func TestDiscoveryIndex_MetadataPreservedAcrossRebuild(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
 
 	idx.ApplyMetadata([]ToolMetadata{
-		{ToolName: "mcp.github.create_issue", Category: "custom-cat", Tags: []string{"important"}, Priority: 5},
+		{ToolName: "github.create_issue", Category: "custom-cat", Tags: []string{"important"}, Priority: 5},
 	})
 
 	// Rebuild with same tools — metadata should survive.
@@ -578,8 +611,8 @@ func TestDiscoveryIndex_MetadataPreservedAcrossRebuild(t *testing.T) {
 	if total != 1 {
 		t.Fatalf("expected tag 'important' to survive rebuild, got %d matches", total)
 	}
-	if results[0].Name != "mcp.github.create_issue" {
-		t.Fatalf("expected mcp.github.create_issue, got %q", results[0].Name)
+	if results[0].Name != "github.create_issue" {
+		t.Fatalf("expected github.create_issue, got %q", results[0].Name)
 	}
 }
 
@@ -587,9 +620,9 @@ func TestDiscoveryIndex_SearchPagination(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
-		{Name: "mcp.github.list_issues", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
-		{Name: "mcp.github.close_issue", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
+		{Name: "github.create_issue", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
+		{Name: "github.list_issues", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
+		{Name: "github.close_issue", Description: "Manage issues.", InputSchema: json.RawMessage(`{}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
@@ -626,14 +659,14 @@ func TestDiscoveryIndex_ApplyMetadata_SummarySearchable(t *testing.T) {
 	t.Parallel()
 
 	tools := []ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create a new issue.", InputSchema: json.RawMessage(`{}`)},
+		{Name: "github.create_issue", Description: "Create a new issue.", InputSchema: json.RawMessage(`{}`)},
 	}
 	idx := NewDiscoveryIndex()
 	idx.Index(tools)
 
 	// Apply metadata with a summary containing a unique keyword.
 	idx.ApplyMetadata([]ToolMetadata{
-		{ToolName: "mcp.github.create_issue", Summary: "Open a bug tracker ticket"},
+		{ToolName: "github.create_issue", Summary: "Open a bug tracker ticket"},
 	})
 
 	// The unique keyword "tracker" should now be searchable.
@@ -641,8 +674,184 @@ func TestDiscoveryIndex_ApplyMetadata_SummarySearchable(t *testing.T) {
 	if total != 1 {
 		t.Fatalf("expected 1 match for 'tracker' in metadata summary, got %d", total)
 	}
-	if results[0].Name != "mcp.github.create_issue" {
-		t.Fatalf("expected mcp.github.create_issue, got %q", results[0].Name)
+	if results[0].Name != "github.create_issue" {
+		t.Fatalf("expected github.create_issue, got %q", results[0].Name)
+	}
+}
+
+// bm25Corpus is the shared corpus used by BM25 integration tests.
+var bm25Corpus = []ToolDefinition{
+	{Name: "k8s.list_pods", Description: "List all pods in a Kubernetes namespace.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "List Pods"}},
+	{Name: "k8s.get_deployment", Description: "Retrieve a Kubernetes deployment by name.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Get Deployment"}},
+	{Name: "k8s.delete_pod", Description: "Delete a pod from the cluster.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Delete Pod"}},
+	{Name: "docker.list_containers", Description: "List running Docker containers.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "List Containers"}},
+	{Name: "slack.send_message", Description: "Send a message to a Slack channel.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Send Message"}},
+	{Name: "github.create_issue", Description: "Create a new issue in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Create Issue"}},
+	{Name: "pg.run_query", Description: "Execute a SQL query against a PostgreSQL database.", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: &mcp.ToolAnnotation{Title: "Run Query"}},
+}
+
+func newBM25Index() *DiscoveryIndex {
+	idx := NewDiscoveryIndex()
+	idx.SetEngine(search.NewBM25Engine())
+	idx.Index(bm25Corpus)
+	return idx
+}
+
+func TestDiscoveryIndex_SearchWithBM25(t *testing.T) {
+	t.Parallel()
+	idx := newBM25Index()
+
+	tests := []struct {
+		name          string
+		query         string
+		wantFirstName string
+		wantMinCount  int
+	}{
+		{
+			name:          "kubernetes pods via synonym",
+			query:         "kubernetes pods",
+			wantFirstName: "k8s.list_pods",
+			wantMinCount:  1,
+		},
+		{
+			name:          "k8s pods direct",
+			query:         "k8s pods",
+			wantFirstName: "k8s.list_pods",
+			wantMinCount:  1,
+		},
+		{
+			name:          "exact tool name",
+			query:         "k8s.list_pods",
+			wantFirstName: "k8s.list_pods",
+			wantMinCount:  1,
+		},
+		{
+			name:          "kubernetes deployment",
+			query:         "kubernetes deployment",
+			wantFirstName: "k8s.get_deployment",
+			wantMinCount:  1,
+		},
+		{
+			name:          "slack message",
+			query:         "Slack",
+			wantFirstName: "slack.send_message",
+			wantMinCount:  1,
+		},
+		{
+			name:         "empty query",
+			query:        "",
+			wantMinCount: 0,
+		},
+		{
+			name:         "no match",
+			query:        "nonexistent",
+			wantMinCount: 0,
+		},
+		{
+			name:          "postgres synonym",
+			query:         "postgres query",
+			wantFirstName: "pg.run_query",
+			wantMinCount:  1,
+		},
+		{
+			name:          "remove synonym for delete",
+			query:         "remove pod",
+			wantFirstName: "k8s.delete_pod",
+			wantMinCount:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			results, total := idx.Search(tt.query, "", 0, 50)
+			if total < tt.wantMinCount {
+				t.Errorf("total = %d, want at least %d", total, tt.wantMinCount)
+			}
+			if tt.wantFirstName != "" && len(results) > 0 && results[0].Name != tt.wantFirstName {
+				t.Errorf("first result = %q, want %q", results[0].Name, tt.wantFirstName)
+			}
+			for _, r := range results {
+				if !r.DeferLoading {
+					t.Errorf("result %q should have DeferLoading=true", r.Name)
+				}
+				if string(r.InputSchema) != `{}` {
+					t.Errorf("result %q should have stripped schema", r.Name)
+				}
+			}
+		})
+	}
+}
+
+func TestDiscoveryIndex_SearchBM25CategoryFilter(t *testing.T) {
+	t.Parallel()
+	idx := newBM25Index()
+
+	// "list" matches k8s.list_pods and docker.list_containers.
+	// With category "k8s", only k8s results should appear.
+	results, total := idx.Search("list", "k8s", 0, 50)
+	if total == 0 {
+		t.Fatal("expected results for 'list' in k8s category")
+	}
+	for _, r := range results {
+		cat := categoryFromFederatedName(r.Name)
+		if cat != "k8s" {
+			t.Errorf("result %q has category %q, expected k8s", r.Name, cat)
+		}
+	}
+}
+
+func TestDiscoveryIndex_SearchBM25Pagination(t *testing.T) {
+	t.Parallel()
+	idx := newBM25Index()
+
+	// Search a broad term to get multiple results.
+	_, total := idx.Search("kubernetes", "", 0, 50)
+	if total < 2 {
+		t.Fatalf("need at least 2 results for pagination test, got %d", total)
+	}
+
+	// Page 1: limit=1.
+	page1, totalP1 := idx.Search("kubernetes", "", 0, 1)
+	if len(page1) != 1 {
+		t.Fatalf("page 1 expected 1 result, got %d", len(page1))
+	}
+	if totalP1 != total {
+		t.Fatalf("total should be consistent: page1=%d, full=%d", totalP1, total)
+	}
+
+	// Page 2: offset=1, limit=1.
+	page2, _ := idx.Search("kubernetes", "", 1, 1)
+	if len(page2) != 1 {
+		t.Fatalf("page 2 expected 1 result, got %d", len(page2))
+	}
+	if page1[0].Name == page2[0].Name {
+		t.Error("page 1 and page 2 returned the same result")
+	}
+}
+
+func TestDiscoveryIndex_EngineReindexOnMetadata(t *testing.T) {
+	t.Parallel()
+	idx := newBM25Index()
+
+	// "tracker" shouldn't match anything initially.
+	results, _ := idx.Search("tracker", "", 0, 10)
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for 'tracker' before metadata, got %d", len(results))
+	}
+
+	// Apply metadata with a summary containing "tracker".
+	idx.ApplyMetadata([]ToolMetadata{
+		{ToolName: "github.create_issue", Summary: "Open a bug tracker ticket"},
+	})
+
+	// Now "tracker" should find the tool via re-indexed engine.
+	results, total := idx.Search("tracker", "", 0, 10)
+	if total == 0 {
+		t.Fatal("expected results for 'tracker' after metadata summary update")
+	}
+	if results[0].Name != "github.create_issue" {
+		t.Errorf("expected github.create_issue, got %q", results[0].Name)
 	}
 }
 

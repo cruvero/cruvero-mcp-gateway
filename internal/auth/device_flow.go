@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
@@ -16,10 +17,11 @@ import (
 )
 
 const (
-	deviceFlowMaxBodyBytes = 4096
-	deviceGrantType        = "urn:ietf:params:oauth:grant-type:device_code"
-	contentTypeJSON        = "application/json"
-	headerContentType      = "Content-Type"
+	deviceFlowMaxBodyBytes        = 4096      // incoming client request bodies (form data)
+	deviceFlowMaxIdPResponseBytes = 1 << 20   // 1MB ceiling for IdP response bodies
+	deviceGrantType               = "urn:ietf:params:oauth:grant-type:device_code"
+	contentTypeJSON               = "application/json"
+	headerContentType             = "Content-Type"
 )
 
 var verifyPageTemplate = template.Must(template.New("verify").Parse(`<!DOCTYPE html>
@@ -87,13 +89,23 @@ func (h *DeviceFlowHandler) handleDeviceCode(w http.ResponseWriter, r *http.Requ
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, deviceFlowMaxBodyBytes))
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		writeDeviceError(w, http.StatusBadGateway, "server_error", "failed to read identity provider response")
 		return
 	}
 
+	h.logger.Debug("idp device code response", slog.Int("bytes", len(body)), slog.Int("status", resp.StatusCode))
+
+	if len(body) > deviceFlowMaxIdPResponseBytes {
+		h.logger.Error("idp response too large", slog.Int("bytes", len(body)),
+			slog.Int("max", deviceFlowMaxIdPResponseBytes))
+		writeDeviceError(w, http.StatusBadGateway, "server_error", "identity provider response too large")
+		return
+	}
+
 	w.Header().Set(headerContentType, contentTypeJSON)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
@@ -107,22 +119,37 @@ func (h *DeviceFlowHandler) handleDeviceToken(w http.ResponseWriter, r *http.Req
 	}
 
 	grantType := strings.TrimSpace(r.FormValue("grant_type"))
-	if grantType != deviceGrantType {
+
+	var form url.Values
+	switch grantType {
+	case deviceGrantType:
+		deviceCode := strings.TrimSpace(r.FormValue("device_code"))
+		if deviceCode == "" {
+			writeDeviceError(w, http.StatusBadRequest, "invalid_request", "device_code is required")
+			return
+		}
+		form = url.Values{
+			"client_id":   {h.cfg.DeviceFlowClientID},
+			"grant_type":  {deviceGrantType},
+			"device_code": {deviceCode},
+		}
+	case "refresh_token":
+		refreshToken := strings.TrimSpace(r.FormValue("refresh_token"))
+		if refreshToken == "" {
+			writeDeviceError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
+			return
+		}
+		form = url.Values{
+			"client_id":     {h.cfg.DeviceFlowClientID},
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {refreshToken},
+		}
+	default:
 		writeDeviceError(w, http.StatusBadRequest, "unsupported_grant_type",
-			fmt.Sprintf("grant_type must be %s", deviceGrantType))
+			fmt.Sprintf("grant_type must be %s or refresh_token", deviceGrantType))
 		return
 	}
 
-	deviceCode := strings.TrimSpace(r.FormValue("device_code"))
-	if deviceCode == "" {
-		writeDeviceError(w, http.StatusBadRequest, "invalid_request", "device_code is required")
-		return
-	}
-
-	form := url.Values{}
-	form.Set("client_id", h.cfg.DeviceFlowClientID)
-	form.Set("grant_type", deviceGrantType)
-	form.Set("device_code", deviceCode)
 	if strings.TrimSpace(h.cfg.DeviceFlowClientSecret) != "" {
 		form.Set("client_secret", h.cfg.DeviceFlowClientSecret)
 	}
@@ -135,9 +162,18 @@ func (h *DeviceFlowHandler) handleDeviceToken(w http.ResponseWriter, r *http.Req
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, deviceFlowMaxBodyBytes))
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		writeDeviceError(w, http.StatusBadGateway, "server_error", "failed to read identity provider response")
+		return
+	}
+
+	h.logger.Debug("idp token response", slog.Int("bytes", len(body)), slog.Int("status", resp.StatusCode))
+
+	if len(body) > deviceFlowMaxIdPResponseBytes {
+		h.logger.Error("idp response too large", slog.Int("bytes", len(body)),
+			slog.Int("max", deviceFlowMaxIdPResponseBytes))
+		writeDeviceError(w, http.StatusBadGateway, "server_error", "identity provider response too large")
 		return
 	}
 
@@ -149,25 +185,32 @@ func (h *DeviceFlowHandler) handleDeviceToken(w http.ResponseWriter, r *http.Req
 		}
 		if json.Unmarshal(body, &errResp) == nil {
 			switch errResp.Error {
-			case "authorization_pending":
+			case "authorization_pending", "slow_down":
 				statusCode = http.StatusTooEarly
-			case "slow_down":
-				statusCode = http.StatusTooEarly
+			case "expired_token":
+				statusCode = http.StatusGone
+			case "access_denied":
+				statusCode = http.StatusForbidden
 			}
 		}
 	}
 
 	if statusCode == http.StatusOK {
-		h.logger.Info("device flow token issued")
+		h.logger.Info("device flow token issued", slog.String("grant_type", grantType))
 	}
 
 	w.Header().Set(headerContentType, contentTypeJSON)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(statusCode)
 	_, _ = w.Write(body)
 }
 
 func (h *DeviceFlowHandler) handleVerify(w http.ResponseWriter, r *http.Request) {
 	userCode := strings.TrimSpace(r.URL.Query().Get("user_code"))
+	if userCode == "" {
+		writeDeviceError(w, http.StatusBadRequest, "invalid_request", "user_code is required")
+		return
+	}
 	verificationURI := strings.TrimSpace(r.URL.Query().Get("verification_uri"))
 
 	data := struct {

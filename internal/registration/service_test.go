@@ -771,6 +771,10 @@ func (m *mockAuditStore) Query(ctx context.Context, filter types.AuditFilter) ([
 	return nil, nil
 }
 
+func (m *mockAuditStore) Count(_ context.Context, _ types.AuditFilter) (int, error) {
+	return 0, nil
+}
+
 // mockBroadcaster records published events for testing.
 type mockBroadcaster struct {
 	mu       sync.Mutex
@@ -912,4 +916,246 @@ func TestServiceNilBroadcasterSafety(t *testing.T) {
 	if _, err := svc.Register(context.Background(), validMTLSIdentity(), validRegistrationRequest()); err != nil {
 		t.Fatalf("register with nil broadcaster: %v", err)
 	}
+}
+
+// mockClassificationStore implements store.ToolClassificationStore for registration tests.
+type mockClassificationStore struct {
+	mu       sync.Mutex
+	getFn    func(ctx context.Context, toolName string) (*types.ToolClassification, error)
+	upsertFn func(ctx context.Context, c *types.ToolClassification) error
+	upserted []*types.ToolClassification
+}
+
+func (m *mockClassificationStore) Get(ctx context.Context, toolName string) (*types.ToolClassification, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, toolName)
+	}
+	return nil, nil
+}
+
+func (m *mockClassificationStore) GetAll(_ context.Context) ([]types.ToolClassification, error) {
+	return nil, nil
+}
+
+func (m *mockClassificationStore) GetByRiskLevel(_ context.Context, _ types.RiskLevel) ([]types.ToolClassification, error) {
+	return nil, nil
+}
+
+func (m *mockClassificationStore) Upsert(ctx context.Context, c *types.ToolClassification) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.upsertFn != nil {
+		return m.upsertFn(ctx, c)
+	}
+	m.upserted = append(m.upserted, c)
+	return nil
+}
+
+func (m *mockClassificationStore) Search(_ context.Context, _ types.ToolFilter) ([]types.ToolClassification, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockClassificationStore) Delete(_ context.Context, _ string) error { return nil }
+func (m *mockClassificationStore) DeleteNotIn(_ context.Context, _ []string) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockClassificationStore) upsertedTools() []*types.ToolClassification {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*types.ToolClassification, len(m.upserted))
+	copy(out, m.upserted)
+	return out
+}
+
+func TestSyncClassifications(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		servers        []types.ServerRecord
+		classStore     *mockClassificationStore
+		nilStore       bool
+		wantUpserts    int
+		wantToolNames  []string
+	}{
+		{
+			name: "multiple servers with tools",
+			servers: []types.ServerRecord{
+				{SPIFFEID: "spiffe://org/svc-a", Capabilities: types.Capability{Tools: []string{"tool.read", "tool.write"}}},
+				{SPIFFEID: "spiffe://org/svc-b", Capabilities: types.Capability{Tools: []string{"tool.exec"}}},
+			},
+			classStore:    &mockClassificationStore{},
+			wantUpserts:   3,
+			wantToolNames: []string{"tool.read", "tool.write", "tool.exec"},
+		},
+		{
+			name: "manual classification preserved",
+			servers: []types.ServerRecord{
+				{SPIFFEID: "spiffe://org/svc-a", Capabilities: types.Capability{Tools: []string{"tool.manual", "tool.auto"}}},
+			},
+			classStore: &mockClassificationStore{
+				getFn: func(_ context.Context, toolName string) (*types.ToolClassification, error) {
+					if toolName == "tool.manual" {
+						return &types.ToolClassification{
+							ToolName:       "tool.manual",
+							AutoClassified: false,
+						}, nil
+					}
+					return nil, nil
+				},
+			},
+			wantUpserts:   1,
+			wantToolNames: []string{"tool.auto"},
+		},
+		{
+			name:        "empty capabilities produce no upserts",
+			servers:     []types.ServerRecord{{SPIFFEID: "spiffe://org/empty", Capabilities: types.Capability{}}},
+			classStore:  &mockClassificationStore{},
+			wantUpserts: 0,
+		},
+		{
+			name:        "nil classification store does not panic",
+			servers:     []types.ServerRecord{{SPIFFEID: "spiffe://org/svc", Capabilities: types.Capability{Tools: []string{"tool.x"}}}},
+			nilStore:    true,
+			wantUpserts: 0,
+		},
+		{
+			name:        "nil server list does not panic",
+			servers:     nil,
+			classStore:  &mockClassificationStore{},
+			wantUpserts: 0,
+		},
+		{
+			name:        "empty server list does not panic",
+			servers:     []types.ServerRecord{},
+			classStore:  &mockClassificationStore{},
+			wantUpserts: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := NewService(&mockServerStore{}, &mockAuditStore{}, &config.Config{}, testRegistrationLogger())
+			if !tt.nilStore {
+				svc.SetClassificationStore(tt.classStore)
+			}
+
+			svc.SyncClassifications(context.Background(), tt.servers)
+
+			if tt.nilStore {
+				return
+			}
+
+			got := tt.classStore.upsertedTools()
+			if len(got) != tt.wantUpserts {
+				t.Fatalf("expected %d upserts, got %d", tt.wantUpserts, len(got))
+			}
+
+			if len(tt.wantToolNames) > 0 {
+				gotNames := make(map[string]bool, len(got))
+				for _, tc := range got {
+					gotNames[tc.ToolName] = true
+				}
+				for _, want := range tt.wantToolNames {
+					if !gotNames[want] {
+						t.Errorf("expected tool %q to be upserted", want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestAutoClassifyPublishesClassificationBroadcast(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+	classStore := &mockClassificationStore{}
+	bc := &mockBroadcaster{}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, testRegistrationLogger())
+	svc.SetClassificationStore(classStore)
+	svc.SetBroadcaster(bc)
+
+	_, err := svc.Register(context.Background(), validMTLSIdentity(), RegistrationRequest{
+		ServiceName: "svc-alpha",
+		Version:     "1.0.0",
+		Listen:      ListenConfig{Host: "svc-alpha.default.svc", Port: 8443, Protocol: "https"},
+		Capabilities: types.Capability{
+			Tools: []string{"tool.read", "tool.exec"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	// We expect classification broadcasts for each auto-classified tool.
+	classificationEvents := 0
+	for _, evt := range bc.events {
+		if evt.subject == SubjectClassificationUpdated {
+			classificationEvents++
+			var decoded ClassificationEvent
+			if err := json.Unmarshal(evt.data, &decoded); err != nil {
+				t.Fatalf("unmarshal classification event: %v", err)
+			}
+			if decoded.ToolName == "" {
+				t.Fatal("expected non-empty tool name in classification event")
+			}
+		}
+	}
+	if classificationEvents != 2 {
+		t.Fatalf("expected 2 classification broadcast events, got %d", classificationEvents)
+	}
+}
+
+func TestAutoClassifyNilBroadcasterSafety(t *testing.T) {
+	t.Parallel()
+
+	serverStore := &mockServerStore{
+		getBySPIFFEIDFn: func(ctx context.Context, spiffeID string) (*types.ServerRecord, error) {
+			return nil, sql.ErrNoRows
+		},
+	}
+	classStore := &mockClassificationStore{}
+
+	svc := NewService(serverStore, &mockAuditStore{}, &config.Config{}, nil)
+	svc.SetClassificationStore(classStore)
+	// No broadcaster set — should not panic.
+
+	_, err := svc.Register(context.Background(), validMTLSIdentity(), RegistrationRequest{
+		ServiceName: "svc-alpha",
+		Version:     "1.0.0",
+		Listen:      ListenConfig{Host: "svc-alpha.default.svc", Port: 8443, Protocol: "https"},
+		Capabilities: types.Capability{
+			Tools: []string{"tool.safe"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("register with nil broadcaster and classification: %v", err)
+	}
+
+	upserted := classStore.upsertedTools()
+	if len(upserted) != 1 {
+		t.Fatalf("expected 1 upsert, got %d", len(upserted))
+	}
+}
+
+func TestSyncClassifications_NilService(t *testing.T) {
+	t.Parallel()
+
+	var svc *Service
+	// Should not panic.
+	svc.SyncClassifications(context.Background(), []types.ServerRecord{
+		{SPIFFEID: "spiffe://org/svc", Capabilities: types.Capability{Tools: []string{"tool.x"}}},
+	})
 }

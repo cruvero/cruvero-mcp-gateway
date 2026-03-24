@@ -20,7 +20,10 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/cruvero/mcp-gateway/internal/config"
+	"github.com/cruvero/mcp-gateway/internal/identity"
+	"github.com/cruvero/mcp-gateway/internal/orchestrator"
 	"github.com/cruvero/mcp-gateway/internal/registration"
+	"github.com/cruvero/mcp-gateway/internal/search"
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
@@ -36,12 +39,18 @@ type ProxyServer struct {
 	tlsConfig      *tls.Config
 	backendTimeout time.Duration
 	auditStore     store.AuditStore
+	userStore      store.UserStore
 
 	mu                sync.Mutex
+	syncMu            sync.Mutex // guards syncMCPRegistry to prevent concurrent SetTools races
+	lastSyncTime      time.Time
 	router            *Router
 	mcpServer         *server.MCPServer
 	streamableHandler *server.StreamableHTTPServer
 	discoveryIndex    *DiscoveryIndex
+	searchCleanup     func()
+	embedderType      string
+	orchestrator      *orchestrator.Orchestrator
 }
 
 // NewProxyServer creates a new proxy server.
@@ -72,6 +81,12 @@ func NewProxyServer(
 
 	if cfg != nil && cfg.ProgressiveDiscovery {
 		ps.discoveryIndex = NewDiscoveryIndex()
+		engine, cleanup, eType := buildSearchEngine(cfg, logger)
+		if engine != nil {
+			ps.discoveryIndex.SetEngine(engine)
+		}
+		ps.searchCleanup = cleanup
+		ps.embedderType = eType
 	}
 
 	return ps
@@ -83,6 +98,22 @@ func (p *ProxyServer) SetAuditStore(auditStore store.AuditStore) {
 		return
 	}
 	p.auditStore = auditStore
+}
+
+// SetUserStore wires a user store for per-user tool access enforcement.
+func (p *ProxyServer) SetUserStore(userStore store.UserStore) {
+	if p == nil {
+		return
+	}
+	p.userStore = userStore
+}
+
+// SetOrchestrator wires the orchestration engine for the cruvero.orchestrate meta-tool.
+func (p *ProxyServer) SetOrchestrator(o *orchestrator.Orchestrator) {
+	if p == nil {
+		return
+	}
+	p.orchestrator = o
 }
 
 // Router returns the proxy's underlying router for configuration wiring.
@@ -101,12 +132,48 @@ func (p *ProxyServer) ApplyToolMetadata(metadata []ToolMetadata) {
 	p.discoveryIndex.ApplyMetadata(metadata)
 }
 
+// InvalidateToolCache clears the entire tool definition cache and resets the
+// sync debounce so the next request triggers a fresh registry sync.
+func (p *ProxyServer) InvalidateToolCache() {
+	if p == nil || p.toolCache == nil {
+		return
+	}
+	p.toolCache.Invalidate()
+	p.resetSyncDebounce()
+}
+
+// InvalidateToolCacheForServer removes cached tool definitions for a specific
+// server and resets the sync debounce so changes take effect immediately.
+func (p *ProxyServer) InvalidateToolCacheForServer(serverID string) {
+	if p == nil || p.toolCache == nil {
+		return
+	}
+	p.toolCache.InvalidateServer(serverID)
+	p.resetSyncDebounce()
+}
+
+// resetSyncDebounce clears lastSyncTime so the next syncMCPRegistry call
+// performs a full sync instead of being debounced.
+func (p *ProxyServer) resetSyncDebounce() {
+	p.syncMu.Lock()
+	p.lastSyncTime = time.Time{}
+	p.syncMu.Unlock()
+}
+
 // DiscoveryIndex returns the proxy's discovery index for admin wiring.
 func (p *ProxyServer) DiscoveryIndex() *DiscoveryIndex {
 	if p == nil {
 		return nil
 	}
 	return p.discoveryIndex
+}
+
+// EmbedderType returns the actual embedder type in use (reflects fallback).
+func (p *ProxyServer) EmbedderType() string {
+	if p == nil {
+		return "none"
+	}
+	return p.embedderType
 }
 
 // SetupMCP initializes the mcp-go server and streamable HTTP transport.
@@ -150,6 +217,7 @@ func (p *ProxyServer) SetupMCP() error {
 		"0.1.0",
 		server.WithHooks(hooks),
 		server.WithToolCapabilities(true),
+		server.WithToolFilter(p.toolFilterFunc),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
 		server.WithRecovery(),
@@ -237,11 +305,18 @@ func rewriteLegacyToolCallName(body []byte, serverHint string) ([]byte, string, 
 
 	nameRaw, _ := params["name"].(string)
 	name := strings.TrimSpace(nameRaw)
-	if name == "" || strings.HasPrefix(name, "mcp.") {
+	if name == "" {
 		return body, "", "", false, nil
 	}
 
-	federated := "mcp." + server + "." + name
+	displayName := strings.TrimPrefix(server, "mcp-")
+
+	// Already a federated name (new or legacy format) — skip rewrite.
+	if strings.HasPrefix(name, displayName+".") || strings.HasPrefix(name, "mcp.") {
+		return body, "", "", false, nil
+	}
+
+	federated := displayName + "." + name
 	params["name"] = federated
 
 	rewritten, err := json.Marshal(envelope)
@@ -299,7 +374,18 @@ func (p *ProxyServer) getOrCreateClient(record types.ServerRecord) *BackendClien
 	return client
 }
 
+// registrySyncDebounce is the minimum interval between full registry syncs.
+const registrySyncDebounce = defaultToolCacheTTL
+
 func (p *ProxyServer) syncMCPRegistry(ctx context.Context) error {
+	p.syncMu.Lock()
+	defer p.syncMu.Unlock()
+
+	if time.Since(p.lastSyncTime) < registrySyncDebounce {
+		return nil
+	}
+	p.lastSyncTime = time.Now()
+
 	if err := p.syncMCPTools(ctx); err != nil {
 		return fmt.Errorf("sync tools: %w", err)
 	}
@@ -323,7 +409,15 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 		p.discoveryIndex.Index(tools)
 	}
 
-	serverTools := make([]server.ServerTool, 0, len(tools))
+	toolCap := len(tools) + 1
+	if p.config.ProgressiveDiscovery {
+		toolCap += 2
+	}
+	if p.orchestrator != nil {
+		toolCap++
+	}
+
+	serverTools := make([]server.ServerTool, 0, toolCap)
 	for _, tool := range tools {
 		serverTools = append(serverTools, p.buildServerTool(tool))
 	}
@@ -331,20 +425,17 @@ func (p *ProxyServer) syncMCPTools(ctx context.Context) error {
 	if p.config.ProgressiveDiscovery {
 		serverTools = append(serverTools, p.buildSearchToolsMeta()...)
 	}
+	if p.orchestrator != nil {
+		serverTools = append(serverTools, p.buildOrchestrateToolMeta())
+	}
 
+	serverTools = append(serverTools, buildRequestAccessTool())
 	p.mcpServer.SetTools(serverTools...)
 	return nil
 }
 
 func (p *ProxyServer) buildServerTool(tool ToolDefinition) server.ServerTool {
 	mcpTool := convertToMCPTool(tool)
-
-	if p.config.ProgressiveDiscovery {
-		mcpTool.RawInputSchema = json.RawMessage(`{}`)
-		mcpTool.RawOutputSchema = nil
-		mcpTool.DeferLoading = true
-		mcpTool.Description = extractSummary(tool.Description)
-	}
 
 	return server.ServerTool{
 		Tool:    mcpTool,
@@ -377,6 +468,13 @@ func convertToMCPTool(tool ToolDefinition) mcp.Tool {
 
 func (p *ProxyServer) makeToolHandler(toolName string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if p.userStore != nil {
+			if denied, msg := p.checkToolPermission(ctx, toolName); denied {
+				p.auditToolCall(toolName, "permission denied", true)
+				return mcp.NewToolResultError(msg), nil
+			}
+		}
+
 		args := req.GetArguments()
 		result, routeErr := p.router.Route(ctx, toolName, args)
 		if routeErr != nil {
@@ -408,6 +506,76 @@ func (p *ProxyServer) makeToolHandler(toolName string) func(context.Context, mcp
 			IsError: result.IsError,
 		}, nil
 	}
+}
+
+// checkToolPermission evaluates whether the current caller is allowed to call
+// the named tool. Returns (denied=true, message) when the call should be blocked.
+// Non-OIDC callers are never denied by this check (API key / mTLS unaffected).
+func (p *ProxyServer) checkToolPermission(ctx context.Context, toolName string) (bool, string) {
+	id, ok := identity.FromContext(ctx)
+	if !ok || id == nil || id.Type != identity.IdentityOIDC {
+		return false, ""
+	}
+
+	deny := func(reason, msg string) (bool, string) {
+		p.auditToolDenied(ctx, toolName, id.ID, id.Metadata["email"], reason)
+		return true, msg
+	}
+
+	user, err := p.userStore.GetByOIDCSub(ctx, id.ID)
+	if err != nil {
+		p.logger.Error("user permission check failed",
+			slog.String("oidc_sub", id.ID),
+			slog.String("tool", toolName),
+			slog.String("error", err.Error()),
+		)
+		return deny("lookup_error", "Permission check failed. Contact an administrator.")
+	}
+	if user == nil {
+		return deny("unregistered", "Your account is not registered. Contact an administrator.")
+	}
+
+	switch user.Role {
+	case types.RoleAdmin:
+		return false, ""
+	case types.RoleBlocked:
+		return deny("blocked", "Your account has been blocked. Contact an administrator.")
+	case types.RoleViewer:
+		return deny("read_only", "Your account has read-only access and cannot call tools.")
+	case types.RoleUser:
+		has, err := p.userStore.HasToolPermission(ctx, user.ID, toolName)
+		if err != nil {
+			p.logger.Error("tool permission lookup failed",
+				slog.String("user_id", user.ID),
+				slog.String("tool", toolName),
+				slog.String("error", err.Error()),
+			)
+			return deny("lookup_error", "Permission check failed. Contact an administrator.")
+		}
+		if !has {
+			return deny("no_permission", fmt.Sprintf("You do not have permission to use %s. Contact an administrator to request access.", toolName))
+		}
+		return false, ""
+	default:
+		return deny("unknown_role", "Unknown account role. Contact an administrator.")
+	}
+}
+
+func (p *ProxyServer) auditToolDenied(ctx context.Context, toolName, oidcSub, email, reason string) {
+	if p.auditStore == nil {
+		return
+	}
+	_ = p.auditStore.Log(ctx, &types.AuditEntry{
+		EventType:  "user.tool_denied",
+		ClientID:   oidcSub,
+		ServerName: toolName,
+		Details: map[string]any{
+			"tool":     toolName,
+			"oidc_sub": oidcSub,
+			"email":    email,
+			"reason":   reason,
+		},
+	})
 }
 
 func convertContentBlocks(blocks []ContentBlock) []mcp.Content {
@@ -454,6 +622,83 @@ func (p *ProxyServer) buildSearchToolsMeta() []server.ServerTool {
 	}
 }
 
+func (p *ProxyServer) buildOrchestrateToolMeta() server.ServerTool {
+	orchestrateTool := mcp.Tool{
+		Name:        "cruvero.orchestrate",
+		Description: "High-level safe intent execution. Gateway handles discovery, activation, RBAC, policy, audit, and Cruvero delegation. Supports plan/execute modes.",
+		RawInputSchema: json.RawMessage(`{"type":"object","properties":{"intent":{"type":"string","description":"Natural language goal"},"mode":{"type":"string","enum":["plan","execute"],"default":"execute","description":"plan returns the execution plan; execute runs it"},"safety_level":{"type":"string","enum":["strict","read_only"],"default":"strict","description":"strict allows only read_only/unknown tools; read_only excludes destructive"},"domain":{"type":"string","description":"Optional domain filter for tool discovery"}},"required":["intent"]}`),
+	}
+	return server.ServerTool{
+		Tool:    orchestrateTool,
+		Handler: p.handleOrchestrate,
+	}
+}
+
+func (p *ProxyServer) handleOrchestrate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if p.userStore != nil {
+		if denied, msg := p.checkToolPermission(ctx, "cruvero.orchestrate"); denied {
+			return mcp.NewToolResultError(msg), nil
+		}
+	}
+
+	result, isError := p.orchestrator.Handle(ctx, req.GetArguments())
+	if isError {
+		return mcp.NewToolResultError(result), nil
+	}
+	return mcp.NewToolResultText(result), nil
+}
+
+// ExecuteToolCall runs a tool through the full handler pipeline: RBAC permission
+// check, backend routing, and audit logging. This is the same sequence used by
+// makeToolHandler for regular MCP tool calls.
+func (p *ProxyServer) ExecuteToolCall(ctx context.Context, toolName string, args map[string]any) (string, bool, error) {
+	if p.userStore != nil {
+		if denied, msg := p.checkToolPermission(ctx, toolName); denied {
+			p.auditToolCall(toolName, "permission denied", true)
+			return msg, true, nil
+		}
+	}
+
+	result, routeErr := p.router.Route(ctx, toolName, args)
+	if routeErr != nil {
+		var rateLimitErr *ServerRateLimitError
+		if errors.As(routeErr, &rateLimitErr) {
+			p.auditToolCall(toolName, "server rate limited", true)
+			var msg string
+			if rateLimitErr.RetryAfter == 0 {
+				msg = fmt.Sprintf("Server %s is blocked by configuration and is not accepting requests. Contact an administrator to re-enable this server.",
+					rateLimitErr.ServerName)
+			} else {
+				msg = fmt.Sprintf("Server %s is rate limited. Retry after %s.",
+					rateLimitErr.ServerName, rateLimitErr.RetryAfter)
+			}
+			return msg, true, nil
+		}
+		p.auditToolCall(toolName, "", true)
+		return "", false, fmt.Errorf("route tool %s: %w", toolName, routeErr)
+	}
+
+	text := ""
+	if len(result.Content) > 0 {
+		text = result.Content[0].Text
+	}
+	preview := truncate(text, 1024)
+	p.auditToolCall(toolName, preview, result.IsError)
+	return text, result.IsError, nil
+}
+
+// ActivateToolsByName looks up tool definitions by name from the discovery index
+// and activates them in the caller's MCP session.
+func (p *ProxyServer) ActivateToolsByName(ctx context.Context, names []string) {
+	if p == nil || p.discoveryIndex == nil || len(names) == 0 {
+		return
+	}
+	tools := p.discoveryIndex.GetTools(names)
+	if len(tools) > 0 {
+		p.activateSessionTools(ctx, tools)
+	}
+}
+
 func (p *ProxyServer) handleSearchTools(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, queryErr := req.RequireString("query")
@@ -485,7 +730,7 @@ func (p *ProxyServer) handleSearchTools(_ context.Context, req mcp.CallToolReque
 	return mcp.NewToolResultText(string(bytes)), nil
 }
 
-func (p *ProxyServer) handleGetToolSchema(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (p *ProxyServer) handleGetToolSchema(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	names, err := parseToolNames(req)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -496,7 +741,70 @@ func (p *ProxyServer) handleGetToolSchema(_ context.Context, req mcp.CallToolReq
 	if marshalErr != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marshal tool definitions: %v", marshalErr)), nil
 	}
+
+	// Activate resolved tools in the caller's session so the client can invoke them natively.
+	if p.config.ProgressiveDiscovery && len(tools) > 0 {
+		p.activateSessionTools(ctx, tools)
+	}
+
 	return mcp.NewToolResultText(string(bytes)), nil
+}
+
+// maxActivatedSessionTools caps the number of tools that can be dynamically
+// activated in a single MCP session to bound resource usage.
+const maxActivatedSessionTools = 50
+
+// activateSessionTools registers the given tool definitions into the caller's
+// MCP session so the client receives a tools/list_changed notification and can
+// invoke them natively. Activation is best-effort: failures are logged but
+// never propagated.
+func (p *ProxyServer) activateSessionTools(ctx context.Context, tools []ToolDefinition) {
+	session := server.ClientSessionFromContext(ctx)
+	if session == nil {
+		return
+	}
+
+	sessionWithTools, ok := session.(server.SessionWithTools)
+	if !ok {
+		return
+	}
+
+	existing := sessionWithTools.GetSessionTools()
+	allowed := maxActivatedSessionTools - len(existing)
+	if allowed <= 0 {
+		p.logger.Info("session tool activation limit reached",
+			slog.String("session_id", session.SessionID()),
+			slog.Int("limit", maxActivatedSessionTools),
+		)
+		return
+	}
+
+	newTools := make([]server.ServerTool, 0, len(tools))
+	for _, td := range tools {
+		if _, already := existing[td.Name]; already {
+			continue
+		}
+		newTools = append(newTools, p.buildServerTool(td))
+	}
+	if len(newTools) == 0 {
+		return
+	}
+	if len(newTools) > allowed {
+		p.logger.Info("trimming session tool activations to enforce limit",
+			slog.String("session_id", session.SessionID()),
+			slog.Int("requested", len(newTools)),
+			slog.Int("allowed", allowed),
+			slog.Int("limit", maxActivatedSessionTools),
+		)
+		newTools = newTools[:allowed]
+	}
+
+	if err := p.mcpServer.AddSessionTools(session.SessionID(), newTools...); err != nil {
+		p.logger.Warn("failed to activate session tools",
+			slog.String("session_id", session.SessionID()),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 func parseToolNames(req mcp.CallToolRequest) ([]string, error) {
@@ -521,6 +829,45 @@ func parseToolNames(req mcp.CallToolRequest) ([]string, error) {
 		return nil, fmt.Errorf("names must contain at least one string")
 	}
 	return names, nil
+}
+
+// CloseSearch releases resources held by the search engine (e.g. ONNX model).
+func (p *ProxyServer) CloseSearch() {
+	if p != nil && p.searchCleanup != nil {
+		p.searchCleanup()
+	}
+}
+
+// buildSearchEngine creates the appropriate search engine based on config.
+// Returns (nil, noop, "none") for "substring" engine (uses built-in DiscoveryIndex matching).
+// The third return value is the actual embedder type (reflects fallback).
+// The caller must call the returned cleanup function when done.
+func buildSearchEngine(cfg *config.Config, logger *slog.Logger) (search.Engine, func(), string) {
+	noop := func() {}
+
+	switch cfg.SearchEngine {
+	case "vector":
+		embedder, err := search.NewOnnxEmbedder(cfg.OnnxRuntimePath, cfg.OnnxModelPath, cfg.TokenizerPath)
+		if err != nil {
+			logger.Warn("onnx embedder init failed, falling back to bm25",
+				slog.String("error", err.Error()))
+			return search.NewBM25Engine(), noop, "none"
+		}
+		return search.NewVectorEngine(embedder), func() { _ = embedder.Close() }, "onnx-in-process"
+	case "hybrid":
+		bm25 := search.NewBM25Engine()
+		embedder, err := search.NewOnnxEmbedder(cfg.OnnxRuntimePath, cfg.OnnxModelPath, cfg.TokenizerPath)
+		if err != nil {
+			logger.Warn("onnx embedder init failed, falling back to bm25",
+				slog.String("error", err.Error()))
+			return bm25, noop, "none"
+		}
+		return search.NewHybridEngine(bm25, search.NewVectorEngine(embedder)), func() { _ = embedder.Close() }, "onnx-in-process"
+	case "substring":
+		return nil, noop, "none"
+	default:
+		return search.NewBM25Engine(), noop, "none"
+	}
 }
 
 func (p *ProxyServer) syncMCPResources(ctx context.Context) error {

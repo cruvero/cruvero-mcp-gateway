@@ -65,4 +65,13 @@ spec:
           annotations:
             summary: MCP Gateway is disconnected from NATS
             description: MCP Gateway has reported a disconnected NATS state for more than 2 minutes.
+
+        - alert: MCPGatewayNoToolsRegistered
+          expr: mcpgw_active_tools == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: MCP Gateway has no tools registered
+            description: The gateway has had zero tools in its capability index for 5 minutes.
 {{- end }}

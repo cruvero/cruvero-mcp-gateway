@@ -4,11 +4,11 @@
 
 - Start here. Read `README.md` for the repository map, environment variables, and dependency list.
 - For implementation and validation tasks, verify `.devcontainer/` setup first so local checks run in the same toolchain used by CI/deployment.
-- Each `internal/` package has its own README with key types, files, and usage examples.
+- Use the package source and tests as the package map; the repo does not maintain per-package README files.
 - Do not load the entire repo. Scope reads to the packages and files relevant to your current task.
-- Phase documentation lives in `docs/phases/`. Start with `docs/phases/INDEX.md` for the plan overview.
+- Historical phase-planning docs are not present in this repo. Start with `README.md` and `docs/OVERVIEW.md` instead.
 - Architecture reference: `docs/OVERVIEW.md`.
-- `docs/MCP-SERVER-FLEET-GATEWAY-INTEGRATION.md` is fleet-migration reference material and is not required for core gateway phase implementation (Phases 1-9) unless the task explicitly targets fleet migration work.
+- `docs/integration-docs/MCP-SERVER-FLEET-GATEWAY-INTEGRATION.md` is fleet-migration reference material and is not required for core gateway work unless the task explicitly targets fleet migration.
 - GitOps deployment manifests live in `deploy/argocd/` (AppProject + ApplicationSet).
 
 ## Project Structure
@@ -30,7 +30,7 @@ internal/      14 packages:
                - testutil     Test helpers, fixtures, mock builders
                - types        Shared types (ServerRecord, Capability, ToolEntry, etc.)
 migrations/    SQL migrations (0001_description.up.sql / .down.sql)
-docs/          Phase plans, architecture overview
+docs/          Architecture reference, integration docs, audit, and notes
 .devcontainer/ Reproducible local dev/test environment
 charts/        Helm chart (charts/mcpgateway/)
 deploy/        GitOps manifests (deploy/argocd/)
@@ -69,7 +69,7 @@ scripts/       CI/CD helpers, coverage checks
 
 ### Commits
 
-- Branch from `dev`, open PRs against `main`.
+- Branch from `dev`, open PRs against `dev`.
 - Conventional commit format: `feat(package): description`, `fix(package): description`, `test(package): description`.
 - One concern per commit -- separate refactors, features, and test additions.
 - Never include Co-authored-by trailers for AI or LLM assistants.

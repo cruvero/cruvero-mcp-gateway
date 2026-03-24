@@ -157,6 +157,7 @@ type AuditEntry struct {
 	ID         string         `json:"id"`
 	EventType  string         `json:"event_type"`
 	ClientID   string         `json:"client_id"`
+	Username   string         `json:"username"`
 	ServerName string         `json:"server_name"`
 	Details    map[string]any `json:"details"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -208,13 +209,80 @@ type ToolClassification struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// ToolFilter defines optional filtering for tool classification queries.
+type ToolFilter struct {
+	Query     string    `json:"query"`
+	RiskLevel RiskLevel `json:"risk_level"`
+	Limit     int       `json:"limit"`
+	Offset    int       `json:"offset"`
+}
+
+// UserRole represents the access level of a gateway user.
+type UserRole string
+
+const (
+	// RoleAdmin grants unrestricted tool access and dashboard management.
+	RoleAdmin UserRole = "admin"
+	// RoleUser grants tool access limited to explicitly allowed tools.
+	RoleUser UserRole = "user"
+	// RoleViewer grants read-only visibility of allowed tools with no call access.
+	RoleViewer UserRole = "viewer"
+	// RoleBlocked denies all tool access and dashboard visibility.
+	RoleBlocked UserRole = "blocked"
+)
+
+// String returns the string value of the user role.
+func (r UserRole) String() string {
+	return string(r)
+}
+
+// IsValid reports whether the user role is a recognized value.
+func (r UserRole) IsValid() bool {
+	switch r {
+	case RoleAdmin, RoleUser, RoleViewer, RoleBlocked:
+		return true
+	}
+	return false
+}
+
+// User is a persisted gateway user record linked to an OIDC identity.
+type User struct {
+	ID          string    `json:"id"`
+	OIDCSub     string    `json:"oidc_sub"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	Role        UserRole  `json:"role"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// UserToolPermission is a persisted tool access grant for a user.
+type UserToolPermission struct {
+	UserID    string    `json:"user_id"`
+	ToolName  string    `json:"tool_name"`
+	GrantedBy string    `json:"granted_by"`
+	GrantedAt time.Time `json:"granted_at"`
+}
+
+// UserFilter defines optional filtering for user listing queries.
+type UserFilter struct {
+	Query  string   `json:"query"`
+	Role   UserRole `json:"role"`
+	Limit  int      `json:"limit"`
+	Offset int      `json:"offset"`
+}
+
 // AuditFilter defines optional filtering for audit log queries.
 type AuditFilter struct {
-	EventType  string     `json:"event_type"`
-	ClientID   string     `json:"client_id"`
-	ServerName string     `json:"server_name"`
-	Since      *time.Time `json:"since"`
-	Until      *time.Time `json:"until"`
-	Limit      int        `json:"limit"`
-	Offset     int        `json:"offset"`
+	EventType     string     `json:"event_type"`
+	ClientID      string     `json:"client_id"`
+	Username      string     `json:"username"`
+	ServerName    string     `json:"server_name"`
+	DetailsSearch string     `json:"details_search"`
+	SortBy        string     `json:"sort_by"`
+	SortDir       string     `json:"sort_dir"`
+	Since         *time.Time `json:"since"`
+	Until         *time.Time `json:"until"`
+	Limit         int        `json:"limit"`
+	Offset        int        `json:"offset"`
 }

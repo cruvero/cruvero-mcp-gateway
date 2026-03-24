@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -13,81 +14,106 @@ import (
 const (
 	errParseFmt = "parse %s: %w"
 
-	defaultListenAddr       = ":8443"
-	defaultHeartbeatTTL     = 30 * time.Second
-	defaultRateDefault      = 10
-	defaultRateBurst        = 20
-	defaultCircuitThreshold = 5
-	defaultCircuitTimeout   = 30 * time.Second
-	defaultRetryMax         = 3
-	defaultLogFormat        = "json"
-	defaultLogLevel         = "info"
-	defaultMetricsAddr      = ":9090"
-	defaultCruveroEnabled   = false
-	defaultGatewayID        = "auto"
-	defaultCORSEnabled             = false
-	defaultOTELServiceName         = "mcpgw"
-	defaultProgressiveDiscovery    = false
+	defaultListenAddr           = ":8443"
+	defaultHeartbeatTTL         = 30 * time.Second
+	defaultRateDefault          = 10
+	defaultRateBurst            = 20
+	defaultCircuitThreshold     = 5
+	defaultCircuitTimeout       = 30 * time.Second
+	defaultRetryMax             = 3
+	defaultLogFormat            = "json"
+	defaultLogLevel             = "info"
+	defaultMetricsAddr          = ":9090"
+	defaultCruveroEnabled       = false
+	defaultGatewayID            = "auto"
+	defaultCORSEnabled          = false
+	defaultOTELServiceName      = "mcpgw"
+	defaultProgressiveDiscovery = false
+	defaultOrchestrateEnabled   = false
 	defaultDBMaxOpenConns       = 25
 	defaultDBMaxIdleConns       = 10
 	defaultDBConnMaxLifetime    = 5 * time.Minute
 	defaultAuditRetentionDays   = 90
 	defaultAuditCleanupInterval = 1 * time.Hour
 	defaultShutdownTimeout      = 30 * time.Second
+	defaultAdminMode            = "standalone"
 )
 
 // Config contains all gateway runtime settings loaded from MCPGW_* env vars.
 type Config struct {
-	ListenAddr           string        `json:"listen_addr"`
-	TLSCertPath          string        `json:"tls_cert_path"`
-	TLSKeyPath           string        `json:"tls_key_path"`
-	TLSCAPath            string        `json:"tls_ca_path"`
-	DBURL                string        `json:"db_url"`
-	NATSURL              string        `json:"nats_url"`
-	NATSTLSEnabled       bool          `json:"nats_tls_enabled"`
-	NATSTLSCert          string        `json:"nats_tls_cert"`
-	NATSTLSKey           string        `json:"nats_tls_key"`
-	NATSTLSCa            string        `json:"nats_tls_ca"`
-	OIDCIssuer           string        `json:"oidc_issuer"`
-	OIDCAudience         string        `json:"oidc_audience"`
-	HeartbeatTTL         time.Duration `json:"heartbeat_ttl"`
-	RateDefault          int           `json:"rate_default"`
-	RateBurst            int           `json:"rate_burst"`
-	CircuitThreshold     int           `json:"circuit_threshold"`
-	CircuitTimeout       time.Duration `json:"circuit_timeout"`
-	RetryMax             int           `json:"retry_max"`
-	SPIFFEAllowList      []string      `json:"spiffe_allow_list"`
-	LogFormat            string        `json:"log_format"`
-	LogLevel             string        `json:"log_level"`
-	MetricsAddr          string        `json:"metrics_addr"`
-	CruveroEnabled       bool          `json:"cruvero_enabled"`
-	GatewayID            string        `json:"gateway_id"`
-	CORSEnabled          bool     `json:"cors_enabled"`
-	CORSAllowedOrigins   []string `json:"cors_allowed_origins"`
-	DBMaxOpenConns       int           `json:"db_max_open_conns"`
-	DBMaxIdleConns       int           `json:"db_max_idle_conns"`
-	DBConnMaxLifetime    time.Duration `json:"db_conn_max_lifetime"`
-	AuditRetentionDays   int           `json:"audit_retention_days"`
-	AuditCleanupInterval time.Duration `json:"audit_cleanup_interval"`
-	ShutdownTimeout      time.Duration `json:"shutdown_timeout"`
-	RateLimitBackend     string        `json:"rate_limit_backend"`
-	DragonflyURL         string        `json:"dragonfly_url"`
-	OTLPExporterEndpoint string        `json:"otlp_exporter_endpoint"`
-	OTELServiceName      string        `json:"otel_service_name"`
-	DeviceFlowEnabled      bool   `json:"device_flow_enabled"`
-	DeviceFlowIDPDeviceURL string `json:"device_flow_idp_device_url"`
-	DeviceFlowIDPTokenURL  string `json:"device_flow_idp_token_url"`
-	DeviceFlowClientID     string `json:"device_flow_client_id"`
-	DeviceFlowClientSecret string `json:"device_flow_client_secret"`
-	AdminEnabled           bool          `json:"admin_enabled"`
-	AdminExternalURL       string        `json:"admin_external_url"`
-	AdminOIDCClientID      string        `json:"admin_oidc_client_id"`
-	AdminOIDCClientSecret  string        `json:"admin_oidc_client_secret"`
-	AdminRequiredScope     string        `json:"admin_required_scope"`
-	AdminSessionKey        [32]byte      `json:"-"`
-	AdminSessionTTL        time.Duration `json:"admin_session_ttl"`
-	AdminDevMode           bool          `json:"admin_dev_mode"`
-	ProgressiveDiscovery   bool          `json:"progressive_discovery"`
+	ListenAddr             string            `json:"listen_addr"`
+	TLSCertPath            string            `json:"tls_cert_path"`
+	TLSKeyPath             string            `json:"tls_key_path"`
+	TLSCAPath              string            `json:"tls_ca_path"`
+	DBURL                  string            `json:"db_url"`
+	NATSURL                string            `json:"nats_url"`
+	NATSTLSEnabled         bool              `json:"nats_tls_enabled"`
+	NATSTLSCert            string            `json:"nats_tls_cert"`
+	NATSTLSKey             string            `json:"nats_tls_key"`
+	NATSTLSCa              string            `json:"nats_tls_ca"`
+	OIDCIssuer             string            `json:"oidc_issuer"`
+	OIDCAudience           string            `json:"oidc_audience"`
+	HeartbeatTTL           time.Duration     `json:"heartbeat_ttl"`
+	RateDefault            int               `json:"rate_default"`
+	RateBurst              int               `json:"rate_burst"`
+	CircuitThreshold       int               `json:"circuit_threshold"`
+	CircuitTimeout         time.Duration     `json:"circuit_timeout"`
+	RetryMax               int               `json:"retry_max"`
+	SPIFFEAllowList        []string          `json:"spiffe_allow_list"`
+	PlatformSPIFFEPrefixes []string          `json:"platform_spiffe_prefixes"`
+	LogFormat              string            `json:"log_format"`
+	LogLevel               string            `json:"log_level"`
+	MetricsAddr            string            `json:"metrics_addr"`
+	CruveroEnabled         bool              `json:"cruvero_enabled"`
+	GatewayID              string            `json:"gateway_id"`
+	CORSEnabled            bool              `json:"cors_enabled"`
+	CORSAllowedOrigins     []string          `json:"cors_allowed_origins"`
+	DBMaxOpenConns         int               `json:"db_max_open_conns"`
+	DBMaxIdleConns         int               `json:"db_max_idle_conns"`
+	DBConnMaxLifetime      time.Duration     `json:"db_conn_max_lifetime"`
+	AuditRetentionDays     int               `json:"audit_retention_days"`
+	AuditCleanupInterval   time.Duration     `json:"audit_cleanup_interval"`
+	ShutdownTimeout        time.Duration     `json:"shutdown_timeout"`
+	RateLimitBackend       string            `json:"rate_limit_backend"`
+	DragonflyURL           string            `json:"dragonfly_url"`
+	OTLPExporterEndpoint   string            `json:"otlp_exporter_endpoint"`
+	OTELServiceName        string            `json:"otel_service_name"`
+	DeviceFlowEnabled      bool              `json:"device_flow_enabled"`
+	DeviceFlowIDPDeviceURL string            `json:"device_flow_idp_device_url"`
+	DeviceFlowIDPTokenURL  string            `json:"device_flow_idp_token_url"`
+	DeviceFlowClientID     string            `json:"device_flow_client_id"`
+	DeviceFlowClientSecret string            `json:"device_flow_client_secret"`
+	AdminEnabled           bool              `json:"admin_enabled"`
+	AdminMode              string            `json:"admin_mode"`
+	PlatformServiceToken   string            `json:"-"`
+	AdminExternalURL       string            `json:"admin_external_url"`
+	AdminOIDCClientID      string            `json:"admin_oidc_client_id"`
+	AdminOIDCClientSecret  string            `json:"admin_oidc_client_secret"`
+	AdminRequiredScope     string            `json:"admin_required_scope"`
+	AdminSessionKey        [32]byte          `json:"-"`
+	AdminSessionTTL        time.Duration     `json:"admin_session_ttl"`
+	AdminDevMode           bool              `json:"admin_dev_mode"`
+	ProgressiveDiscovery   bool              `json:"progressive_discovery"`
+	SearchEngine           string            `json:"search_engine"`
+	OnnxRuntimePath        string            `json:"onnx_runtime_path"`
+	OnnxModelPath          string            `json:"onnx_model_path"`
+	TokenizerPath          string            `json:"tokenizer_path"`
+	Orchestrate            OrchestrateConfig `json:"orchestrate"`
+}
+
+// OrchestrateConfig groups all settings for the cruvero.orchestrate meta-tool.
+type OrchestrateConfig struct {
+	Enabled   bool                `json:"enabled"`
+	Providers []LLMProviderConfig `json:"providers"`
+}
+
+// LLMProviderConfig describes one LLM provider parsed from env vars.
+type LLMProviderConfig struct {
+	Name     string `json:"name"`
+	APIKey   string `json:"-"`
+	BaseURL  string `json:"base_url"`
+	Model    string `json:"model"`
+	Priority int    `json:"priority"`
 }
 
 // Load reads all MCPGW_* environment variables into Config and validates them.
@@ -137,6 +163,7 @@ func Load() (*Config, error) {
 		CircuitTimeout:         dur.circuitTimeout,
 		RetryMax:               ints.retryMax,
 		SPIFFEAllowList:        parseCSV("MCPGW_SPIFFE_ALLOW_PREFIX"),
+		PlatformSPIFFEPrefixes: parseCSV("MCPGW_PLATFORM_SPIFFE_PREFIXES"),
 		LogFormat:              getEnv("MCPGW_LOG_FORMAT", defaultLogFormat),
 		LogLevel:               getEnv("MCPGW_LOG_LEVEL", defaultLogLevel),
 		MetricsAddr:            getEnv("MCPGW_METRICS_ADDR", defaultMetricsAddr),
@@ -160,6 +187,8 @@ func Load() (*Config, error) {
 		DeviceFlowClientID:     os.Getenv("MCPGW_DEVICE_FLOW_CLIENT_ID"),
 		DeviceFlowClientSecret: os.Getenv("MCPGW_DEVICE_FLOW_CLIENT_SECRET"),
 		AdminEnabled:           bools.adminEnabled,
+		AdminMode:              strings.ToLower(strings.TrimSpace(getEnv("MCPGW_ADMIN_MODE", defaultAdminMode))),
+		PlatformServiceToken:   strings.TrimSpace(os.Getenv("MCPGW_PLATFORM_SERVICE_TOKEN")),
 		AdminExternalURL:       os.Getenv("MCPGW_ADMIN_EXTERNAL_URL"),
 		AdminOIDCClientID:      os.Getenv("MCPGW_ADMIN_OIDC_CLIENT_ID"),
 		AdminOIDCClientSecret:  os.Getenv("MCPGW_ADMIN_OIDC_CLIENT_SECRET"),
@@ -168,7 +197,17 @@ func Load() (*Config, error) {
 		AdminSessionTTL:        dur.adminSessionTTL,
 		AdminDevMode:           bools.adminDevMode,
 		ProgressiveDiscovery:   bools.progressiveDiscovery,
+		SearchEngine:           getEnv("MCPGW_SEARCH_ENGINE", ""),
+		OnnxRuntimePath:        getEnv("MCPGW_ONNX_RUNTIME_PATH", "/usr/lib/libonnxruntime.so"),
+		OnnxModelPath:          getEnv("MCPGW_ONNX_MODEL_PATH", "/models/all-MiniLM-L6-v2.onnx"),
+		TokenizerPath:          getEnv("MCPGW_TOKENIZER_PATH", "/models/tokenizer.json"),
 	}
+
+	orch, err := loadOrchestrateConfig(bools.orchestrateEnabled)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Orchestrate = orch
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -269,6 +308,7 @@ type parsedBooleans struct {
 	adminEnabled         bool
 	adminDevMode         bool
 	progressiveDiscovery bool
+	orchestrateEnabled   bool
 }
 
 // loadBooleans parses all MCPGW_* boolean environment variables.
@@ -286,6 +326,7 @@ func loadBooleans() (parsedBooleans, error) {
 		{"MCPGW_ADMIN_ENABLED", false, &p.adminEnabled},
 		{"MCPGW_ADMIN_DEV_MODE", false, &p.adminDevMode},
 		{"MCPGW_PROGRESSIVE_DISCOVERY", defaultProgressiveDiscovery, &p.progressiveDiscovery},
+		{"MCPGW_ORCHESTRATE_ENABLED", defaultOrchestrateEnabled, &p.orchestrateEnabled},
 	}
 	for _, f := range fields {
 		v, err := parseBool(f.envKey, f.defaultVal)
@@ -295,6 +336,75 @@ func loadBooleans() (parsedBooleans, error) {
 		*f.dest = v
 	}
 	return p, nil
+}
+
+// loadOrchestrateConfig builds the OrchestrateConfig from env vars.
+func loadOrchestrateConfig(enabled bool) (OrchestrateConfig, error) {
+	providers, err := loadLLMProviders()
+	if err != nil {
+		return OrchestrateConfig{}, err
+	}
+	return OrchestrateConfig{
+		Enabled:   enabled,
+		Providers: providers,
+	}, nil
+}
+
+// loadLLMProviders parses the MCPGW_LLM_PROVIDERS JSON array and resolves
+// per-provider API keys from MCPGW_LLM_{UPPER(name)}_API_KEY env vars.
+// Providers without an API key are silently skipped. Providers are sorted by
+// priority (lower value = higher priority).
+func loadLLMProviders() ([]LLMProviderConfig, error) {
+	raw := strings.TrimSpace(os.Getenv("MCPGW_LLM_PROVIDERS"))
+	if raw == "" {
+		return nil, nil
+	}
+
+	var entries []struct {
+		Name     string `json:"name"`
+		BaseURL  string `json:"base_url"`
+		Model    string `json:"model"`
+		Priority int    `json:"priority"`
+	}
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, fmt.Errorf("parse MCPGW_LLM_PROVIDERS: %w", err)
+	}
+
+	providers := make([]LLMProviderConfig, 0, len(entries))
+	for _, e := range entries {
+		name := strings.TrimSpace(e.Name)
+		if name == "" || strings.TrimSpace(e.Model) == "" {
+			continue
+		}
+		envKey := "MCPGW_LLM_" + strings.ToUpper(name) + "_API_KEY"
+		apiKey := strings.TrimSpace(os.Getenv(envKey))
+		if apiKey == "" {
+			continue
+		}
+		providers = append(providers, LLMProviderConfig{
+			Name:     name,
+			APIKey:   apiKey,
+			BaseURL:  strings.TrimSpace(e.BaseURL),
+			Model:    strings.TrimSpace(e.Model),
+			Priority: e.Priority,
+		})
+	}
+	sortProvidersByPriority(providers)
+	return providers, nil
+}
+
+// sortProvidersByPriority sorts providers by priority (ascending).
+// Providers with the same priority retain their original order.
+func sortProvidersByPriority(providers []LLMProviderConfig) {
+	for i := 1; i < len(providers); i++ {
+		key := providers[i]
+		j := i - 1
+		for j >= 0 && providers[j].Priority > key.Priority {
+			providers[j+1] = providers[j]
+			j--
+		}
+		providers[j+1] = key
+	}
 }
 
 // resolveGatewayID reads the gateway ID from the environment and generates a
@@ -356,7 +466,13 @@ func (c *Config) Validate() error {
 	if err := c.validateRateLimitBackend(); err != nil {
 		return err
 	}
+	if err := c.validateAdminMode(); err != nil {
+		return err
+	}
 	if err := c.validateAdmin(); err != nil {
+		return err
+	}
+	if err := c.validateSearchEngine(); err != nil {
 		return err
 	}
 	return c.validateDeviceFlow()
@@ -465,8 +581,18 @@ func (c *Config) validateRateLimitBackend() error {
 }
 
 func (c *Config) validateAdmin() error {
+	if strings.TrimSpace(c.AdminMode) == "integrated" {
+		// Integrated mode uses delegated Cruvero Platform auth for /admin/api/v1/*
+		// and does not require local OIDC/session admin configuration.
+		return nil
+	}
+
 	if c.AdminDevMode && !c.AdminEnabled {
 		return fmt.Errorf("validate config: MCPGW_ADMIN_ENABLED must be true when MCPGW_ADMIN_DEV_MODE is true")
+	}
+	gwID := strings.ToLower(strings.TrimSpace(c.GatewayID))
+	if c.AdminDevMode && (strings.Contains(gwID, "prod") || strings.Contains(gwID, "staging")) {
+		return fmt.Errorf("validate config: MCPGW_ADMIN_DEV_MODE must not be true when MCPGW_GATEWAY_ID contains prod or staging")
 	}
 	if !c.AdminEnabled || c.AdminDevMode {
 		return nil
@@ -480,6 +606,32 @@ func (c *Config) validateAdmin() error {
 	emptyKey := [32]byte{}
 	if c.AdminSessionKey == emptyKey {
 		return fmt.Errorf("validate config: MCPGW_ADMIN_SESSION_KEY is required when MCPGW_ADMIN_ENABLED is true")
+	}
+	return nil
+}
+
+func (c *Config) validateAdminMode() error {
+	mode := strings.ToLower(strings.TrimSpace(c.AdminMode))
+	switch mode {
+	case "", "standalone":
+		c.AdminMode = defaultAdminMode
+	case "integrated":
+		c.AdminMode = "integrated"
+		if strings.TrimSpace(c.PlatformServiceToken) == "" {
+			return fmt.Errorf("validate config: MCPGW_PLATFORM_SERVICE_TOKEN is required when MCPGW_ADMIN_MODE is integrated")
+		}
+	default:
+		return fmt.Errorf("validate config: MCPGW_ADMIN_MODE must be standalone or integrated")
+	}
+	return nil
+}
+
+func (c *Config) validateSearchEngine() error {
+	switch c.SearchEngine {
+	case "", "substring", "bm25", "vector", "hybrid":
+		// valid — vector/hybrid fall back to bm25 if ONNX init fails at runtime
+	default:
+		return fmt.Errorf("validate config: MCPGW_SEARCH_ENGINE must be substring, bm25, vector, or hybrid")
 	}
 	return nil
 }

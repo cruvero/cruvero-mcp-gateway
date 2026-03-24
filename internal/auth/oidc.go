@@ -17,10 +17,12 @@ type OIDCValidator struct {
 }
 
 type oidcClaims struct {
-	Subject string   `json:"sub"`
-	Email   string   `json:"email"`
-	Groups  []string `json:"groups"`
-	Scope   string   `json:"scope"`
+	Subject           string   `json:"sub"`
+	Email             string   `json:"email"`
+	Name              string   `json:"name"`
+	PreferredUsername string   `json:"preferred_username"`
+	Groups            []string `json:"groups"`
+	Scope             string   `json:"scope"`
 }
 
 // NewOIDCValidator discovers an OIDC provider and creates a token verifier.
@@ -72,11 +74,21 @@ func (v *OIDCValidator) Validate(ctx context.Context, rawToken string) (*identit
 		ID:     claims.Subject,
 		Scopes: scopes,
 		Metadata: map[string]string{
-			"auth_method": "oidc",
-			"email":       claims.Email,
-			"issuer":      idToken.Issuer,
+			"auth_method":  "oidc",
+			"email":        claims.Email,
+			"display_name": coalesce(claims.Name, claims.PreferredUsername, claims.Email),
+			"issuer":       idToken.Issuer,
 		},
 	}, nil
+}
+
+func coalesce(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func mergeScopes(groups []string, scopeClaim string) []string {

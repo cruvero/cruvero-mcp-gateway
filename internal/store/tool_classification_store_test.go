@@ -249,3 +249,180 @@ func TestScanToolClassificationsRowsErr(t *testing.T) {
 		t.Fatalf("expected nil results on rows error, got %+v", results)
 	}
 }
+
+func TestPostgresToolClassificationStoreSearchNoFilters(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+	s := NewPostgresToolClassificationStore(db)
+	now := fixedTime()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM tool_classifications`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + toolClassificationColumns + ` FROM tool_classifications ORDER BY tool_name LIMIT $1 OFFSET $2`)).
+		WithArgs(50, 0).
+		WillReturnRows(sqlmock.NewRows(toolClassificationColumnNames).
+			AddRow("github.delete_repo", "destructive", "auto", true, "auto", now).
+			AddRow("k8s.get_pods", "read_only", "auto", true, "auto", now))
+
+	results, total, err := s.Search(context.Background(), types.ToolFilter{Limit: 50, Offset: 0})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected total 2, got %d", total)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+}
+
+func TestPostgresToolClassificationStoreSearchWithQueryAndRisk(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+	s := NewPostgresToolClassificationStore(db)
+	now := fixedTime()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM tool_classifications WHERE tool_name ILIKE '%' || $1 || '%' AND risk_level = $2`)).
+		WithArgs("delete", "destructive").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + toolClassificationColumns + ` FROM tool_classifications WHERE tool_name ILIKE '%' || $1 || '%' AND risk_level = $2 ORDER BY tool_name LIMIT $3 OFFSET $4`)).
+		WithArgs("delete", "destructive", 50, 0).
+		WillReturnRows(sqlmock.NewRows(toolClassificationColumnNames).
+			AddRow("github.delete_repo", "destructive", "auto", true, "auto", now))
+
+	results, total, err := s.Search(context.Background(), types.ToolFilter{
+		Query:     "delete",
+		RiskLevel: types.RiskDestructive,
+		Limit:     50,
+		Offset:    0,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("expected total 1, got %d", total)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+}
+
+func TestPostgresToolClassificationStoreSearchCountError(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+	s := NewPostgresToolClassificationStore(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM tool_classifications`)).
+		WillReturnError(fmt.Errorf("count query failed"))
+
+	_, _, err := s.Search(context.Background(), types.ToolFilter{Limit: 50})
+	if err == nil {
+		t.Fatal("expected error from count query")
+	}
+}
+
+func TestPostgresToolClassificationStoreSearchScanError(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+	s := NewPostgresToolClassificationStore(db)
+	now := fixedTime()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM tool_classifications`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + toolClassificationColumns + ` FROM tool_classifications ORDER BY tool_name LIMIT $1 OFFSET $2`)).
+		WithArgs(50, 0).
+		WillReturnRows(sqlmock.NewRows(toolClassificationColumnNames).
+			AddRow("good.tool", "read_only", "auto", true, "auto", now).
+			AddRow("bad.tool", "destructive", "auto", "not_a_bool", "auto", now))
+
+	_, _, err := s.Search(context.Background(), types.ToolFilter{Limit: 50})
+	if err == nil {
+		t.Fatal("expected scan error, got nil")
+	}
+}
+
+func TestPostgresToolClassificationStoreSearchDataQueryError(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+	s := NewPostgresToolClassificationStore(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM tool_classifications`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + toolClassificationColumns + ` FROM tool_classifications ORDER BY tool_name LIMIT $1 OFFSET $2`)).
+		WithArgs(50, 0).
+		WillReturnError(fmt.Errorf("data query failed"))
+
+	_, _, err := s.Search(context.Background(), types.ToolFilter{Limit: 50})
+	if err == nil {
+		t.Fatal("expected error from data query")
+	}
+}
+
+func TestPostgresToolClassificationStoreDeleteNotIn(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with active tool names", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newMockDB(t)
+		s := NewPostgresToolClassificationStore(db)
+
+		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM tool_classifications WHERE tool_name NOT IN ($1, $2)`)).
+			WithArgs("tool.a", "tool.b").
+			WillReturnResult(sqlmock.NewResult(0, 3))
+
+		count, err := s.DeleteNotIn(context.Background(), []string{"tool.a", "tool.b"})
+		if err != nil {
+			t.Fatalf("delete not in: %v", err)
+		}
+		if count != 3 {
+			t.Fatalf("expected 3 deleted, got %d", count)
+		}
+	})
+
+	t.Run("empty list deletes all", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newMockDB(t)
+		s := NewPostgresToolClassificationStore(db)
+
+		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM tool_classifications`)).
+			WillReturnResult(sqlmock.NewResult(0, 5))
+
+		count, err := s.DeleteNotIn(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("delete not in: %v", err)
+		}
+		if count != 5 {
+			t.Fatalf("expected 5 deleted, got %d", count)
+		}
+	})
+
+	t.Run("db exec error", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newMockDB(t)
+		s := NewPostgresToolClassificationStore(db)
+
+		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM tool_classifications WHERE tool_name NOT IN ($1)`)).
+			WithArgs("tool.a").
+			WillReturnError(fmt.Errorf("connection lost"))
+
+		count, err := s.DeleteNotIn(context.Background(), []string{"tool.a"})
+		if err == nil {
+			t.Fatal("expected error from DeleteNotIn, got nil")
+		}
+		if count != 0 {
+			t.Fatalf("expected 0 on error, got %d", count)
+		}
+	})
+}

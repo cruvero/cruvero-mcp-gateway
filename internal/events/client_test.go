@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,15 +13,21 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+const natsServerReadyTimeout = 10 * time.Second
+
+var (
+	reservedNATSPortsMu sync.Mutex
+	reservedNATSPorts   = map[int]struct{}{}
+)
+
 func TestClientPublishSubscribe(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
 	client, err := NewClient(
-		fmt.Sprintf("nats://127.0.0.1:%d", port),
+		natsServerURL(t, srv),
 		"gw-1",
 		WithReconnectWait(50*time.Millisecond),
 		WithMaxReconnects(10),
@@ -95,11 +102,10 @@ func TestClientDisconnectAndReconnectHandlers(t *testing.T) {
 func TestClientClose(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-1")
+	client, err := NewClient(natsServerURL(t, srv), "gw-1")
 	if err != nil {
 		t.Fatalf("new nats client: %v", err)
 	}
@@ -117,6 +123,10 @@ func TestClientClose(t *testing.T) {
 func runNATSServer(t *testing.T, port int) *natsserver.Server {
 	t.Helper()
 
+	if port == 0 {
+		port = natsserver.RANDOM_PORT
+	}
+
 	opts := &natsserver.Options{
 		Host:   "127.0.0.1",
 		Port:   port,
@@ -129,22 +139,52 @@ func runNATSServer(t *testing.T, port int) *natsserver.Server {
 	}
 
 	go srv.Start()
-	if !srv.ReadyForConnections(3 * time.Second) {
+	if !srv.ReadyForConnections(natsServerReadyTimeout) {
 		srv.Shutdown()
 		t.Fatal("nats server did not become ready in time")
 	}
 	return srv
 }
 
+func natsServerURL(t *testing.T, srv *natsserver.Server) string {
+	t.Helper()
+
+	addr, ok := srv.Addr().(*net.TCPAddr)
+	if !ok || addr == nil {
+		t.Fatalf("unexpected nats server address: %T", srv.Addr())
+	}
+	return fmt.Sprintf("nats://127.0.0.1:%d", addr.Port)
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("allocate free port: %v", err)
+	for attempts := 0; attempts < 100; attempts++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("allocate free port: %v", err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+
+		reservedNATSPortsMu.Lock()
+		if _, exists := reservedNATSPorts[port]; exists {
+			reservedNATSPortsMu.Unlock()
+			continue
+		}
+		reservedNATSPorts[port] = struct{}{}
+		reservedNATSPortsMu.Unlock()
+
+		t.Cleanup(func() {
+			reservedNATSPortsMu.Lock()
+			delete(reservedNATSPorts, port)
+			reservedNATSPortsMu.Unlock()
+		})
+		return port
 	}
-	defer func() { _ = listener.Close() }()
-	return listener.Addr().(*net.TCPAddr).Port
+
+	t.Fatal("allocate free port: exhausted port reservation attempts")
+	return 0
 }
 
 func TestWithTLS_SetsConfig(t *testing.T) {

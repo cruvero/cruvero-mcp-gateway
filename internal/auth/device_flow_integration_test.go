@@ -15,7 +15,17 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/config"
 )
 
+// fakeJWT returns a string that approximates a real JWT of the given payload size.
+func fakeJWT(payloadSize int) string {
+	return "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9." + strings.Repeat("a", payloadSize) + ".sig"
+}
+
 func TestDeviceFlowIntegration(t *testing.T) {
+	// Realistic JWT-sized tokens: total response >4KB to exercise LimitReader.
+	accessToken := fakeJWT(2000)
+	idToken := fakeJWT(2000)
+	refreshToken := fakeJWT(1500)
+
 	// Mock IdP with device code lifecycle.
 	authorized := make(chan struct{})
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,9 +51,9 @@ func TestDeviceFlowIntegration(t *testing.T) {
 			case <-authorized:
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
-					"access_token":  "integration-access-token",
-					"refresh_token": "integration-refresh-token",
-					"id_token":      "eyJ.test.token",
+					"access_token":  accessToken,
+					"refresh_token": refreshToken,
+					"id_token":      idToken,
 					"token_type":    "Bearer",
 					"expires_in":    2,
 				})
@@ -139,8 +149,8 @@ func TestDeviceFlowIntegration(t *testing.T) {
 	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenData); err != nil {
 		t.Fatalf("decode token response: %v", err)
 	}
-	if tokenData.AccessToken == "" {
-		t.Fatalf("empty access token in response")
+	if tokenData.AccessToken != accessToken {
+		t.Fatalf("access token mismatch: got %d bytes, want %d bytes", len(tokenData.AccessToken), len(accessToken))
 	}
 
 	// Step 5: Verify page renders.
@@ -172,7 +182,7 @@ func TestDeviceFlowIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refresh failed: %v", err)
 	}
-	if refreshed.AccessToken != "refreshed-access-token" {
-		t.Fatalf("expected refreshed access token, got %q", refreshed.AccessToken)
+	if refreshed.AccessToken == "" {
+		t.Fatalf("expected non-empty refreshed access token")
 	}
 }

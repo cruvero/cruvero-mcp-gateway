@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,8 @@ import (
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/events"
 	"github.com/cruvero/mcp-gateway/internal/identity"
+	"github.com/cruvero/mcp-gateway/internal/llm"
+	"github.com/cruvero/mcp-gateway/internal/orchestrator"
 	"github.com/cruvero/mcp-gateway/internal/proxy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
@@ -83,6 +86,7 @@ func serveWithContext(ctx context.Context) error {
 	index.Rebuild(activeServers)
 
 	gw := server.New(cfg, logger, db)
+	gw.SetToolCountFunc(index.ToolCount)
 
 	dragonflyBackend, err := initRateLimitBackend(cfg, gw, logger)
 	if err != nil {
@@ -97,7 +101,9 @@ func serveWithContext(ctx context.Context) error {
 
 	registrationService := registration.NewService(stores.serverStore, stores.auditStore, cfg, logger)
 	registrationService.SetClassificationStore(stores.classificationStore)
+	registrationService.SyncClassifications(ctx, activeServers)
 	registrationService.SetLifecycleEventPublisher(eventPublisher)
+	replayActiveServerRegistrations(ctx, eventPublisher, activeServers, logger)
 	gw.BindRegistrationService(registrationService)
 
 	broadcaster := selectBroadcaster(cfg, gw, dragonflyBackend, logger)
@@ -115,10 +121,20 @@ func serveWithContext(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer proxyServer.proxy.CloseSearch()
+	if orch := initOrchestrator(cfg, stores, proxyServer.proxy, logger); orch != nil {
+		proxyServer.proxy.SetOrchestrator(orch)
+		logger.Info("orchestrate meta-tool enabled")
+	}
+	searchStatus := wireSearchReadiness(cfg, gw, proxyServer.proxy)
+
+	subscribeToolCacheInvalidation(broadcaster, proxyServer.proxy, logger)
 
 	gw.SetProxyAuthMiddleware(auth.AuthMiddleware(auth.AuthOptions{
 		APIKeyStore:   stores.apiKeyStore,
 		OIDCValidator: proxyServer.oidcValidator,
+		UserStore:     stores.userStore,
+		AuditStore:    stores.auditStore,
 		Logger:        logger,
 	}))
 
@@ -128,7 +144,11 @@ func serveWithContext(ctx context.Context) error {
 	)
 	gw.MountRegistrationRoutes(regHandler.Routes())
 	gw.MountProxyRoutes(proxyServer.proxy.Handler())
-	if err := mountOptionalRoutes(cfg, gw, proxyServer.proxy, stores, broadcaster, logger); err != nil {
+
+	apikeyAPIHandler := server.NewAPIKeyAPIHandler(stores.apiKeyStore, logger)
+	gw.MountAPIKeyAPI(apikeyAPIHandler.Routes())
+
+	if err := mountOptionalRoutes(cfg, gw, proxyServer.proxy, stores, broadcaster, logger, searchStatus); err != nil {
 		return err
 	}
 
@@ -153,6 +173,9 @@ type serveStores struct {
 	apiKeyStore         storepkg.APIKeyStore
 	auditStore          storepkg.AuditStore
 	classificationStore storepkg.ToolClassificationStore
+	userStore           storepkg.UserStore
+	synonymStore        storepkg.SynonymStore
+	reindexLogStore     storepkg.ReindexLogStore
 }
 
 func initStores(db *sql.DB, cfg *config.Config) serveStores {
@@ -164,11 +187,15 @@ func initStores(db *sql.DB, cfg *config.Config) serveStores {
 		apiKeyStore:         storepkg.NewPostgresAPIKeyStore(db),
 		auditStore:          storepkg.NewPostgresAuditStore(db),
 		classificationStore: storepkg.NewPostgresToolClassificationStore(db),
+		userStore:           storepkg.NewPostgresUserStore(db),
+		synonymStore:        storepkg.NewPostgresSynonymStore(db),
+		reindexLogStore:     storepkg.NewPostgresReindexLogStore(db),
 	}
 }
 
 func initTracing(cfg *config.Config) (func(), error) {
 	server.SetTracingVersion(version)
+	server.SetServerVersion(version)
 	server.SetTracingEndpoint(cfg.OTLPExporterEndpoint)
 	shutdownTracing, err := server.InitTracer(context.Background(), cfg.OTELServiceName)
 	if err != nil {
@@ -268,6 +295,7 @@ func initProxyServer(ctx context.Context, cfg *config.Config, index *registratio
 	}
 	proxyServer := proxy.NewProxyServer(index, cfg, proxyTLSConfig, 0, logger)
 	proxyServer.SetAuditStore(stores.auditStore)
+	proxyServer.SetUserStore(stores.userStore)
 	if lb := gw.RateLimitBackend(); lb != nil {
 		proxyServer.Router().SetLimiter(lb)
 	}
@@ -300,36 +328,173 @@ func wireToolMetadataCallback(gw *server.Server, proxyServer *proxy.ProxyServer)
 	})
 }
 
-func mountOptionalRoutes(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer, stores serveStores, broadcaster registration.Broadcaster, logger *slog.Logger) error {
+type searchStatusSnapshot struct {
+	EngineType            string
+	EmbedderType          string
+	IndexedTools          int
+	EngineReady           bool
+	VectorReady           *bool
+	VectorSearchFallbacks uint64
+	VectorIndexFallbacks  uint64
+	EngineErrorFallbacks  uint64
+}
+
+type searchStatusFunc func() searchStatusSnapshot
+
+func wireSearchReadiness(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer) searchStatusFunc {
+	status := buildSearchStatusFunc(cfg, proxyServer)
+	if status == nil {
+		return nil
+	}
+	gw.SetSearchStatusFunc(func() server.SearchStatus {
+		snapshot := status()
+		return server.SearchStatus{
+			Engine:                snapshot.EngineType,
+			Embedder:              snapshot.EmbedderType,
+			IndexedTools:          snapshot.IndexedTools,
+			Ready:                 snapshot.EngineReady,
+			VectorReady:           snapshot.VectorReady,
+			VectorSearchFallbacks: snapshot.VectorSearchFallbacks,
+			VectorIndexFallbacks:  snapshot.VectorIndexFallbacks,
+			EngineErrorFallbacks:  snapshot.EngineErrorFallbacks,
+		}
+	})
+	return status
+}
+
+func buildSearchStatusFunc(cfg *config.Config, proxyServer *proxy.ProxyServer) searchStatusFunc {
+	if cfg == nil || proxyServer == nil || cfg.SearchEngine == "" || cfg.SearchEngine == "substring" {
+		return nil
+	}
+	di := proxyServer.DiscoveryIndex()
+	if di == nil {
+		return nil
+	}
+
+	return func() searchStatusSnapshot {
+		snapshot := searchStatusSnapshot{
+			EngineType:   cfg.SearchEngine,
+			EmbedderType: proxyServer.EmbedderType(),
+			IndexedTools: di.Stats().TotalTools,
+			EngineReady:  false,
+		}
+		engine := di.Engine()
+		if engine == nil {
+			snapshot.EngineErrorFallbacks = di.EngineErrorFallbacks()
+			return snapshot
+		}
+
+		snapshot.EngineReady = engine.Ready()
+		if ve, ok := engine.(interface{ VectorReady() bool }); ok {
+			vectorReady := ve.VectorReady()
+			snapshot.VectorReady = &vectorReady
+			snapshot.EngineReady = snapshot.EngineReady && vectorReady
+		}
+		if vf, ok := engine.(interface{ VectorSearchFallbacks() uint64 }); ok {
+			snapshot.VectorSearchFallbacks = vf.VectorSearchFallbacks()
+		}
+		if vf, ok := engine.(interface{ VectorIndexFallbacks() uint64 }); ok {
+			snapshot.VectorIndexFallbacks = vf.VectorIndexFallbacks()
+		}
+		snapshot.EngineErrorFallbacks = di.EngineErrorFallbacks()
+		return snapshot
+	}
+}
+
+func mountOptionalRoutes(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer, stores serveStores, broadcaster registration.Broadcaster, logger *slog.Logger, searchStatus searchStatusFunc) error {
+	if cfg.ProgressiveDiscovery {
+		logger.Info("progressive discovery enabled")
+	}
 	if cfg.DeviceFlowEnabled {
 		deviceFlowHandler := auth.NewDeviceFlowHandler(cfg, logger)
 		gw.MountDeviceFlowRoutes(deviceFlowHandler.Routes())
 		logger.Info("device flow enabled")
 	}
-	if cfg.AdminEnabled {
-		if err := mountAdmin(cfg, gw, proxyServer, stores, broadcaster, logger); err != nil {
+	if cfg.AdminEnabled || strings.TrimSpace(cfg.AdminMode) == "integrated" {
+		if err := mountAdmin(cfg, gw, proxyServer, stores, broadcaster, logger, searchStatus); err != nil {
 			return err
 		}
+	}
+	if len(cfg.PlatformSPIFFEPrefixes) > 0 {
+		catalogHandler := server.NewCatalogHandler(
+			&catalogListerAdapter{proxy: proxyServer},
+			stores.classificationStore,
+			stores.serverStore,
+			cfg.GatewayID,
+			logger,
+		)
+		gw.MountCatalog(catalogHandler.Routes(), cfg.PlatformSPIFFEPrefixes)
+		logger.Info("platform catalog endpoint enabled")
 	}
 	return nil
 }
 
-func mountAdmin(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer, stores serveStores, broadcaster registration.Broadcaster, logger *slog.Logger) error {
+// catalogListerAdapter converts proxy.CatalogEntry to server.CatalogEntry,
+// bridging the proxy and server packages without creating an import cycle.
+type catalogListerAdapter struct {
+	proxy *proxy.ProxyServer
+}
+
+func (a *catalogListerAdapter) ListCatalogTools(ctx context.Context) ([]server.CatalogEntry, error) {
+	entries, err := a.proxy.ListCatalogTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]server.CatalogEntry, len(entries))
+	for i, e := range entries {
+		result[i] = server.CatalogEntry{
+			Name:        e.Name,
+			Description: e.Description,
+			InputSchema: e.InputSchema,
+			Annotations: e.Annotations,
+			ServerID:    e.ServerID,
+			ServerName:  e.ServerName,
+		}
+	}
+	return result, nil
+}
+
+func mountAdmin(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyServer, stores serveStores, broadcaster registration.Broadcaster, logger *slog.Logger, searchStatus searchStatusFunc) error {
 	adminAuth, err := buildAdminAuth(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("serve command: initialize admin auth: %w", err)
 	}
+	var adminSearchStatus func() admin.SearchStatusSnapshot
+	if searchStatus != nil {
+		adminSearchStatus = func() admin.SearchStatusSnapshot {
+			snapshot := searchStatus()
+			return admin.SearchStatusSnapshot{
+				EngineType:            snapshot.EngineType,
+				EmbedderType:          snapshot.EmbedderType,
+				IndexedTools:          snapshot.IndexedTools,
+				EngineReady:           snapshot.EngineReady,
+				VectorReady:           snapshot.VectorReady,
+				VectorSearchFallbacks: snapshot.VectorSearchFallbacks,
+				VectorIndexFallbacks:  snapshot.VectorIndexFallbacks,
+				EngineErrorFallbacks:  snapshot.EngineErrorFallbacks,
+			}
+		}
+	}
+
 	adminRouter := admin.NewRouter(admin.AdminDeps{
 		Auth:                 adminAuth,
 		DevMode:              cfg.AdminDevMode,
+		Mode:                 cfg.AdminMode,
+		PlatformServiceToken: cfg.PlatformServiceToken,
 		Logger:               logger,
 		ServerStore:          stores.serverStore,
 		AuditStore:           stores.auditStore,
 		ClassificationStore:  stores.classificationStore,
+		UserStore:            stores.userStore,
 		Broadcaster:          broadcaster,
 		RateLimitBackend:     gw.RateLimitBackend(),
 		DiscoveryIndex:       proxyServer.DiscoveryIndex(),
 		ProgressiveDiscovery: cfg.ProgressiveDiscovery,
+		SynonymStore:         stores.synonymStore,
+		ReindexLogStore:      stores.reindexLogStore,
+		SearchEngineType:     cfg.SearchEngine,
+		EmbedderType:         proxyServer.EmbedderType(),
+		SearchStatusFunc:     adminSearchStatus,
 	})
 	gw.MountAdmin(adminRouter)
 	logger.Info("admin dashboard enabled", slog.Bool("dev_mode", cfg.AdminDevMode))
@@ -337,6 +502,9 @@ func mountAdmin(cfg *config.Config, gw *server.Server, proxyServer *proxy.ProxyS
 }
 
 func buildAdminAuth(cfg *config.Config, logger *slog.Logger) (*admin.AdminAuth, error) {
+	if strings.TrimSpace(cfg.AdminMode) == "integrated" {
+		return nil, nil
+	}
 	if cfg.AdminDevMode {
 		logger.Warn("ADMIN DEV MODE ENABLED - authentication bypassed, do not use in production")
 		warnNonDevTLSCA(cfg, logger)
@@ -382,6 +550,47 @@ func listActiveServers(ctx context.Context, serverStore storepkg.ServerStore) ([
 	return records, nil
 }
 
+type serverRegisteredPublisher interface {
+	PublishServerRegistered(ctx context.Context, server types.ServerRecord) error
+}
+
+func replayActiveServerRegistrations(ctx context.Context, publisher serverRegisteredPublisher, servers []types.ServerRecord, logger *slog.Logger) {
+	if publisher == nil || len(servers) == 0 {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	replayed := 0
+	failed := 0
+	for _, record := range servers {
+		if strings.TrimSpace(record.ID) == "" {
+			logger.Warn("skipping active server registration replay due to empty id",
+				slog.String("server_name", record.Name))
+			continue
+		}
+		if strings.TrimSpace(record.Name) == "" {
+			logger.Warn("active server has blank name; replaying registration event anyway",
+				slog.String("server_id", record.ID))
+		}
+		if err := publisher.PublishServerRegistered(ctx, record); err != nil {
+			failed++
+			logger.Warn("replay server.registered event failed",
+				slog.String("server_id", record.ID),
+				slog.String("server_name", record.Name),
+				slog.String("error", err.Error()))
+			continue
+		}
+		replayed++
+	}
+	if replayed > 0 || failed > 0 {
+		logger.Info("replayed active server registration events",
+			slog.Int("replayed", replayed),
+			slog.Int("failed", failed))
+	}
+}
+
 func maybeBuildOIDCValidator(ctx context.Context, cfg *config.Config) (*auth.OIDCValidator, error) {
 	if cfg == nil {
 		return nil, nil
@@ -395,6 +604,31 @@ func maybeBuildOIDCValidator(ctx context.Context, cfg *config.Config) (*auth.OID
 		return nil, fmt.Errorf("initialize oidc validator: %w", err)
 	}
 	return validator, nil
+}
+
+func subscribeToolCacheInvalidation(broadcaster registration.Broadcaster, proxyServer *proxy.ProxyServer, logger *slog.Logger) {
+	if broadcaster == nil || proxyServer == nil {
+		return
+	}
+	if err := broadcaster.Subscribe(registration.SubjectRegistryUpdated, func(data []byte) {
+		var evt registration.RegistrationEvent
+		if err := json.Unmarshal(data, &evt); err != nil {
+			logger.Error("unmarshal registry event for tool cache failed", slog.String("error", err.Error()))
+			return
+		}
+		switch evt.EventType {
+		case "deregistered":
+			proxyServer.InvalidateToolCache()
+		case "registered", "status_changed":
+			if strings.TrimSpace(evt.ServerID) != "" {
+				proxyServer.InvalidateToolCacheForServer(evt.ServerID)
+			}
+		default:
+			// Other event types do not affect the tool cache.
+		}
+	}); err != nil {
+		logger.Warn("tool cache invalidation subscriber failed", slog.String("error", err.Error()))
+	}
 }
 
 func buildProxyTLSConfig(cfg *config.Config) (*tls.Config, error) {
@@ -513,4 +747,123 @@ func (s *indexedRegistrationService) syncServer(ctx context.Context, id string) 
 		return
 	}
 	s.index.Add(*record)
+}
+
+// --- Orchestrator wiring ---
+
+func initOrchestrator(cfg *config.Config, stores serveStores, ps *proxy.ProxyServer, logger *slog.Logger) *orchestrator.Orchestrator {
+	if !cfg.Orchestrate.Enabled || len(cfg.Orchestrate.Providers) == 0 {
+		return nil
+	}
+
+	providers := make([]llm.ProviderEntry, 0, len(cfg.Orchestrate.Providers))
+	for _, p := range cfg.Orchestrate.Providers {
+		client, err := llm.NewProviderClient(p.Name, p.APIKey, p.BaseURL, p.Model)
+		if err != nil {
+			logger.Warn("llm provider init failed, skipping",
+				slog.String("provider", p.Name),
+				slog.String("error", err.Error()))
+			continue
+		}
+		providers = append(providers, llm.ProviderEntry{Name: p.Name, Client: client})
+	}
+	if len(providers) == 0 {
+		logger.Warn("no LLM providers initialized, orchestrate disabled")
+		return nil
+	}
+
+	failover := llm.NewFailoverClient(providers, logger)
+
+	discoverer := &orchestratorDiscoverer{
+		discovery:       ps.DiscoveryIndex(),
+		classifications: stores.classificationStore,
+	}
+	executor := &orchestratorExecutor{proxy: ps}
+	auditor := &orchestratorAuditor{store: stores.auditStore, logger: logger}
+	activator := &orchestratorActivator{proxy: ps}
+
+	return orchestrator.New(failover, discoverer, executor, auditor, activator, logger)
+}
+
+// orchestratorDiscoverer bridges the proxy DiscoveryIndex to the orchestrator interface.
+type orchestratorDiscoverer struct {
+	discovery       *proxy.DiscoveryIndex
+	classifications storepkg.ToolClassificationStore
+}
+
+func (d *orchestratorDiscoverer) SearchTools(ctx context.Context, query string, limit int) ([]orchestrator.CandidateTool, error) {
+	if d.discovery == nil {
+		return nil, fmt.Errorf("discovery index not available")
+	}
+	results, _ := d.discovery.Search(query, "", 0, limit)
+	return d.enrichCandidates(ctx, results), nil
+}
+
+func (d *orchestratorDiscoverer) GetToolSchemas(ctx context.Context, names []string) ([]orchestrator.CandidateTool, error) {
+	if d.discovery == nil {
+		return nil, fmt.Errorf("discovery index not available")
+	}
+	results := d.discovery.GetTools(names)
+	return d.enrichCandidates(ctx, results), nil
+}
+
+func (d *orchestratorDiscoverer) enrichCandidates(ctx context.Context, tools []proxy.ToolDefinition) []orchestrator.CandidateTool {
+	candidates := make([]orchestrator.CandidateTool, 0, len(tools))
+	for _, t := range tools {
+		risk := "unknown"
+		if d.classifications != nil {
+			if c, err := d.classifications.Get(ctx, t.Name); err == nil && c != nil {
+				risk = string(c.RiskLevel)
+			}
+		}
+		candidates = append(candidates, orchestrator.CandidateTool{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+			RiskLevel:   risk,
+		})
+	}
+	return candidates
+}
+
+// orchestratorExecutor calls through the full tool routing pipeline (RBAC,
+// routing, and audit) via ProxyServer.ExecuteToolCall.
+type orchestratorExecutor struct {
+	proxy *proxy.ProxyServer
+}
+
+func (e *orchestratorExecutor) ExecuteTool(ctx context.Context, toolName string, args map[string]any) (string, bool, error) {
+	return e.proxy.ExecuteToolCall(ctx, toolName, args)
+}
+
+// orchestratorAuditor bridges the AuditStore to the orchestrator interface.
+type orchestratorAuditor struct {
+	store  storepkg.AuditStore
+	logger *slog.Logger
+}
+
+func (a *orchestratorAuditor) LogOrchestration(ctx context.Context, eventType string, details map[string]any) {
+	if a.store == nil {
+		return
+	}
+	entry := &types.AuditEntry{
+		EventType: eventType,
+		Details:   details,
+	}
+	if err := a.store.Log(ctx, entry); err != nil {
+		a.logger.Error("orchestration audit log failed",
+			slog.String("event_type", eventType),
+			slog.String("error", err.Error()))
+	}
+}
+
+// orchestratorActivator bridges the ProxyServer to the orchestrator interface.
+type orchestratorActivator struct {
+	proxy *proxy.ProxyServer
+}
+
+func (a *orchestratorActivator) ActivateTools(ctx context.Context, toolNames []string) {
+	if a.proxy != nil {
+		a.proxy.ActivateToolsByName(ctx, toolNames)
+	}
 }

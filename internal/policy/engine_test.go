@@ -417,6 +417,33 @@ func TestEngineNilClassificationStoreSkipsCheck(t *testing.T) {
 	}
 }
 
+func TestEngineAutoClassifyFallbackWhenStoreReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	engine := NewEngine(map[string]*types.PolicyProfile{
+		"default": {Name: "default", EnforcementMode: types.ModeEnforce},
+	}, nil, testPolicyLogger())
+
+	// Store has no entry for search_tools — returns nil.
+	engine.SetClassificationStore(&mockClassificationStore{
+		classifications: map[string]*types.ToolClassification{},
+	})
+
+	decision, err := engine.Evaluate(context.Background(), PolicyRequest{
+		ToolName: "search_tools",
+		ClientID: "client-1",
+	})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatal("expected search_tools to be allowed via AutoClassify fallback (read_only)")
+	}
+	if decision.Reason != "allowed" {
+		t.Fatalf("expected clean allow, got reason %q", decision.Reason)
+	}
+}
+
 type mockClassificationStore struct {
 	classifications map[string]*types.ToolClassification
 }
@@ -441,8 +468,16 @@ func (m *mockClassificationStore) Upsert(_ context.Context, _ *types.ToolClassif
 	return nil
 }
 
+func (m *mockClassificationStore) Search(_ context.Context, _ types.ToolFilter) ([]types.ToolClassification, int, error) {
+	return nil, 0, nil
+}
+
 func (m *mockClassificationStore) Delete(_ context.Context, _ string) error {
 	return nil
+}
+
+func (m *mockClassificationStore) DeleteNotIn(_ context.Context, _ []string) (int64, error) {
+	return 0, nil
 }
 
 func hasViolationType(violations []Violation, expected ViolationType) bool {
@@ -474,6 +509,10 @@ func (m *mockAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.
 	return nil, nil
 }
 
+func (m *mockAuditStore) Count(_ context.Context, _ types.AuditFilter) (int, error) {
+	return 0, nil
+}
+
 type failingAuditStore struct{}
 
 func (f *failingAuditStore) Log(_ context.Context, _ *types.AuditEntry) error {
@@ -482,6 +521,10 @@ func (f *failingAuditStore) Log(_ context.Context, _ *types.AuditEntry) error {
 
 func (f *failingAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
 	return nil, nil
+}
+
+func (f *failingAuditStore) Count(_ context.Context, _ types.AuditFilter) (int, error) {
+	return 0, nil
 }
 
 type mockViolationPublisher struct {

@@ -1,10 +1,15 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+
+	"github.com/cruvero/mcp-gateway/internal/search"
 )
 
 // ToolMetadata describes enrichment metadata applied to a tool from the platform.
@@ -39,6 +44,9 @@ type DiscoveryIndex struct {
 	mu       sync.RWMutex
 	entries  map[string]discoveryEntry
 	metadata []ToolMetadata // stored metadata for reapplication after Index rebuilds
+	engine   search.Engine  // optional pluggable search backend
+
+	engineErrorFallbacks atomic.Uint64
 }
 
 // NewDiscoveryIndex creates an empty discovery index.
@@ -46,6 +54,21 @@ func NewDiscoveryIndex() *DiscoveryIndex {
 	return &DiscoveryIndex{
 		entries: make(map[string]discoveryEntry),
 	}
+}
+
+// SetEngine configures a pluggable search backend. When set, Search delegates
+// scoring to the engine instead of the built-in substring matcher.
+func (d *DiscoveryIndex) SetEngine(e search.Engine) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.engine = e
+}
+
+// Engine returns the currently configured search engine, or nil.
+func (d *DiscoveryIndex) Engine() search.Engine {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.engine
 }
 
 // Index rebuilds the full index from the provided tool list.
@@ -70,12 +93,13 @@ func (d *DiscoveryIndex) Index(tools []ToolDefinition) {
 	d.mu.Lock()
 	d.entries = entries
 	d.applyMetadataLocked(d.metadata)
+	d.reindexEngineLocked()
 	d.mu.Unlock()
 }
 
 type scoredEntry struct {
 	entry discoveryEntry
-	score int
+	score float64
 }
 
 const (
@@ -126,6 +150,47 @@ func (d *DiscoveryIndex) collectScoredEntries(q, cat string) []scoredEntry {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	if d.engine != nil {
+		return d.collectScoredEntriesEngine(q, cat)
+	}
+	return d.collectScoredEntriesSubstring(q, cat)
+}
+
+func (d *DiscoveryIndex) collectScoredEntriesEngine(q, cat string) []scoredEntry {
+	results, err := d.engine.Search(context.Background(), q, 0)
+	if err != nil {
+		d.engineErrorFallbacks.Add(1)
+		slog.Warn("search engine error, falling back to substring",
+			slog.String("error", err.Error()))
+		return d.collectScoredEntriesSubstring(q, cat)
+	}
+	scored := make([]scoredEntry, 0, len(results))
+	for _, r := range results {
+		entry, ok := d.entries[r.Key]
+		if !ok {
+			continue
+		}
+		if cat != "" && strings.ToLower(entry.category) != cat {
+			continue
+		}
+		scored = append(scored, scoredEntry{
+			entry: entry,
+			score: r.Score + float64(entry.priority),
+		})
+	}
+	return scored
+}
+
+// EngineErrorFallbacks reports how often discovery search fell back to
+// substring matching due to an engine-level error.
+func (d *DiscoveryIndex) EngineErrorFallbacks() uint64 {
+	if d == nil {
+		return 0
+	}
+	return d.engineErrorFallbacks.Load()
+}
+
+func (d *DiscoveryIndex) collectScoredEntriesSubstring(q, cat string) []scoredEntry {
 	scored := make([]scoredEntry, 0)
 	for _, entry := range d.entries {
 		if cat != "" && strings.ToLower(entry.category) != cat {
@@ -133,15 +198,15 @@ func (d *DiscoveryIndex) collectScoredEntries(q, cat string) []scoredEntry {
 		}
 		score := scoreEntry(entry, q)
 		if score > 0 {
-			score += entry.priority
+			score += float64(entry.priority)
 			scored = append(scored, scoredEntry{entry: entry, score: score})
 		}
 	}
 	return scored
 }
 
-func scoreEntry(entry discoveryEntry, q string) int {
-	score := 0
+func scoreEntry(entry discoveryEntry, q string) float64 {
+	score := 0.0
 	if entry.nameLower == q {
 		score += 10
 	} else if strings.Contains(entry.nameLower, q) {
@@ -248,6 +313,7 @@ func (d *DiscoveryIndex) ApplyMetadata(metadata []ToolMetadata) {
 
 	d.metadata = metadata
 	d.applyMetadataLocked(metadata)
+	d.reindexEngineLocked()
 }
 
 // applyMetadataLocked enriches entries with metadata. Caller must hold d.mu.
@@ -275,6 +341,42 @@ func (d *DiscoveryIndex) applyMetadataLocked(metadata []ToolMetadata) {
 			entry.priority = m.Priority
 		}
 		d.entries[m.ToolName] = entry
+	}
+}
+
+// reindexEngineLocked rebuilds the search engine index from current entries.
+// Caller must hold d.mu (at least read lock; typically called under write lock).
+func (d *DiscoveryIndex) reindexEngineLocked() {
+	if d.engine == nil {
+		return
+	}
+	docs := make([]search.Document, 0, len(d.entries))
+	for key, entry := range d.entries {
+		title := entry.titleLower
+		if entry.definition.Annotations != nil {
+			title = entry.definition.Annotations.Title
+		}
+		tags := make([]string, len(entry.tagsLower))
+		copy(tags, entry.tagsLower)
+
+		// Use the effective description: combine the original description
+		// with the summary so both are searchable. Metadata may override
+		// the summary with content not present in the original description.
+		desc := entry.definition.Description
+		if entry.summary != "" && entry.summary != desc {
+			desc = desc + " " + entry.summary
+		}
+
+		docs = append(docs, search.Document{
+			Key:         key,
+			Name:        entry.definition.Name,
+			Title:       title,
+			Description: desc,
+			Tags:        tags,
+		})
+	}
+	if err := d.engine.Index(context.Background(), docs); err != nil {
+		slog.Warn("search engine index error", slog.String("error", err.Error()))
 	}
 }
 
@@ -349,14 +451,17 @@ func (d *DiscoveryIndex) Browse(category string, offset, limit int) ([]ToolDefin
 }
 
 func categoryFromFederatedName(name string) string {
-	// Format: mcp.<server>.<tool>
-	if !strings.HasPrefix(name, "mcp.") {
+	// Legacy format: mcp.<server>.<tool>
+	if strings.HasPrefix(name, "mcp.") {
+		rest := name[4:]
+		if dotIdx := strings.Index(rest, "."); dotIdx > 0 {
+			return rest[:dotIdx]
+		}
 		return ""
 	}
-	rest := name[4:]
-	dotIdx := strings.Index(rest, ".")
-	if dotIdx <= 0 {
-		return ""
+	// New format: <displayName>.<tool> or just <raw>
+	if dotIdx := strings.Index(name, "."); dotIdx > 0 {
+		return name[:dotIdx]
 	}
-	return rest[:dotIdx]
+	return ""
 }

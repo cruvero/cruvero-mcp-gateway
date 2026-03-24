@@ -21,8 +21,10 @@ data:
   MCPGW_METRICS_ADDR: {{ .Values.config.MCPGW_METRICS_ADDR | quote }}
   MCPGW_CRUVERO_ENABLED: {{ .Values.config.MCPGW_CRUVERO_ENABLED | quote }}
   MCPGW_GATEWAY_ID: {{ .Values.config.MCPGW_GATEWAY_ID | quote }}
+  MCPGW_ADMIN_MODE: {{ .Values.config.MCPGW_ADMIN_MODE | quote }}
   MCPGW_CORS_ENABLED: {{ .Values.config.MCPGW_CORS_ENABLED | quote }}
   MCPGW_RATE_LIMIT_BACKEND: {{ .Values.config.MCPGW_RATE_LIMIT_BACKEND | quote }}
+  MCPGW_PROGRESSIVE_DISCOVERY: {{ .Values.config.MCPGW_PROGRESSIVE_DISCOVERY | quote }}
   {{- if .Values.admin.enabled }}
   MCPGW_ADMIN_ENABLED: "true"
   MCPGW_ADMIN_OIDC_CLIENT_ID: {{ .Values.admin.oidc.clientID | quote }}
@@ -40,6 +42,27 @@ data:
   {{- end }}
   {{- if .Values.dragonfly.enabled }}
   MCPGW_DRAGONFLY_URL: {{ .Values.dragonfly.url | quote }}
+  {{- end }}
+  {{- if .Values.config.MCPGW_PLATFORM_SPIFFE_PREFIXES }}
+  MCPGW_PLATFORM_SPIFFE_PREFIXES: {{ .Values.config.MCPGW_PLATFORM_SPIFFE_PREFIXES | quote }}
+  {{- end }}
+  {{- if .Values.config.MCPGW_SEARCH_ENGINE }}
+  MCPGW_SEARCH_ENGINE: {{ .Values.config.MCPGW_SEARCH_ENGINE | quote }}
+  {{- end }}
+  {{- if .Values.config.MCPGW_ONNX_RUNTIME_PATH }}
+  MCPGW_ONNX_RUNTIME_PATH: {{ .Values.config.MCPGW_ONNX_RUNTIME_PATH | quote }}
+  {{- end }}
+  {{- if .Values.config.MCPGW_ONNX_MODEL_PATH }}
+  MCPGW_ONNX_MODEL_PATH: {{ .Values.config.MCPGW_ONNX_MODEL_PATH | quote }}
+  {{- end }}
+  {{- if .Values.config.MCPGW_TOKENIZER_PATH }}
+  MCPGW_TOKENIZER_PATH: {{ .Values.config.MCPGW_TOKENIZER_PATH | quote }}
+  {{- end }}
+  {{- if .Values.orchestrate.enabled }}
+  MCPGW_ORCHESTRATE_ENABLED: "true"
+  {{- if .Values.orchestrate.providers }}
+  MCPGW_LLM_PROVIDERS: {{ .Values.orchestrate.providers | toJson | quote }}
+  {{- end }}
   {{- end }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
   OTEL_SERVICE_NAME: {{ .Values.config.OTEL_SERVICE_NAME | quote }}

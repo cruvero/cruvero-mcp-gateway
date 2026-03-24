@@ -66,10 +66,25 @@ func (m *mockToolClassificationStore) Upsert(ctx context.Context, classification
 	return nil
 }
 
+func (m *mockToolClassificationStore) Search(_ context.Context, filter types.ToolFilter) ([]types.ToolClassification, int, error) {
+	var results []types.ToolClassification
+	for _, tc := range m.classifications {
+		if filter.RiskLevel.IsValid() && tc.RiskLevel != filter.RiskLevel {
+			continue
+		}
+		results = append(results, tc)
+	}
+	return results, len(results), nil
+}
+
 func (m *mockToolClassificationStore) Delete(ctx context.Context, toolName string) error {
 	_ = ctx
 	_ = toolName
 	return nil
+}
+
+func (m *mockToolClassificationStore) DeleteNotIn(_ context.Context, _ []string) (int64, error) {
+	return 0, nil
 }
 
 func setupToolTest(t *testing.T, store *mockToolClassificationStore) (*bytes.Buffer, *bytes.Buffer) {

@@ -630,13 +630,14 @@ Deployment is managed through Argo CD manifests in `deploy/argocd/`, following t
 
 Any GitHub Actions workflow in this repository must follow these standards:
 
-- Set `runs-on` to your runner group or labels.
-- Image build workflows must use secrets for your container registry:
-  - `REGISTRY_URL`
-  - `REGISTRY_USERNAME` / `REGISTRY_PASSWORD`
-- SonarQube workflows (if enabled) must use secrets:
+- Use `ubuntu-latest` for `runs-on`.
+- Harbor image operations must use org secrets:
+  - `HARBOR_URL`
+  - `HARBOR_TOKEN`
+- Sonar workflows must use org secrets:
   - `SONAR_HOST_URL`
   - `SONAR_TOKEN`
+- Sonar workflows must use repo secret:
   - `SONAR_PROJECT_KEY`
 
 ### Secret Management (Vault Operator)
@@ -724,6 +725,10 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | `MCPGW_METRICS_ADDR` | `:9090` | Prometheus metrics listen address |
 | `MCPGW_CRUVERO_ENABLED` | `false` | Enable Cruvero integration via NATS |
 | `MCPGW_GATEWAY_ID` | `auto` | Gateway instance ID (included in NATS events) |
+| `MCPGW_ADMIN_MODE` | `standalone` | Admin mode (`standalone` for local HTMX UI, `integrated` for delegated Platform API) |
+| `MCPGW_PLATFORM_SERVICE_TOKEN` | -- | Shared bearer token required for delegated `/admin/api/v1/*` auth in integrated mode |
+| `MCPGW_ADMIN_ENABLED` | `false` | Enables legacy standalone `/admin/*` dashboard |
+| `MCPGW_ADMIN_DEV_MODE` | `false` | Bypass standalone admin auth for local dev only (ignored in integrated mode) |
 
 ---
 
@@ -780,4 +785,4 @@ graph LR
     P8 --> P9["Phase 9<br/>GitOps Deployment"]
 ```
 
-Detailed phase specifications and implementation prompts are in [docs/phases/INDEX.md](phases/INDEX.md).
+Historical phase-planning documents are not included in this repository. Use `README.md`, `LLM.md`, and this architecture reference as the current implementation map.

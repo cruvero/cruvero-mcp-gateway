@@ -1,0 +1,121 @@
+{{define "content"}}
+<div class="page-header">
+  <h1>Search Management</h1>
+</div>
+
+<div class="search-status-grid">
+  <div class="card">
+    <div class="card-header">Engine Status</div>
+    <div class="card-body">
+      <div class="status-row">
+        <span class="status-label">Engine Type</span>
+        <span class="status-value">{{.EngineType}}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Indexed Tools</span>
+        <span class="status-value">{{.IndexedTools}}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Engine Ready</span>
+        <span class="status-dot {{if .EngineReady}}status-ok{{else}}status-degraded{{end}}"></span>
+        <span class="status-value">{{if .EngineReady}}Ready{{else}}Degraded{{end}}</span>
+      </div>
+      {{if .EmbedderType}}
+      <div class="status-row">
+        <span class="status-label">Embedder</span>
+        <span class="status-value">{{.EmbedderType}}</span>
+      </div>
+      {{end}}
+      {{if .HasVectorReady}}
+      <div class="status-row">
+        <span class="status-label">Vector Ready</span>
+        <span class="status-dot {{if .VectorReady}}status-ok{{else}}status-degraded{{end}}"></span>
+        <span class="status-value">{{if .VectorReady}}Ready{{else}}Degraded{{end}}</span>
+      </div>
+      {{end}}
+      {{if .ShowFallbackStats}}
+      <div class="status-row">
+        <span class="status-label">Fallbacks (Vector Search)</span>
+        <span class="status-value">{{.VectorSearchFallbacks}}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Fallbacks (Vector Index)</span>
+        <span class="status-value">{{.VectorIndexFallbacks}}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Fallbacks (Engine Error)</span>
+        <span class="status-value">{{.EngineErrorFallbacks}}</span>
+      </div>
+      {{end}}
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 1.5rem;">
+  <div class="card-header">Search Test</div>
+  <div class="card-body">
+    <form hx-post="/admin/search/test" hx-target="#search-test-results" hx-swap="innerHTML">
+      <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+      <div class="form-row">
+        <input type="text" name="query" placeholder="Enter search query..." class="form-input" required>
+        <button type="submit" class="btn btn-primary">Test Search</button>
+      </div>
+    </form>
+    <div id="search-test-results" style="margin-top: 1rem;"></div>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 1.5rem;">
+  <div class="card-header">
+    Synonyms
+    <button class="btn btn-sm btn-secondary" onclick="document.getElementById('synonym-form').classList.toggle('hidden')">Add Synonym</button>
+  </div>
+  <div class="card-body">
+    <div id="synonym-form" class="hidden" style="margin-bottom: 1rem;">
+      <form hx-post="/admin/search/synonyms" hx-target="#synonyms-table" hx-swap="innerHTML" hx-on::after-request="this.reset()">
+        <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+        <div class="form-row">
+          <input type="text" name="term" placeholder="Term" class="form-input" required>
+          <input type="text" name="synonyms" placeholder="Comma-separated synonyms" class="form-input" required>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+    <div id="synonyms-table">
+      {{template "search_synonyms_table" .}}
+    </div>
+  </div>
+</div>
+
+{{if .ReindexLogs}}
+<div class="card" style="margin-top: 1.5rem;">
+  <div class="card-header">Recent Reindex Operations</div>
+  <div class="card-body">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Engine</th>
+          <th>Trigger</th>
+          <th>Tools</th>
+          <th>Duration</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .ReindexLogs}}
+        <tr>
+          <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+          <td>{{.Engine}}</td>
+          <td>{{.Trigger}}</td>
+          <td>{{.ToolsCount}}</td>
+          <td>{{.DurationMs}}ms</td>
+          <td><span class="badge {{if eq .Status "success"}}badge-success{{else}}badge-error{{end}}">{{.Status}}</span></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
+{{end}}

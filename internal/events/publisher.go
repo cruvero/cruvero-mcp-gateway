@@ -7,12 +7,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
+
+const maxTCPPort = 65535
 
 // Publisher publishes gateway lifecycle and policy events.
 type Publisher struct {
@@ -72,18 +77,30 @@ func (p *Publisher) publish(ctx context.Context, eventType string, payload any) 
 // PublishServerRegistered publishes a server.registered event.
 func (p *Publisher) PublishServerRegistered(ctx context.Context, server types.ServerRecord) error {
 	occurredAt := time.Now().UTC()
+	host := normalizeEndpointHost(server.Host)
+	endpoint := host
+	if host != "" && isValidTCPPort(server.Port) {
+		endpoint = net.JoinHostPort(host, strconv.Itoa(server.Port))
+	}
+	endpointURL := canonicalEndpointURL(host, server.Protocol, server.Port)
+	allowedEndpoints := []string{}
+	if endpointURL != "" {
+		allowedEndpoints = append(allowedEndpoints, endpointURL)
+	}
 	payload := ServerRegisteredPayload{
-		EventID:        newEventID(),
-		OccurredAt:     occurredAt,
-		ServerID:       server.ID,
-		RegistrationID: server.ID,
-		LeaseEpoch:     server.LeaseEpoch,
-		CapabilityHash: strings.TrimSpace(server.CapabilityHash),
-		SyncState:      strings.TrimSpace(server.SyncState.String()),
-		Name:           server.Name,
-		SPIFFEID:       server.SPIFFEID,
-		Capabilities:   server.Capabilities,
-		Endpoint:       fmt.Sprintf("%s:%d", strings.TrimSpace(server.Host), server.Port),
+		EventID:          newEventID(),
+		OccurredAt:       occurredAt,
+		ServerID:         server.ID,
+		RegistrationID:   server.ID,
+		LeaseEpoch:       server.LeaseEpoch,
+		CapabilityHash:   strings.TrimSpace(server.CapabilityHash),
+		SyncState:        strings.TrimSpace(server.SyncState.String()),
+		Name:             server.Name,
+		SPIFFEID:         server.SPIFFEID,
+		Capabilities:     server.Capabilities,
+		Endpoint:         endpoint,
+		EndpointURL:      endpointURL,
+		AllowedEndpoints: allowedEndpoints,
 	}
 	return p.publish(ctx, EventServerRegistered, payload)
 }
@@ -138,4 +155,41 @@ func newEventID() string {
 		return fmt.Sprintf("evt-%d", time.Now().UTC().UnixNano())
 	}
 	return fmt.Sprintf("evt-%s", hex.EncodeToString(bytes))
+}
+
+func canonicalEndpointURL(host, protocol string, port int) string {
+	host = normalizeEndpointHost(host)
+	if host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(strings.TrimSpace(protocol))
+	if scheme != "http" && scheme != "https" {
+		scheme = "https"
+	}
+	hostPort := host
+	if isValidTCPPort(port) {
+		hostPort = net.JoinHostPort(host, strconv.Itoa(port))
+	} else if isIPv6Literal(host) {
+		hostPort = "[" + host + "]"
+	}
+	return (&url.URL{
+		Scheme: scheme,
+		Host:   hostPort,
+	}).String()
+}
+
+func normalizeEndpointHost(host string) string {
+	host = strings.TrimSpace(host)
+	if len(host) > 2 && strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSpace(host[1 : len(host)-1])
+	}
+	return host
+}
+
+func isValidTCPPort(port int) bool {
+	return port > 0 && port <= maxTCPPort
+}
+
+func isIPv6Literal(host string) bool {
+	return strings.Contains(host, ":") && net.ParseIP(host) != nil
 }

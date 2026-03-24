@@ -44,11 +44,16 @@ func apikeyCreateCommand(args []string) error {
 	expiresRaw := fs.String("expires", "", "expiration duration (e.g. 24h, 30d)")
 	clientID := fs.String("client-id", "", "client identity bound to the key")
 	profile := fs.String("profile", "default", "policy profile for the API key")
+	gatewayURL := fs.String("gateway-url", "", "gateway base URL for remote API key management")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse apikey create flags: %w", err)
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("apikey create does not accept positional arguments")
+	}
+
+	if baseURL := strings.TrimRight(strings.TrimSpace(*gatewayURL), "/"); baseURL != "" {
+		return remoteAPIKeyCreate(baseURL, *name, *scopesRaw, *expiresRaw, *clientID, *profile)
 	}
 
 	trimmedName := strings.TrimSpace(*name)
@@ -126,11 +131,16 @@ func apikeyListCommand(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	format := fs.String("format", "table", "output format: table or json")
+	gatewayURL := fs.String("gateway-url", "", "gateway base URL for remote API key management")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse apikey list flags: %w", err)
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("apikey list does not accept positional arguments")
+	}
+
+	if baseURL := strings.TrimRight(strings.TrimSpace(*gatewayURL), "/"); baseURL != "" {
+		return remoteAPIKeyList(baseURL, *format)
 	}
 
 	ctx := context.Background()
@@ -198,6 +208,7 @@ func apikeyRevokeCommand(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	force := fs.Bool("force", false, "skip confirmation")
+	gatewayURL := fs.String("gateway-url", "", "gateway base URL for remote API key management")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse apikey revoke flags: %w", err)
 	}
@@ -205,6 +216,10 @@ func apikeyRevokeCommand(args []string) error {
 		return fmt.Errorf("apikey revoke requires exactly one argument: <id>")
 	}
 	id := strings.TrimSpace(fs.Arg(0))
+
+	if baseURL := strings.TrimRight(strings.TrimSpace(*gatewayURL), "/"); baseURL != "" {
+		return remoteAPIKeyRevoke(baseURL, id)
+	}
 
 	ok, err := confirmAction(fmt.Sprintf("Revoke API key %s", id), *force)
 	if err != nil {

@@ -10,10 +10,6 @@ spec:
   destinations:
     - server: https://kubernetes.default.svc
       namespace: <APP>-dev
-    - server: https://kubernetes.default.svc
-      namespace: <APP>-staging
-    - server: https://kubernetes.default.svc
-      namespace: <APP>-prod
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
@@ -57,3 +53,30 @@ spec:
       - group: ""
         kind: ServiceAccount
         name: default
+      - group: ""
+        kind: Secret
+        name: mcpgateway-dev*
+      - group: ""
+        kind: ServiceAccount
+        name: vault-secrets-operator
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: <APP>-dev-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: data-<APP>-dev-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: qdrant-storage-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: redis-data-<APP>-dev-*
+      - group: ""
+        kind: PersistentVolumeClaim
+        name: storage-<APP>-dev-*
+      - group: secrets.hashicorp.com
+        kind: VaultAuth
+        name: default
+      - group: secrets.hashicorp.com
+        kind: VaultStaticSecret
+        name: <APP>-dev-postgresql-auth

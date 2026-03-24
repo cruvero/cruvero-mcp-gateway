@@ -93,8 +93,20 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AdminDevMode {
 		t.Fatal("expected default admin dev mode false")
 	}
+	if cfg.AdminMode != "standalone" {
+		t.Fatalf("expected default admin mode standalone, got %q", cfg.AdminMode)
+	}
+	if cfg.PlatformServiceToken != "" {
+		t.Fatalf("expected empty platform service token by default, got %q", cfg.PlatformServiceToken)
+	}
 	if cfg.ProgressiveDiscovery {
 		t.Fatal("expected default progressive discovery false")
+	}
+	if cfg.Orchestrate.Enabled {
+		t.Fatal("expected default orchestrate enabled false")
+	}
+	if len(cfg.Orchestrate.Providers) != 0 {
+		t.Fatalf("expected no llm providers by default, got %d", len(cfg.Orchestrate.Providers))
 	}
 }
 
@@ -176,7 +188,9 @@ func TestLoadParseErrors(t *testing.T) {
 		{name: "invalid audit cleanup interval", key: "MCPGW_AUDIT_CLEANUP_INTERVAL", value: "not-duration"},
 		{name: "invalid shutdown timeout", key: "MCPGW_SHUTDOWN_TIMEOUT", value: "not-duration"},
 		{name: "invalid admin dev mode", key: "MCPGW_ADMIN_DEV_MODE", value: "not-bool"},
+		{name: "invalid admin mode", key: "MCPGW_ADMIN_MODE", value: "not-a-mode"},
 		{name: "invalid progressive discovery", key: "MCPGW_PROGRESSIVE_DISCOVERY", value: "not-bool"},
+		{name: "invalid orchestrate enabled", key: "MCPGW_ORCHESTRATE_ENABLED", value: "not-bool"},
 	}
 
 	for _, tt := range tests {
@@ -287,11 +301,11 @@ func TestValidateErrors(t *testing.T) {
 		{
 			name: "invalid rate limit backend",
 			cfg: Config{
-				DBURL:            "postgres://db",
-				RateDefault:      1,
-				RateBurst:        1,
-				CircuitThreshold: 1,
-				RetryMax:         1,
+				DBURL:                "postgres://db",
+				RateDefault:          1,
+				RateBurst:            1,
+				CircuitThreshold:     1,
+				RetryMax:             1,
 				DBMaxOpenConns:       25,
 				DBMaxIdleConns:       10,
 				DBConnMaxLifetime:    5 * time.Minute,
@@ -305,11 +319,11 @@ func TestValidateErrors(t *testing.T) {
 		{
 			name: "dragonfly backend without url",
 			cfg: Config{
-				DBURL:            "postgres://db",
-				RateDefault:      1,
-				RateBurst:        1,
-				CircuitThreshold: 1,
-				RetryMax:         1,
+				DBURL:                "postgres://db",
+				RateDefault:          1,
+				RateBurst:            1,
+				CircuitThreshold:     1,
+				RetryMax:             1,
 				DBMaxOpenConns:       25,
 				DBMaxIdleConns:       10,
 				DBConnMaxLifetime:    5 * time.Minute,
@@ -323,11 +337,11 @@ func TestValidateErrors(t *testing.T) {
 		{
 			name: "nats backend without cruvero",
 			cfg: Config{
-				DBURL:            "postgres://db",
-				RateDefault:      1,
-				RateBurst:        1,
-				CircuitThreshold: 1,
-				RetryMax:         1,
+				DBURL:                "postgres://db",
+				RateDefault:          1,
+				RateBurst:            1,
+				CircuitThreshold:     1,
+				RetryMax:             1,
 				DBMaxOpenConns:       25,
 				DBMaxIdleConns:       10,
 				DBConnMaxLifetime:    5 * time.Minute,
@@ -360,11 +374,11 @@ func TestValidateErrors(t *testing.T) {
 		{
 			name: "nats tls enabled without cert",
 			cfg: Config{
-				DBURL:            "postgres://db",
-				RateDefault:      1,
-				RateBurst:        1,
-				CircuitThreshold: 1,
-				RetryMax:         1,
+				DBURL:                "postgres://db",
+				RateDefault:          1,
+				RateBurst:            1,
+				CircuitThreshold:     1,
+				RetryMax:             1,
 				DBMaxOpenConns:       25,
 				DBMaxIdleConns:       10,
 				DBConnMaxLifetime:    5 * time.Minute,
@@ -395,15 +409,15 @@ func TestValidateErrors(t *testing.T) {
 
 func TestValidateSuccessAndTLSConfigured(t *testing.T) {
 	cfg := Config{
-		DBURL:             "postgres://db",
-		TLSCertPath:       "/tls/server.crt",
-		TLSKeyPath:        "/tls/server.key",
-		RateDefault:       10,
-		RateBurst:         20,
-		CircuitThreshold:  5,
-		RetryMax:          3,
-		CruveroEnabled:    true,
-		NATSURL:           "nats://localhost:4222",
+		DBURL:                "postgres://db",
+		TLSCertPath:          "/tls/server.crt",
+		TLSKeyPath:           "/tls/server.key",
+		RateDefault:          10,
+		RateBurst:            20,
+		CircuitThreshold:     5,
+		RetryMax:             3,
+		CruveroEnabled:       true,
+		NATSURL:              "nats://localhost:4222",
 		DBMaxOpenConns:       25,
 		DBMaxIdleConns:       10,
 		DBConnMaxLifetime:    5 * time.Minute,
@@ -459,9 +473,11 @@ func clearKnownEnv(t *testing.T) {
 		"MCPGW_NATS_TLS_KEY",
 		"MCPGW_NATS_TLS_CA",
 		"MCPGW_ADMIN_ENABLED",
+		"MCPGW_ADMIN_MODE",
 		"MCPGW_ADMIN_DEV_MODE",
 		"MCPGW_ADMIN_OIDC_CLIENT_ID",
 		"MCPGW_ADMIN_OIDC_CLIENT_SECRET",
+		"MCPGW_PLATFORM_SERVICE_TOKEN",
 		"MCPGW_ADMIN_SESSION_KEY",
 		"MCPGW_ADMIN_SESSION_TTL",
 		"MCPGW_ADMIN_REQUIRED_SCOPE",
@@ -473,6 +489,16 @@ func clearKnownEnv(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_SERVICE_NAME",
 		"MCPGW_PROGRESSIVE_DISCOVERY",
+		"MCPGW_SEARCH_ENGINE",
+		"MCPGW_ONNX_RUNTIME_PATH",
+		"MCPGW_ONNX_MODEL_PATH",
+		"MCPGW_TOKENIZER_PATH",
+		"MCPGW_PLATFORM_SPIFFE_PREFIXES",
+		"MCPGW_ORCHESTRATE_ENABLED",
+		"MCPGW_LLM_PROVIDERS",
+		"MCPGW_LLM_OPENAI_API_KEY",
+		"MCPGW_LLM_AZURE_API_KEY",
+		"MCPGW_LLM_XAI_API_KEY",
 	}
 
 	for _, key := range keys {
@@ -482,14 +508,14 @@ func clearKnownEnv(t *testing.T) {
 
 func TestConfig_NATSTLSFields(t *testing.T) {
 	tests := []struct {
-		name      string
-		envVars   map[string]string
-		wantErr   bool
-		errText   string
-		checkCfg  func(t *testing.T, cfg *Config)
+		name     string
+		envVars  map[string]string
+		wantErr  bool
+		errText  string
+		checkCfg func(t *testing.T, cfg *Config)
 	}{
 		{
-			name:    "tls enabled with all paths parses correctly",
+			name: "tls enabled with all paths parses correctly",
 			envVars: map[string]string{
 				"MCPGW_NATS_TLS_ENABLED": "true",
 				"MCPGW_NATS_TLS_CERT":    "/tls/nats.crt",
@@ -513,7 +539,7 @@ func TestConfig_NATSTLSFields(t *testing.T) {
 			},
 		},
 		{
-			name:    "tls enabled without key path fails validation",
+			name: "tls enabled without key path fails validation",
 			envVars: map[string]string{
 				"MCPGW_NATS_TLS_ENABLED": "true",
 				"MCPGW_NATS_TLS_CERT":    "/tls/nats.crt",
@@ -523,7 +549,7 @@ func TestConfig_NATSTLSFields(t *testing.T) {
 			errText: "MCPGW_NATS_TLS_KEY",
 		},
 		{
-			name:    "tls disabled with paths set causes no validation error",
+			name: "tls disabled with paths set causes no validation error",
 			envVars: map[string]string{
 				"MCPGW_NATS_TLS_ENABLED": "false",
 				"MCPGW_NATS_TLS_CERT":    "/tls/nats.crt",
@@ -539,7 +565,7 @@ func TestConfig_NATSTLSFields(t *testing.T) {
 			},
 		},
 		{
-			name:    "invalid bool for tls enabled returns parse error",
+			name: "invalid bool for tls enabled returns parse error",
 			envVars: map[string]string{
 				"MCPGW_NATS_TLS_ENABLED": "not-bool",
 			},
@@ -616,6 +642,58 @@ func TestValidate_AdminDevMode_SkipsOIDCRequirements(t *testing.T) {
 	}
 }
 
+func TestValidate_AdminDevMode_GatewayIDGuard(t *testing.T) {
+	tests := []struct {
+		name      string
+		gatewayID string
+		wantErr   bool
+	}{
+		{name: "rejected for prod", gatewayID: "mcpgateway-prod", wantErr: true},
+		{name: "rejected for staging", gatewayID: "mcpgateway-staging", wantErr: true},
+		{name: "rejected for uppercase PROD", gatewayID: "mcpgateway-PROD", wantErr: true},
+		{name: "rejected for mixed case Prod", gatewayID: "mcpgateway-Prod", wantErr: true},
+		{name: "rejected for whitespace padded", gatewayID: " mcpgateway-prod ", wantErr: true},
+		{name: "rejected for production substring", gatewayID: "production-gateway", wantErr: true},
+		{name: "rejected for staging substring", gatewayID: "staging-area", wantErr: true},
+		{name: "allowed for dev", gatewayID: "mcpgateway-dev", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				DBURL:                "postgres://db",
+				RateDefault:          10,
+				RateBurst:            20,
+				CircuitThreshold:     5,
+				RetryMax:             3,
+				DBMaxOpenConns:       25,
+				DBMaxIdleConns:       10,
+				DBConnMaxLifetime:    5 * time.Minute,
+				AuditRetentionDays:   90,
+				AuditCleanupInterval: time.Hour,
+				ShutdownTimeout:      30 * time.Second,
+				AdminEnabled:         true,
+				AdminDevMode:         true,
+				GatewayID:            tt.gatewayID,
+			}
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected validation to fail for gateway ID %q", tt.gatewayID)
+				}
+				if !strings.Contains(err.Error(), "prod or staging") {
+					t.Fatalf("expected error about prod/staging, got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected validation to pass for gateway ID %q, got: %v", tt.gatewayID, err)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadProgressiveDiscoveryEnabled(t *testing.T) {
 	clearKnownEnv(t)
 	t.Setenv("MCPGW_DB_URL", "postgres://db")
@@ -627,5 +705,295 @@ func TestLoadProgressiveDiscoveryEnabled(t *testing.T) {
 	}
 	if !cfg.ProgressiveDiscovery {
 		t.Fatal("expected progressive discovery true")
+	}
+}
+
+func TestValidate_SearchEngine(t *testing.T) {
+	base := Config{
+		DBURL:                "postgres://db",
+		RateDefault:          10,
+		RateBurst:            20,
+		CircuitThreshold:     5,
+		RetryMax:             3,
+		DBMaxOpenConns:       25,
+		DBMaxIdleConns:       10,
+		DBConnMaxLifetime:    5 * time.Minute,
+		AuditRetentionDays:   90,
+		AuditCleanupInterval: time.Hour,
+		ShutdownTimeout:      30 * time.Second,
+	}
+
+	tests := []struct {
+		name    string
+		engine  string
+		wantErr bool
+		errText string
+	}{
+		{name: "empty is valid", engine: ""},
+		{name: "substring is valid", engine: "substring"},
+		{name: "bm25 is valid", engine: "bm25"},
+		{name: "vector is valid", engine: "vector"},
+		{name: "hybrid is valid", engine: "hybrid"},
+		{name: "invalid engine", engine: "invalid", wantErr: true, errText: "MCPGW_SEARCH_ENGINE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.SearchEngine = tt.engine
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				if !strings.Contains(err.Error(), tt.errText) {
+					t.Fatalf("expected error to contain %q, got %v", tt.errText, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadSearchEngineAndOnnxPaths(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+	t.Setenv("MCPGW_SEARCH_ENGINE", "hybrid")
+	t.Setenv("MCPGW_ONNX_RUNTIME_PATH", "/opt/lib/libonnxruntime.so")
+	t.Setenv("MCPGW_ONNX_MODEL_PATH", "/opt/models/model.onnx")
+	t.Setenv("MCPGW_TOKENIZER_PATH", "/opt/models/tokenizer.json")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed, got: %v", err)
+	}
+	if cfg.SearchEngine != "hybrid" {
+		t.Fatalf("expected search engine hybrid, got %q", cfg.SearchEngine)
+	}
+	if cfg.OnnxRuntimePath != "/opt/lib/libonnxruntime.so" {
+		t.Fatalf("expected onnx runtime path /opt/lib/libonnxruntime.so, got %q", cfg.OnnxRuntimePath)
+	}
+	if cfg.OnnxModelPath != "/opt/models/model.onnx" {
+		t.Fatalf("expected onnx model path /opt/models/model.onnx, got %q", cfg.OnnxModelPath)
+	}
+	if cfg.TokenizerPath != "/opt/models/tokenizer.json" {
+		t.Fatalf("expected tokenizer path /opt/models/tokenizer.json, got %q", cfg.TokenizerPath)
+	}
+}
+
+func TestLoadOnnxPathDefaults(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed, got: %v", err)
+	}
+	if cfg.OnnxRuntimePath != "/usr/lib/libonnxruntime.so" {
+		t.Fatalf("expected default onnx runtime path /usr/lib/libonnxruntime.so, got %q", cfg.OnnxRuntimePath)
+	}
+	if cfg.OnnxModelPath != "/models/all-MiniLM-L6-v2.onnx" {
+		t.Fatalf("expected default onnx model path /models/all-MiniLM-L6-v2.onnx, got %q", cfg.OnnxModelPath)
+	}
+	if cfg.TokenizerPath != "/models/tokenizer.json" {
+		t.Fatalf("expected default tokenizer path /models/tokenizer.json, got %q", cfg.TokenizerPath)
+	}
+}
+
+func TestLoadPlatformSPIFFEPrefixes(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     []string
+	}{
+		{
+			name:     "empty returns nil",
+			envValue: "",
+			want:     nil,
+		},
+		{
+			name:     "single prefix",
+			envValue: "spiffe://example.com/ns/myapp-dev/sa/gateway",
+			want:     []string{"spiffe://example.com/ns/myapp-dev/sa/gateway"},
+		},
+		{
+			name:     "multiple prefixes",
+			envValue: "spiffe://cluster-a/sa/platform, spiffe://cluster-b/sa/bridge",
+			want:     []string{"spiffe://cluster-a/sa/platform", "spiffe://cluster-b/sa/bridge"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearKnownEnv(t)
+			t.Setenv("MCPGW_DB_URL", "postgres://db")
+			if tt.envValue != "" {
+				t.Setenv("MCPGW_PLATFORM_SPIFFE_PREFIXES", tt.envValue)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(cfg.PlatformSPIFFEPrefixes) != len(tt.want) {
+				t.Fatalf("expected %d prefixes, got %d: %v", len(tt.want), len(cfg.PlatformSPIFFEPrefixes), cfg.PlatformSPIFFEPrefixes)
+			}
+			for i, w := range tt.want {
+				if cfg.PlatformSPIFFEPrefixes[i] != w {
+					t.Fatalf("prefix[%d]: expected %q, got %q", i, w, cfg.PlatformSPIFFEPrefixes[i])
+				}
+			}
+		})
+	}
+}
+
+func TestLoadOrchestrateEnabled(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+	t.Setenv("MCPGW_ORCHESTRATE_ENABLED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed, got: %v", err)
+	}
+	if !cfg.Orchestrate.Enabled {
+		t.Fatal("expected orchestrate enabled true")
+	}
+}
+
+func TestLoadLLMProviders(t *testing.T) {
+	tests := []struct {
+		name          string
+		providersJSON string
+		apiKeys       map[string]string
+		wantCount     int
+		wantFirst     string
+		wantErr       bool
+	}{
+		{
+			name:          "empty env returns nil",
+			providersJSON: "",
+			wantCount:     0,
+		},
+		{
+			name:          "invalid json returns error",
+			providersJSON: "not-json",
+			wantErr:       true,
+		},
+		{
+			name:          "provider without api key is skipped",
+			providersJSON: `[{"name":"openai","model":"gpt-4o"}]`,
+			wantCount:     0,
+		},
+		{
+			name:          "provider without model is skipped",
+			providersJSON: `[{"name":"openai","model":""}]`,
+			apiKeys:       map[string]string{"MCPGW_LLM_OPENAI_API_KEY": "sk-test"},
+			wantCount:     0,
+		},
+		{
+			name:          "single provider with key",
+			providersJSON: `[{"name":"openai","model":"gpt-4o"}]`,
+			apiKeys:       map[string]string{"MCPGW_LLM_OPENAI_API_KEY": "sk-test"},
+			wantCount:     1,
+			wantFirst:     "openai",
+		},
+		{
+			name:          "multiple providers, one without key",
+			providersJSON: `[{"name":"openai","model":"gpt-4o"},{"name":"xai","model":"grok-3-mini","base_url":"https://api.x.ai/v1"}]`,
+			apiKeys:       map[string]string{"MCPGW_LLM_OPENAI_API_KEY": "sk-test"},
+			wantCount:     1,
+			wantFirst:     "openai",
+		},
+		{
+			name:          "multiple providers both with keys preserves order",
+			providersJSON: `[{"name":"xai","model":"grok-3-mini","base_url":"https://api.x.ai/v1"},{"name":"openai","model":"gpt-4o"}]`,
+			apiKeys: map[string]string{
+				"MCPGW_LLM_XAI_API_KEY":    "xai-key",
+				"MCPGW_LLM_OPENAI_API_KEY": "sk-test",
+			},
+			wantCount: 2,
+			wantFirst: "xai",
+		},
+		{
+			name:          "priority sorts providers",
+			providersJSON: `[{"name":"xai","model":"grok-3-mini","priority":10},{"name":"openai","model":"gpt-4o","priority":1}]`,
+			apiKeys: map[string]string{
+				"MCPGW_LLM_XAI_API_KEY":    "xai-key",
+				"MCPGW_LLM_OPENAI_API_KEY": "sk-test",
+			},
+			wantCount: 2,
+			wantFirst: "openai",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearKnownEnv(t)
+			t.Setenv("MCPGW_DB_URL", "postgres://db")
+			if tt.providersJSON != "" {
+				t.Setenv("MCPGW_LLM_PROVIDERS", tt.providersJSON)
+			}
+			for k, v := range tt.apiKeys {
+				t.Setenv(k, v)
+			}
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(cfg.Orchestrate.Providers) != tt.wantCount {
+				t.Fatalf("expected %d providers, got %d: %+v", tt.wantCount, len(cfg.Orchestrate.Providers), cfg.Orchestrate.Providers)
+			}
+			if tt.wantCount > 0 && cfg.Orchestrate.Providers[0].Name != tt.wantFirst {
+				t.Fatalf("expected first provider %q, got %q", tt.wantFirst, cfg.Orchestrate.Providers[0].Name)
+			}
+		})
+	}
+}
+
+func TestLoadAdminModeIntegratedRequiresPlatformServiceToken(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+	t.Setenv("MCPGW_ADMIN_MODE", "integrated")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when integrated mode is missing platform service token")
+	}
+	if !strings.Contains(err.Error(), "MCPGW_PLATFORM_SERVICE_TOKEN") {
+		t.Fatalf("expected MCPGW_PLATFORM_SERVICE_TOKEN error, got %v", err)
+	}
+}
+
+func TestLoadAdminModeIntegratedBypassesStandaloneOIDCRequirements(t *testing.T) {
+	clearKnownEnv(t)
+	t.Setenv("MCPGW_DB_URL", "postgres://db")
+	t.Setenv("MCPGW_ADMIN_MODE", "integrated")
+	t.Setenv("MCPGW_PLATFORM_SERVICE_TOKEN", "platform-svc-token")
+	t.Setenv("MCPGW_ADMIN_ENABLED", "true")
+	// OIDC/session vars intentionally omitted; integrated mode should not require them.
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected load to succeed in integrated mode, got %v", err)
+	}
+	if cfg.AdminMode != "integrated" {
+		t.Fatalf("expected integrated mode, got %q", cfg.AdminMode)
+	}
+	if cfg.PlatformServiceToken != "platform-svc-token" {
+		t.Fatalf("expected platform token to be loaded")
 	}
 }

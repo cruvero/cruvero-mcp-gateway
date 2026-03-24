@@ -108,6 +108,89 @@ func TestHandleReadResourceNoMatch(t *testing.T) {
 	}
 }
 
+func TestHandleListResourcesSkipsFailingBackend(t *testing.T) {
+	t.Parallel()
+
+	// Backend 1: healthy
+	record1, client1, cleanup1 := buildResourceBackend(
+		t,
+		"server-1",
+		[]string{"urn:docs/"},
+		map[string]string{"urn:docs/readme": "one"},
+	)
+	defer cleanup1()
+
+	// Backend 2: will fail (server closed)
+	record2, client2, cleanup2 := buildFailingResourceBackend(t, "server-2", []string{"urn:wiki/"})
+	defer cleanup2()
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record1)
+	index.Add(record2)
+
+	proxyServer := NewProxyServer(index, &config.Config{}, nil, 0, nil)
+	proxyServer.clients[record1.ID] = client1
+	proxyServer.clients[record2.ID] = client2
+
+	resources, err := proxyServer.handleListResources(context.Background())
+	if err != nil {
+		t.Fatalf("list resources: %v", err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("expected 1 resource from healthy backend, got %d", len(resources))
+	}
+	if resources[0].URI != "urn:docs/readme" {
+		t.Fatalf("expected urn:docs/readme, got %q", resources[0].URI)
+	}
+}
+
+func buildFailingResourceBackend(
+	t *testing.T,
+	serverID string,
+	resourcePrefixes []string,
+) (types.ServerRecord, *BackendClient, func()) {
+	t.Helper()
+
+	mcpSrv := mcpserver.NewMCPServer(
+		"backend-"+serverID,
+		"1.0.0",
+		mcpserver.WithResourceCapabilities(true, true),
+	)
+	mcpSrv.AddResource(
+		mcp.NewResource("urn:placeholder", "urn:placeholder", mcp.WithResourceDescription("will fail"), mcp.WithMIMEType("text/plain")),
+		func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+			return []mcp.ResourceContents{
+				mcp.TextResourceContents{URI: req.Params.URI, MIMEType: "text/plain", Text: "unreachable"},
+			}, nil
+		},
+	)
+
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	srv := httptest.NewTLSServer(mux)
+
+	record := recordFromServerURL(t, srv.URL)
+	record.ID = serverID
+	record.Name = serverID
+	record.Status = types.StatusActive
+	record.Capabilities = types.Capability{Resources: resourcePrefixes}
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(srv.Certificate())
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    rootPool,
+	}
+
+	client := NewBackendClient(record, tlsConfig, 2*time.Second)
+
+	// Close the server so the client fails on connect.
+	srv.Close()
+
+	return record, client, func() { _ = client.Close() }
+}
+
 func buildResourceBackend(
 	t *testing.T,
 	serverID string,

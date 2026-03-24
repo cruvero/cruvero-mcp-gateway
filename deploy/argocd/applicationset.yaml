@@ -15,16 +15,8 @@ spec:
         elements:
           - env: dev
             namespace: <APP>-dev
-            valuesFile: values-dev.yaml
+            valuesFile: values-example.yaml
             targetRevision: dev
-          - env: staging
-            namespace: <APP>-staging
-            valuesFile: values-staging.yaml
-            targetRevision: main
-          - env: prod
-            namespace: <APP>-prod
-            valuesFile: values-prod.yaml
-            targetRevision: main
   template:
     metadata:
       name: 'mcpgateway-{{ .env }}'
@@ -75,19 +67,4 @@ spec:
         argocd-image-updater.argoproj.io/mcpgateway.force-update: "true"
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
         argocd-image-updater.argoproj.io/mcpgateway.helm.image-tag: image.tag
-    {{- else if eq .env "staging" }}
-    metadata:
-      labels:
-        image-updater: mcpgateway
-      annotations:
-        argocd-image-updater.argoproj.io/image-list: "mcpgateway=registry.example.com/<PROJECT>/<IMAGE>"
-        argocd-image-updater.argoproj.io/mcpgateway.update-strategy: digest
-        argocd-image-updater.argoproj.io/mcpgateway.allow-tags: "regexp:^staging-"
-        argocd-image-updater.argoproj.io/mcpgateway.force-update: "true"
-        argocd-image-updater.argoproj.io/mcpgateway.helm.image-name: image.repository
-        argocd-image-updater.argoproj.io/mcpgateway.helm.image-tag: image.tag
-    {{- else if eq .env "prod" }}
-    spec:
-      syncPolicy:
-        automated: null
     {{- end }}

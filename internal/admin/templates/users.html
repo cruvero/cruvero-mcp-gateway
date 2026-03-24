@@ -1,0 +1,23 @@
+{{define "content"}}
+<h1>Users</h1>
+<div x-data="{search: '', role: ''}">
+  <div class="filters">
+    <input type="text" x-model="search" placeholder="Search users..."
+           hx-get="/admin/users" hx-trigger="keyup changed delay:300ms"
+           hx-target="#users-table" hx-include="[name='role']"
+           name="q">
+    <select name="role" x-model="role"
+            hx-get="/admin/users" hx-trigger="change"
+            hx-target="#users-table" hx-include="[name='q']">
+      <option value="">All roles</option>
+      <option value="admin">Admin</option>
+      <option value="user">User</option>
+      <option value="viewer">Viewer</option>
+      <option value="blocked">Blocked</option>
+    </select>
+  </div>
+  <div id="users-table">
+    {{template "users_table" .}}
+  </div>
+</div>
+{{end}}

@@ -134,6 +134,26 @@ spec:
         - protocol: TCP
           port: 80
     {{- end }}
+    {{- if .Values.networkPolicy.egress.llm }}
+    - to:
+        {{- range .Values.networkPolicy.egress.llm }}
+        - {{- if hasKey . "namespaceSelector" }}
+          namespaceSelector:
+            {{- toYaml .namespaceSelector | nindent 12 }}
+          {{- end }}
+          {{- if hasKey . "podSelector" }}
+          podSelector:
+            {{- toYaml .podSelector | nindent 12 }}
+          {{- end }}
+          {{- if hasKey . "ipBlock" }}
+          ipBlock:
+            {{- toYaml .ipBlock | nindent 12 }}
+          {{- end }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
     - to:
         {{- range .Values.networkPolicy.egress.dns }}
         - {{- if hasKey . "namespaceSelector" }}

@@ -1,4 +1,4 @@
-.PHONY: build test lint vet staticcheck govulncheck gosec dupl godoc-check quality coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-run clean
+.PHONY: build test lint vet staticcheck govulncheck gosec dupl godoc-check quality coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-size docker-run clean
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -67,13 +67,22 @@ chart-render-prod:
 chart-validate: chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod
 
 migrate-up:
-	@echo "TODO: implement migrations up command"
+	go run ./cmd/mcpgw migrate --direction up
 
 migrate-down:
-	@echo "TODO: implement migrations down command"
+	@test "$(CONFIRM)" = "1" || (echo "Set CONFIRM=1 to run down migrations"; exit 1)
+	go run ./cmd/mcpgw migrate --direction down
 
 docker-build:
-	docker build -t mcpgw:latest .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		-t mcpgw:latest .
+
+docker-size: docker-build
+	@echo "Image size:"
+	@docker images mcpgw:latest --format '{{.Size}}'
 
 docker-run:
 	docker run -p 8443:8443 -p 9090:9090 mcpgw:latest

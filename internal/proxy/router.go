@@ -137,7 +137,7 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 		return nil, fmt.Errorf("route tool: missing tool name")
 	}
 
-	requestedServer, backendToolName := splitFederatedToolName(name)
+	backendToolName, requestedServer := r.resolveFederatedName(name)
 	candidates := r.index.LookupTool(backendToolName)
 	if requestedServer != "" {
 		candidates = filterCandidatesByServer(candidates, requestedServer)
@@ -181,32 +181,45 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 	return result, nil
 }
 
-func filterCandidatesByServer(candidates []types.ServerRecord, requestedServer string) []types.ServerRecord {
+func filterCandidatesByServer(candidates []types.ServerRecord, requested string) []types.ServerRecord {
 	filtered := make([]types.ServerRecord, 0, len(candidates))
-	for _, candidate := range candidates {
-		if strings.EqualFold(strings.TrimSpace(candidate.Name), requestedServer) || strings.EqualFold(strings.TrimSpace(candidate.ID), requestedServer) {
-			filtered = append(filtered, candidate)
+	for _, c := range candidates {
+		if matchesServerHint(c.Name, requested) || matchesServerHint(c.ID, requested) {
+			filtered = append(filtered, c)
 		}
 	}
 	return filtered
 }
 
-func splitFederatedToolName(input string) (server string, tool string) {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return "", ""
+func matchesServerHint(actual, hint string) bool {
+	a := strings.TrimSpace(actual)
+	return strings.EqualFold(a, hint) ||
+		strings.EqualFold(strings.TrimPrefix(a, "mcp-"), hint)
+}
+
+// resolveFederatedName maps a federated tool name back to a raw backend tool
+// name and an optional server hint. It supports both the new compact format
+// (<displayName>.<rawTool>) and the legacy mcp.<server>.<tool> format.
+func (r *Router) resolveFederatedName(name string) (rawToolName, serverHint string) {
+	// Direct index match first (covers deduped names like "k8s.list_pods").
+	if candidates := r.index.LookupTool(name); len(candidates) > 0 {
+		return name, ""
 	}
 
-	parts := strings.SplitN(trimmed, ".", 3)
-	if len(parts) == 3 && parts[0] == "mcp" {
-		server = strings.TrimSpace(parts[1])
-		tool = strings.TrimSpace(parts[2])
-		if tool == "" {
-			return "", trimmed
+	// New format: <displayName>.<rawTool> — strip first segment as server hint.
+	if dotIdx := strings.Index(name, "."); dotIdx > 0 {
+		rest := name[dotIdx+1:]
+		if candidates := r.index.LookupTool(rest); len(candidates) > 0 {
+			return rest, name[:dotIdx]
 		}
-		return server, tool
 	}
-	return "", trimmed
+
+	// Legacy fallback: mcp.<server>.<tool>.
+	if parts := strings.SplitN(name, ".", 3); len(parts) == 3 && parts[0] == "mcp" {
+		return parts[2], parts[1]
+	}
+
+	return name, ""
 }
 
 func (r *Router) checkServerRateLimit(ctx context.Context, server *types.ServerRecord) error {

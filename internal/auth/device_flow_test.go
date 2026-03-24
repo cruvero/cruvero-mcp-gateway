@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -82,6 +83,20 @@ func TestDeviceFlowHandler_Code(t *testing.T) {
 				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, w.Code, w.Body.String())
 			}
 
+			if tt.wantStatus == http.StatusOK {
+				cl := w.Header().Get("Content-Length")
+				if cl == "" {
+					t.Fatal("expected Content-Length header on success response")
+				}
+				n, err := strconv.Atoi(cl)
+				if err != nil {
+					t.Fatalf("invalid Content-Length %q: %v", cl, err)
+				}
+				if n != w.Body.Len() {
+					t.Fatalf("Content-Length %d does not match body size %d", n, w.Body.Len())
+				}
+			}
+
 			if tt.wantError != "" {
 				var errResp map[string]string
 				if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
@@ -104,27 +119,46 @@ func TestDeviceFlowHandler_Token(t *testing.T) {
 			t.Fatalf("expected client_id test-client, got %s", vals.Get("client_id"))
 		}
 
-		deviceCode := vals.Get("device_code")
-		switch deviceCode {
-		case "pending-code":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": "authorization_pending",
-			})
-		case "valid-code":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "access-xyz",
-				"token_type":   "Bearer",
-				"expires_in":   3600,
-			})
+		grantType := vals.Get("grant_type")
+		switch grantType {
+		case "refresh_token":
+			refreshToken := vals.Get("refresh_token")
+			if refreshToken == "valid-refresh" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token":  "access-refreshed",
+					"refresh_token": "refresh-new",
+					"token_type":    "Bearer",
+					"expires_in":    3600,
+				})
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+			}
 		default:
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": "invalid_grant",
-			})
+			deviceCode := vals.Get("device_code")
+			switch deviceCode {
+			case "pending-code":
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error": "authorization_pending",
+				})
+			case "valid-code":
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"access_token": "access-xyz",
+					"token_type":   "Bearer",
+					"expires_in":   3600,
+				})
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error": "invalid_grant",
+				})
+			}
 		}
 	}))
 	defer idp.Close()
@@ -174,6 +208,21 @@ func TestDeviceFlowHandler_Token(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 		},
+		{
+			name: "valid refresh token",
+			form: url.Values{
+				"grant_type":    {"refresh_token"},
+				"refresh_token": {"valid-refresh"},
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "missing refresh token",
+			form: url.Values{
+				"grant_type": {"refresh_token"},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -185,6 +234,17 @@ func TestDeviceFlowHandler_Token(t *testing.T) {
 
 			if w.Code != tt.wantStatus {
 				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, w.Code, w.Body.String())
+			}
+
+			// Responses proxied from the IdP should include Content-Length.
+			if cl := w.Header().Get("Content-Length"); cl != "" {
+				n, err := strconv.Atoi(cl)
+				if err != nil {
+					t.Fatalf("invalid Content-Length %q: %v", cl, err)
+				}
+				if n != w.Body.Len() {
+					t.Fatalf("Content-Length %d does not match body size %d", n, w.Body.Len())
+				}
 			}
 		})
 	}
@@ -215,6 +275,96 @@ func TestDeviceFlowHandler_Verify(t *testing.T) {
 		if !strings.Contains(ct, "text/html") {
 			t.Fatalf("expected text/html content type, got %s", ct)
 		}
+	}
+}
+
+func TestDeviceFlowHandler_VerifyEmptyUserCode(t *testing.T) {
+	cfg := &config.Config{
+		DeviceFlowEnabled:  true,
+		DeviceFlowClientID: "test-client",
+	}
+	handler := NewDeviceFlowHandler(cfg, nil)
+	router := handler.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/verify", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", w.Code)
+	}
+
+	var errResp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+	if errResp["error"] != "invalid_request" {
+		t.Fatalf("expected error invalid_request, got %q", errResp["error"])
+	}
+}
+
+func TestDeviceFlowHandler_TokenExpiredAndDenied(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		vals, _ := url.ParseQuery(string(body))
+		deviceCode := vals.Get("device_code")
+
+		w.Header().Set("Content-Type", "application/json")
+		switch deviceCode {
+		case "expired-code":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "expired_token"})
+		case "denied-code":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "access_denied"})
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+		}
+	}))
+	defer idp.Close()
+
+	cfg := &config.Config{
+		DeviceFlowEnabled:     true,
+		DeviceFlowIDPTokenURL: idp.URL,
+		DeviceFlowClientID:    "test-client",
+	}
+
+	handler := NewDeviceFlowHandler(cfg, nil)
+	router := handler.Routes()
+
+	tests := []struct {
+		name       string
+		deviceCode string
+		wantStatus int
+	}{
+		{
+			name:       "expired token returns 410",
+			deviceCode: "expired-code",
+			wantStatus: http.StatusGone,
+		},
+		{
+			name:       "access denied returns 403",
+			deviceCode: "denied-code",
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			form := url.Values{
+				"grant_type":  {deviceGrantType},
+				"device_code": {tt.deviceCode},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, w.Code, w.Body.String())
+			}
+		})
 	}
 }
 
@@ -257,5 +407,74 @@ func TestDeviceFlowHandler_TokenWithClientSecret(t *testing.T) {
 	}
 	if receivedSecret != "secret-123" {
 		t.Fatalf("expected client_secret to be forwarded, got %q", receivedSecret)
+	}
+}
+
+func TestDeviceFlowHandler_OversizedIdPResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		bodySize   int
+		wantStatus int
+		wantError  string
+	}{
+		{
+			name:       "large but within limit succeeds",
+			bodySize:   500 * 1024, // 500KB
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "oversized response rejected",
+			bodySize:   (1 << 20) + 1, // 1MB + 1 byte
+			wantStatus: http.StatusBadGateway,
+			wantError:  "server_error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := map[string]any{
+				"access_token": strings.Repeat("a", tt.bodySize),
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			}
+
+			idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(payload)
+			}))
+			defer idp.Close()
+
+			cfg := &config.Config{
+				DeviceFlowEnabled:     true,
+				DeviceFlowIDPTokenURL: idp.URL,
+				DeviceFlowClientID:    "test-client",
+			}
+
+			handler := NewDeviceFlowHandler(cfg, nil)
+			router := handler.Routes()
+
+			form := url.Values{
+				"grant_type":  {deviceGrantType},
+				"device_code": {"any-code"},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, w.Code, w.Body.String())
+			}
+
+			if tt.wantError != "" {
+				var errResp map[string]string
+				if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+					t.Fatalf("unmarshal error response: %v", err)
+				}
+				if errResp["error"] != tt.wantError {
+					t.Fatalf("expected error %q, got %q", tt.wantError, errResp["error"])
+				}
+			}
+		})
 	}
 }

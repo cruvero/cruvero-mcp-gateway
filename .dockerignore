@@ -1,7 +1,16 @@
 bin/
 .git/
+.github/
 docs/
 charts/
 deploy/
+certs/
 *.md
-.github/
+!go.mod
+!go.sum
+coverage.out
+.env
+.env.*
+*.test
+__debug_bin
+.devcontainer/

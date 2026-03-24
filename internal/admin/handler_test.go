@@ -53,9 +53,18 @@ func (m *mockServerStore) GetByName(_ context.Context, _ string) (*types.ServerR
 func (m *mockServerStore) GetBySPIFFEID(_ context.Context, _ string) (*types.ServerRecord, error) {
 	return nil, nil
 }
-func (m *mockServerStore) List(_ context.Context, _ types.ServerFilter) ([]types.ServerRecord, error) {
+func (m *mockServerStore) List(_ context.Context, filter types.ServerFilter) ([]types.ServerRecord, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
+	}
+	if filter.Status != nil {
+		var filtered []types.ServerRecord
+		for _, s := range m.servers {
+			if s.Status == *filter.Status {
+				filtered = append(filtered, s)
+			}
+		}
+		return filtered, nil
 	}
 	return m.servers, nil
 }
@@ -93,9 +102,13 @@ func (m *mockServerStore) ListExpired(_ context.Context, _ time.Duration) ([]typ
 }
 
 type mockAuditStore struct {
-	entries  []types.AuditEntry
-	queryErr error
-	logged   []*types.AuditEntry
+	entries         []types.AuditEntry
+	queryErr        error
+	logged          []*types.AuditEntry
+	count           int
+	countErr        error
+	lastQueryFilter types.AuditFilter
+	lastCountFilter types.AuditFilter
 }
 
 var _ store.AuditStore = (*mockAuditStore)(nil)
@@ -104,20 +117,38 @@ func (m *mockAuditStore) Log(_ context.Context, entry *types.AuditEntry) error {
 	m.logged = append(m.logged, entry)
 	return nil
 }
-func (m *mockAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
+func (m *mockAuditStore) Query(_ context.Context, filter types.AuditFilter) ([]types.AuditEntry, error) {
+	m.lastQueryFilter = filter
 	if m.queryErr != nil {
 		return nil, m.queryErr
 	}
 	return m.entries, nil
 }
+func (m *mockAuditStore) Count(_ context.Context, filter types.AuditFilter) (int, error) {
+	m.lastCountFilter = filter
+	if m.countErr != nil {
+		return 0, m.countErr
+	}
+	if m.count > 0 {
+		return m.count, nil
+	}
+	return len(m.entries), nil
+}
 
 type mockClassificationStore struct {
-	tools     []types.ToolClassification
-	byName    map[string]*types.ToolClassification
-	getAllErr error
-	getErr    error
-	upsertErr error
-	upserted  []*types.ToolClassification
+	tools             []types.ToolClassification
+	byName            map[string]*types.ToolClassification
+	getAllErr         error
+	getByRiskErr      error
+	getErr            error
+	upsertErr         error
+	upserted          []*types.ToolClassification
+	searchResults     []types.ToolClassification
+	searchTotal       int
+	searchErr         error
+	deleteNotInErr    error
+	deleteNotInResult int64
+	deleteNotInCalled [][]string
 }
 
 var _ store.ToolClassificationStore = (*mockClassificationStore)(nil)
@@ -140,6 +171,9 @@ func (m *mockClassificationStore) GetAll(_ context.Context) ([]types.ToolClassif
 	return m.tools, nil
 }
 func (m *mockClassificationStore) GetByRiskLevel(_ context.Context, level types.RiskLevel) ([]types.ToolClassification, error) {
+	if m.getByRiskErr != nil {
+		return nil, m.getByRiskErr
+	}
 	var result []types.ToolClassification
 	for _, t := range m.tools {
 		if t.RiskLevel == level {
@@ -147,6 +181,26 @@ func (m *mockClassificationStore) GetByRiskLevel(_ context.Context, level types.
 		}
 	}
 	return result, nil
+}
+func (m *mockClassificationStore) Search(_ context.Context, filter types.ToolFilter) ([]types.ToolClassification, int, error) {
+	if m.searchErr != nil {
+		return nil, 0, m.searchErr
+	}
+	if m.searchResults != nil {
+		return m.searchResults, m.searchTotal, nil
+	}
+	// Fall back to in-memory filtering of m.tools for backward compatibility.
+	var results []types.ToolClassification
+	for _, t := range m.tools {
+		if filter.RiskLevel.IsValid() && t.RiskLevel != filter.RiskLevel {
+			continue
+		}
+		if filter.Query != "" && !strings.Contains(strings.ToLower(t.ToolName), strings.ToLower(filter.Query)) {
+			continue
+		}
+		results = append(results, t)
+	}
+	return results, len(results), nil
 }
 func (m *mockClassificationStore) Upsert(_ context.Context, c *types.ToolClassification) error {
 	if m.upsertErr != nil {
@@ -156,6 +210,160 @@ func (m *mockClassificationStore) Upsert(_ context.Context, c *types.ToolClassif
 	return nil
 }
 func (m *mockClassificationStore) Delete(_ context.Context, _ string) error { return nil }
+func (m *mockClassificationStore) DeleteNotIn(_ context.Context, activeToolNames []string) (int64, error) {
+	m.deleteNotInCalled = append(m.deleteNotInCalled, activeToolNames)
+	if m.deleteNotInErr != nil {
+		return 0, m.deleteNotInErr
+	}
+	return m.deleteNotInResult, nil
+}
+
+type mockUserStore struct {
+	users         []types.User
+	byID          map[string]*types.User
+	byOIDCSub     map[string]*types.User
+	searchResults []types.User
+	searchTotal   int
+	searchErr     error
+	getErr        error
+	updateRoleErr error
+	permissions   []types.UserToolPermission
+	permissionsOK map[string]bool
+	getPermsErr   error
+	setPermsErr   error
+	setPermsCalls []struct {
+		userID    string
+		toolNames []string
+		grantedBy string
+	}
+	updatedRoles []struct {
+		id   string
+		role types.UserRole
+	}
+}
+
+var _ store.UserStore = (*mockUserStore)(nil)
+
+func (m *mockUserStore) Upsert(_ context.Context, _ *types.User) error { return nil }
+func (m *mockUserStore) Get(_ context.Context, id string) (*types.User, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	if m.byID != nil {
+		if u, ok := m.byID[id]; ok {
+			return u, nil
+		}
+	}
+	return nil, nil
+}
+func (m *mockUserStore) GetByOIDCSub(_ context.Context, sub string) (*types.User, error) {
+	if m.byOIDCSub != nil {
+		if u, ok := m.byOIDCSub[sub]; ok {
+			return u, nil
+		}
+	}
+	return nil, nil
+}
+func (m *mockUserStore) Search(_ context.Context, filter types.UserFilter) ([]types.User, int, error) {
+	if m.searchErr != nil {
+		return nil, 0, m.searchErr
+	}
+	if m.searchResults != nil {
+		return m.searchResults, m.searchTotal, nil
+	}
+	var results []types.User
+	for _, u := range m.users {
+		if filter.Role.IsValid() && u.Role != filter.Role {
+			continue
+		}
+		if filter.Query != "" && !strings.Contains(strings.ToLower(u.Email), strings.ToLower(filter.Query)) {
+			continue
+		}
+		results = append(results, u)
+	}
+	return results, len(results), nil
+}
+func (m *mockUserStore) UpdateRole(_ context.Context, id string, role types.UserRole) error {
+	if m.updateRoleErr != nil {
+		return m.updateRoleErr
+	}
+	m.updatedRoles = append(m.updatedRoles, struct {
+		id   string
+		role types.UserRole
+	}{id, role})
+	return nil
+}
+func (m *mockUserStore) Delete(_ context.Context, _ string) error { return nil }
+func (m *mockUserStore) GetToolPermissions(_ context.Context, _ string) ([]types.UserToolPermission, error) {
+	if m.getPermsErr != nil {
+		return nil, m.getPermsErr
+	}
+	return m.permissions, nil
+}
+func (m *mockUserStore) HasToolPermission(_ context.Context, _ string, tool string) (bool, error) {
+	if m.permissionsOK != nil {
+		return m.permissionsOK[tool], nil
+	}
+	return false, nil
+}
+func (m *mockUserStore) SetToolPermissions(_ context.Context, userID string, toolNames []string, grantedBy string) error {
+	if m.setPermsErr != nil {
+		return m.setPermsErr
+	}
+	m.setPermsCalls = append(m.setPermsCalls, struct {
+		userID    string
+		toolNames []string
+		grantedBy string
+	}{userID, toolNames, grantedBy})
+	return nil
+}
+
+type mockSynonymStore struct {
+	entries   []types.SynonymEntry
+	listErr   error
+	upsertErr error
+	deleteErr error
+	upserted  []*types.SynonymEntry
+	deleted   []string
+}
+
+var _ store.SynonymStore = (*mockSynonymStore)(nil)
+
+func (m *mockSynonymStore) List(_ context.Context) ([]types.SynonymEntry, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.entries, nil
+}
+func (m *mockSynonymStore) Upsert(_ context.Context, entry *types.SynonymEntry) error {
+	if m.upsertErr != nil {
+		return m.upsertErr
+	}
+	m.upserted = append(m.upserted, entry)
+	return nil
+}
+func (m *mockSynonymStore) Delete(_ context.Context, term string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deleted = append(m.deleted, term)
+	return nil
+}
+
+type mockReindexLogStore struct {
+	entries   []types.ReindexLogEntry
+	recentErr error
+}
+
+var _ store.ReindexLogStore = (*mockReindexLogStore)(nil)
+
+func (m *mockReindexLogStore) Log(_ context.Context, _ *types.ReindexLogEntry) error { return nil }
+func (m *mockReindexLogStore) Recent(_ context.Context, _ int) ([]types.ReindexLogEntry, error) {
+	if m.recentErr != nil {
+		return nil, m.recentErr
+	}
+	return m.entries, nil
+}
 
 type mockBroadcaster struct {
 	published []struct {
@@ -1204,7 +1412,7 @@ func TestHandleAudit_WithStoreAndPagination(t *testing.T) {
 func TestHandleAudit_WithFilters(t *testing.T) {
 	auditStore := &mockAuditStore{
 		entries: []types.AuditEntry{
-			{EventType: "tool_call", ClientID: "client-1", ServerName: "server-1", CreatedAt: time.Now()},
+			{EventType: "tool_call", ClientID: "client-1", Username: "client-1", ServerName: "server-1", CreatedAt: time.Now()},
 		},
 	}
 
@@ -1212,7 +1420,7 @@ func TestHandleAudit_WithFilters(t *testing.T) {
 		AuditStore: auditStore,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/audit?client_id=client-1&tool_name=server-1&decision=tool_call&since=2025-01-01&until=2025-12-31", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit?client_id=client-1&username=alice&tool_name=server-1&decision=tool_call&since=2025-01-01&until=2025-12-31&sort_by=username&sort_dir=asc", nil)
 	req = withSession(req, defaultSession())
 	w := httptest.NewRecorder()
 
@@ -1220,6 +1428,58 @@ func TestHandleAudit_WithFilters(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if auditStore.lastQueryFilter.Username != "alice" {
+		t.Fatalf("expected username filter alice, got %q", auditStore.lastQueryFilter.Username)
+	}
+	if auditStore.lastQueryFilter.SortBy != "username" || auditStore.lastQueryFilter.SortDir != "asc" {
+		t.Fatalf("unexpected sort filter: by=%q dir=%q", auditStore.lastQueryFilter.SortBy, auditStore.lastQueryFilter.SortDir)
+	}
+	if auditStore.lastCountFilter.Username != "alice" {
+		t.Fatalf("expected count filter username alice, got %q", auditStore.lastCountFilter.Username)
+	}
+}
+
+func TestHandleAudit_SortableHeadersAndExportCarryFilters(t *testing.T) {
+	auditStore := &mockAuditStore{
+		entries: []types.AuditEntry{
+			{
+				EventType:  "tool_call",
+				ClientID:   "client-1",
+				Username:   "alice@example.com",
+				ServerName: "server-1",
+				CreatedAt:  time.Now(),
+				Details:    map[string]any{"tool": "exec"},
+			},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		AuditStore: auditStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit?client_id=client-1&username=alice&tool_name=server-1&decision=tool_call&details=exec&since=2025-01-01&until=2025-12-31&sort_by=username&sort_dir=asc", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleAudit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "/admin/audit/export?client_id=client-1&username=alice") {
+		t.Fatalf("expected export link to include active username filter")
+	}
+	if !strings.Contains(body, "sort_by=event_type") {
+		t.Fatalf("expected sortable event type header link")
+	}
+	if !strings.Contains(body, "type=\"hidden\" name=\"sort_by\" class=\"audit-filter\" value=\"username\"") {
+		t.Fatalf("expected hidden sort_by filter input to preserve sorting across filter changes")
+	}
+	if !strings.Contains(body, "type=\"hidden\" name=\"sort_dir\" class=\"audit-filter\" value=\"asc\"") {
+		t.Fatalf("expected hidden sort_dir filter input to preserve sorting across filter changes")
 	}
 }
 
@@ -1230,6 +1490,7 @@ func TestHandleAuditExport_WithEntries(t *testing.T) {
 			{
 				EventType:  "tool_call",
 				ClientID:   "client-1",
+				Username:   "alice@example.com",
 				ServerName: "server-1",
 				CreatedAt:  now,
 				Details:    map[string]any{"tool": "exec", "result": "ok"},
@@ -1237,6 +1498,7 @@ func TestHandleAuditExport_WithEntries(t *testing.T) {
 			{
 				EventType:  "policy_deny",
 				ClientID:   "client-2",
+				Username:   "system",
 				ServerName: "server-2",
 				CreatedAt:  now.Add(-time.Hour),
 				Details:    map[string]any{"reason": "denied"},
@@ -1248,7 +1510,7 @@ func TestHandleAuditExport_WithEntries(t *testing.T) {
 		AuditStore: auditStore,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/audit/export?client_id=client-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit/export?client_id=client-1&username=alice&sort_by=username&sort_dir=asc", nil)
 	req = withSession(req, defaultSession())
 	w := httptest.NewRecorder()
 
@@ -1261,13 +1523,22 @@ func TestHandleAuditExport_WithEntries(t *testing.T) {
 		t.Fatalf("expected text/csv, got %s", ct)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "time,event_type,client_id,server_name,details") {
+	if !strings.Contains(body, "time,event_type,client_id,username,server_name,details") {
 		t.Fatalf("expected CSV header row")
+	}
+	if !strings.Contains(body, "alice@example.com") {
+		t.Fatalf("expected username column data in export")
 	}
 	// Check we have two data rows plus header.
 	lines := strings.Split(strings.TrimSpace(body), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines (header + 2 data), got %d", len(lines))
+	}
+	if auditStore.lastQueryFilter.Username != "alice" {
+		t.Fatalf("expected export username filter alice, got %q", auditStore.lastQueryFilter.Username)
+	}
+	if auditStore.lastQueryFilter.SortBy != "username" || auditStore.lastQueryFilter.SortDir != "asc" {
+		t.Fatalf("unexpected export sort filter: by=%q dir=%q", auditStore.lastQueryFilter.SortBy, auditStore.lastQueryFilter.SortDir)
 	}
 }
 
@@ -1315,56 +1586,81 @@ func (n *noInspectorBackend) Close() error { return nil }
 
 func TestBuildAuditFilter(t *testing.T) {
 	tests := []struct {
-		name       string
-		queryStr   string
-		wantClient string
-		wantServer string
-		wantEvent  string
-		wantSince  bool
-		wantUntil  bool
+		name         string
+		queryStr     string
+		wantClient   string
+		wantUsername string
+		wantServer   string
+		wantEvent    string
+		wantSortBy   string
+		wantSortDir  string
+		wantSince    bool
+		wantUntil    bool
 	}{
 		{
-			name:       "all filters",
-			queryStr:   "client_id=client-1&tool_name=server-1&decision=tool_call&since=2025-01-15&until=2025-06-30",
-			wantClient: "client-1",
-			wantServer: "server-1",
-			wantEvent:  "tool_call",
-			wantSince:  true,
-			wantUntil:  true,
+			name:         "all filters",
+			queryStr:     "client_id=client-1&username=alice&tool_name=server-1&decision=tool_call&since=2025-01-15&until=2025-06-30&sort_by=username&sort_dir=asc",
+			wantClient:   "client-1",
+			wantUsername: "alice",
+			wantServer:   "server-1",
+			wantEvent:    "tool_call",
+			wantSortBy:   "username",
+			wantSortDir:  "asc",
+			wantSince:    true,
+			wantUntil:    true,
 		},
 		{
-			name:       "no filters",
-			queryStr:   "",
-			wantClient: "",
-			wantServer: "",
-			wantEvent:  "",
-			wantSince:  false,
-			wantUntil:  false,
+			name:         "no filters",
+			queryStr:     "",
+			wantClient:   "",
+			wantUsername: "",
+			wantServer:   "",
+			wantEvent:    "",
+			wantSortBy:   "created_at",
+			wantSortDir:  "desc",
+			wantSince:    false,
+			wantUntil:    false,
 		},
 		{
-			name:       "invalid since date",
-			queryStr:   "since=not-a-date",
-			wantSince:  false,
+			name:        "invalid since date",
+			queryStr:    "since=not-a-date",
+			wantSortBy:  "created_at",
+			wantSortDir: "desc",
+			wantSince:   false,
 		},
 		{
-			name:       "invalid until date",
-			queryStr:   "until=not-a-date",
-			wantUntil:  false,
+			name:        "invalid until date",
+			queryStr:    "until=not-a-date",
+			wantSortBy:  "created_at",
+			wantSortDir: "desc",
+			wantUntil:   false,
 		},
 		{
-			name:       "only client_id",
-			queryStr:   "client_id=my-client",
-			wantClient: "my-client",
+			name:        "only client_id",
+			queryStr:    "client_id=my-client",
+			wantClient:  "my-client",
+			wantSortBy:  "created_at",
+			wantSortDir: "desc",
 		},
 		{
-			name:       "only since",
-			queryStr:   "since=2025-03-15",
-			wantSince:  true,
+			name:        "only since",
+			queryStr:    "since=2025-03-15",
+			wantSortBy:  "created_at",
+			wantSortDir: "desc",
+			wantSince:   true,
 		},
 		{
-			name:       "only until",
-			queryStr:   "until=2025-12-01",
-			wantUntil:  true,
+			name:        "only until",
+			queryStr:    "until=2025-12-01",
+			wantSortBy:  "created_at",
+			wantSortDir: "desc",
+			wantUntil:   true,
+		},
+		{
+			name:        "invalid sort falls back",
+			queryStr:    "sort_by=drop_table&sort_dir=sideways",
+			wantSortBy:  "created_at",
+			wantSortDir: "desc",
 		},
 	}
 
@@ -1376,11 +1672,20 @@ func TestBuildAuditFilter(t *testing.T) {
 			if filter.ClientID != tt.wantClient {
 				t.Errorf("ClientID: got %q, want %q", filter.ClientID, tt.wantClient)
 			}
+			if filter.Username != tt.wantUsername {
+				t.Errorf("Username: got %q, want %q", filter.Username, tt.wantUsername)
+			}
 			if filter.ServerName != tt.wantServer {
 				t.Errorf("ServerName: got %q, want %q", filter.ServerName, tt.wantServer)
 			}
 			if filter.EventType != tt.wantEvent {
 				t.Errorf("EventType: got %q, want %q", filter.EventType, tt.wantEvent)
+			}
+			if filter.SortBy != tt.wantSortBy {
+				t.Errorf("SortBy: got %q, want %q", filter.SortBy, tt.wantSortBy)
+			}
+			if filter.SortDir != tt.wantSortDir {
+				t.Errorf("SortDir: got %q, want %q", filter.SortDir, tt.wantSortDir)
 			}
 			if tt.wantSince && filter.Since == nil {
 				t.Errorf("expected Since to be set")
@@ -1522,6 +1827,135 @@ func TestNewRouter_NilAuthWithoutDevMode_Panics(t *testing.T) {
 	NewRouter(AdminDeps{Auth: nil, DevMode: false})
 }
 
+func TestNewRouter_IntegratedMode_AllowsNilAuth(t *testing.T) {
+	router := NewRouter(AdminDeps{
+		Auth:                 nil,
+		Mode:                 "integrated",
+		PlatformServiceToken: "svc-token",
+	})
+	if router == nil {
+		t.Fatal("expected non-nil router in integrated mode")
+	}
+}
+
+func TestHandleTools_SearchError_GracefulDegradation(t *testing.T) {
+	classStore := &mockClassificationStore{
+		searchErr: fmt.Errorf("database connection lost"),
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		ClassificationStore: classStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/tools", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleTools(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 even on Search error, got %d", w.Code)
+	}
+}
+
+func TestHandleTools_Pagination(t *testing.T) {
+	classStore := &mockClassificationStore{
+		searchResults: []types.ToolClassification{
+			{ToolName: "page2-tool", RiskLevel: types.RiskReadOnly},
+		},
+		searchTotal: 75,
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		ClassificationStore: classStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/tools?page=2", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleTools(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "page2-tool") {
+		t.Fatalf("expected page2-tool in response")
+	}
+}
+
+func TestHandleAudit_DetailsSearch(t *testing.T) {
+	auditStore := &mockAuditStore{
+		entries: []types.AuditEntry{
+			{
+				EventType:  "tool_call",
+				ClientID:   "client-1",
+				ServerName: "server-1",
+				CreatedAt:  time.Now(),
+				Details:    map[string]any{"tool": "exec"},
+			},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		AuditStore: auditStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit?details=exec", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleAudit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestBuildAuditFilter_DetailsSearch(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit?details=search+term", nil)
+	filter := buildAuditFilter(req)
+
+	if filter.DetailsSearch != "search term" {
+		t.Fatalf("expected DetailsSearch='search term', got %q", filter.DetailsSearch)
+	}
+}
+
+func TestAuditEntryView_PrettyJSON(t *testing.T) {
+	auditStore := &mockAuditStore{
+		entries: []types.AuditEntry{
+			{
+				EventType:  "tool_call",
+				ClientID:   "client-1",
+				ServerName: "server-1",
+				CreatedAt:  time.Now(),
+				Details:    map[string]any{"key": "value"},
+			},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		AuditStore: auditStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/audit", nil)
+	req.Header.Set("HX-Request", "true")
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleAudit(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	// Pretty-printed JSON should have indentation (quotes are HTML-encoded as &#34;).
+	if !strings.Contains(body, "&#34;key&#34;: &#34;value&#34;") {
+		t.Fatalf("expected pretty-printed JSON in response, got: %s", body)
+	}
+}
+
 func TestNewRouter_DevMode(t *testing.T) {
 	mb := ratelimit.NewMemoryBackend(time.Minute, 5*time.Minute)
 	defer func() { _ = mb.Close() }()
@@ -1567,4 +2001,1374 @@ func TestNewRouter_DevMode(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/admin/" {
 		t.Fatalf("expected redirect to /admin/, got %s", loc)
 	}
+}
+
+func TestHandleDashboard_DevModeBanner(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{DevMode: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	req = withSession(req, defaultSession())
+	rec := httptest.NewRecorder()
+
+	r := chi.NewRouter()
+	r.Get("/admin/", handler.HandleDashboard)
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "dev-mode-banner") {
+		t.Fatal("expected dev mode banner in response")
+	}
+}
+
+func TestHandleDashboard_NoDevModeBanner(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{DevMode: false})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	req = withSession(req, defaultSession())
+	rec := httptest.NewRecorder()
+
+	r := chi.NewRouter()
+	r.Get("/admin/", handler.HandleDashboard)
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "dev-mode-banner") {
+		t.Fatal("expected no dev mode banner in response")
+	}
+}
+
+// --- Users handler tests ---
+
+func TestHandleUsers(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		users: []types.User{
+			{ID: "u1", Email: "alice@example.com", DisplayName: "Alice", Role: types.RoleAdmin, CreatedAt: now, UpdatedAt: now},
+			{ID: "u2", Email: "bob@example.com", DisplayName: "Bob", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore: userStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "alice@example.com") {
+		t.Fatal("expected alice in response")
+	}
+}
+
+func TestHandleUsers_HTMX(t *testing.T) {
+	userStore := &mockUserStore{
+		users: []types.User{
+			{ID: "u1", Email: "alice@example.com", Role: types.RoleAdmin, CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore: userStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req.Header.Set("HX-Request", "true")
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "<!DOCTYPE") {
+		t.Fatal("HTMX partial should not contain full page")
+	}
+}
+
+func TestHandleUsers_WithRoleFilter(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		users: []types.User{
+			{ID: "u1", Email: "alice@example.com", Role: types.RoleAdmin, CreatedAt: now, UpdatedAt: now},
+			{ID: "u2", Email: "bob@example.com", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore: userStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users?role=admin", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandleUsers_NilStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandleUserDetail(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		byID: map[string]*types.User{
+			"u1": {ID: "u1", OIDCSub: "sub-1", Email: "alice@example.com", DisplayName: "Alice", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "github.list_repos", GrantedBy: "admin", GrantedAt: now},
+		},
+	}
+	classStore := &mockClassificationStore{
+		tools: []types.ToolClassification{
+			{ToolName: "github.list_repos", RiskLevel: types.RiskReadOnly},
+			{ToolName: "github.delete_repo", RiskLevel: types.RiskDestructive},
+		},
+	}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:           userStore,
+		ClassificationStore: classStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/u1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "alice@example.com") {
+		t.Fatal("expected alice in response")
+	}
+}
+
+func TestHandleUserDetail_NotFound(t *testing.T) {
+	userStore := &mockUserStore{byID: map[string]*types.User{}}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore: userStore,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/missing", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "missing")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestHandleUserRoleUpdate_Success(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		byID: map[string]*types.User{
+			"u1": {ID: "u1", Email: "alice@example.com", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	auditStore := &mockAuditStore{}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"role": {"admin"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/role", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserRoleUpdate(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(userStore.updatedRoles) != 1 {
+		t.Fatalf("expected 1 role update, got %d", len(userStore.updatedRoles))
+	}
+	if userStore.updatedRoles[0].role != types.RoleAdmin {
+		t.Fatalf("expected admin role, got %s", userStore.updatedRoles[0].role)
+	}
+	if len(auditStore.logged) == 0 {
+		t.Fatal("expected audit entry")
+	}
+	if auditStore.logged[0].EventType != "user.role_changed" {
+		t.Fatalf("expected user.role_changed, got %s", auditStore.logged[0].EventType)
+	}
+}
+
+func TestHandleUserRoleUpdate_InvalidRole(t *testing.T) {
+	userStore := &mockUserStore{}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"role": {"superadmin"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/role", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserRoleUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleUserPermissionsUpdate_Success(t *testing.T) {
+	userStore := &mockUserStore{}
+	auditStore := &mockAuditStore{}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"tool_names": {"github.list_repos", "k8s.get_pods"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/permissions", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserPermissionsUpdate(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) != 1 {
+		t.Fatalf("expected 1 SetToolPermissions call, got %d", len(userStore.setPermsCalls))
+	}
+	if len(userStore.setPermsCalls[0].toolNames) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(userStore.setPermsCalls[0].toolNames))
+	}
+}
+
+func TestHandleUserToolsAdd(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "github.list_repos", GrantedBy: "admin", GrantedAt: now},
+		},
+	}
+	auditStore := &mockAuditStore{}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"tool_names": {"k8s.get_pods"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) != 1 {
+		t.Fatalf("expected 1 SetToolPermissions call, got %d", len(userStore.setPermsCalls))
+	}
+	// Should have merged: list_repos + get_pods = 2 tools.
+	if len(userStore.setPermsCalls[0].toolNames) != 2 {
+		t.Fatalf("expected 2 merged tools, got %d", len(userStore.setPermsCalls[0].toolNames))
+	}
+	if len(auditStore.logged) == 0 {
+		t.Fatal("expected audit entry")
+	}
+}
+
+func TestHandleUserToolsRemove(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "github.list_repos", GrantedBy: "admin", GrantedAt: now},
+			{UserID: "u1", ToolName: "k8s.get_pods", GrantedBy: "admin", GrantedAt: now},
+		},
+	}
+	auditStore := &mockAuditStore{}
+
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"tool_names": {"github.list_repos"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) != 1 {
+		t.Fatalf("expected 1 SetToolPermissions call, got %d", len(userStore.setPermsCalls))
+	}
+	// Should have remaining: only get_pods.
+	if len(userStore.setPermsCalls[0].toolNames) != 1 {
+		t.Fatalf("expected 1 remaining tool, got %d", len(userStore.setPermsCalls[0].toolNames))
+	}
+	if len(auditStore.logged) == 0 {
+		t.Fatal("expected audit entry")
+	}
+}
+
+func TestSplitFederatedName(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantServer string
+		wantTool   string
+	}{
+		{"legacy federated", "mcp.github.list_repos", "github", "list_repos"},
+		{"legacy only server", "mcp.github", "github", ""},
+		{"legacy deep name", "mcp.k8s.namespace.get_pods", "k8s", "namespace.get_pods"},
+		{"new format", "github.list_repos", "github", "list_repos"},
+		{"new format deep", "k8s.namespace.get_pods", "k8s", "namespace.get_pods"},
+		{"no dot", "list_repos", "", "list_repos"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, tool := splitFederatedName(tt.input)
+			if server != tt.wantServer {
+				t.Errorf("server: got %q, want %q", server, tt.wantServer)
+			}
+			if tool != tt.wantTool {
+				t.Errorf("tool: got %q, want %q", tool, tt.wantTool)
+			}
+		})
+	}
+}
+
+// --- parsePage tests ---
+
+func TestParsePage(t *testing.T) {
+	tests := []struct {
+		name     string
+		queryStr string
+		want     int
+	}{
+		{"valid page 3", "page=3", 3},
+		{"valid page 1", "page=1", 1},
+		{"missing page param", "", 1},
+		{"invalid non-numeric", "page=abc", 1},
+		{"zero page", "page=0", 1},
+		{"negative page", "page=-5", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/admin/test?"+tt.queryStr, nil)
+			got := parsePage(req)
+			if got != tt.want {
+				t.Fatalf("parsePage(%q) = %d, want %d", tt.queryStr, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- pagination tests ---
+
+func TestPagination(t *testing.T) {
+	tests := []struct {
+		name           string
+		total          int
+		pageSize       int
+		wantTotalPages int
+		wantPageCount  int
+	}{
+		{"zero total", 0, 50, 0, 0},
+		{"one page exact", 50, 50, 1, 1},
+		{"one page partial", 10, 50, 1, 1},
+		{"multiple pages", 120, 50, 3, 3},
+		{"multiple pages exact boundary", 100, 50, 2, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			totalPages, pages := pagination(tt.total, tt.pageSize)
+			if totalPages != tt.wantTotalPages {
+				t.Fatalf("totalPages = %d, want %d", totalPages, tt.wantTotalPages)
+			}
+			if len(pages) != tt.wantPageCount {
+				t.Fatalf("len(pages) = %d, want %d", len(pages), tt.wantPageCount)
+			}
+			// Verify page numbers are sequential starting from 1.
+			for i, p := range pages {
+				if p != i+1 {
+					t.Fatalf("pages[%d] = %d, want %d", i, p, i+1)
+				}
+			}
+		})
+	}
+}
+
+// --- emailFromUser tests ---
+
+func TestEmailFromUser_NilUser(t *testing.T) {
+	got := emailFromUser(nil)
+	if got != "" {
+		t.Fatalf("emailFromUser(nil) = %q, want empty string", got)
+	}
+}
+
+func TestEmailFromUser_ValidUser(t *testing.T) {
+	u := &types.User{Email: "test@example.com"}
+	got := emailFromUser(u)
+	if got != "test@example.com" {
+		t.Fatalf("emailFromUser = %q, want test@example.com", got)
+	}
+}
+
+// --- findTool tests ---
+
+func TestFindTool_Found(t *testing.T) {
+	tools := []types.ToolClassification{
+		{ToolName: "alpha", RiskLevel: types.RiskReadOnly},
+		{ToolName: "beta", RiskLevel: types.RiskWrite},
+	}
+	tc, ok := findTool(tools, "beta")
+	if !ok {
+		t.Fatal("expected findTool to return true for existing tool")
+	}
+	if tc.ToolName != "beta" {
+		t.Fatalf("expected beta, got %s", tc.ToolName)
+	}
+}
+
+func TestFindTool_NotFound(t *testing.T) {
+	tools := []types.ToolClassification{
+		{ToolName: "alpha", RiskLevel: types.RiskReadOnly},
+	}
+	_, ok := findTool(tools, "missing")
+	if ok {
+		t.Fatal("expected findTool to return false for missing tool")
+	}
+}
+
+func TestFindTool_EmptySlice(t *testing.T) {
+	_, ok := findTool(nil, "anything")
+	if ok {
+		t.Fatal("expected findTool to return false for nil slice")
+	}
+}
+
+// --- buildUserFilter tests ---
+
+func TestBuildUserFilter_NoParams(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	filter := buildUserFilter(req, 1)
+
+	if filter.Query != "" {
+		t.Fatalf("expected empty query, got %q", filter.Query)
+	}
+	if filter.Role != "" {
+		t.Fatalf("expected empty role, got %q", filter.Role)
+	}
+	if filter.Limit != defaultPageSize {
+		t.Fatalf("expected limit %d, got %d", defaultPageSize, filter.Limit)
+	}
+	if filter.Offset != 0 {
+		t.Fatalf("expected offset 0, got %d", filter.Offset)
+	}
+}
+
+func TestBuildUserFilter_WithRoleFilter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/users?role=admin&q=alice", nil)
+	filter := buildUserFilter(req, 2)
+
+	if filter.Query != "alice" {
+		t.Fatalf("expected query 'alice', got %q", filter.Query)
+	}
+	if filter.Role != types.RoleAdmin {
+		t.Fatalf("expected role admin, got %q", filter.Role)
+	}
+	if filter.Offset != defaultPageSize {
+		t.Fatalf("expected offset %d for page 2, got %d", defaultPageSize, filter.Offset)
+	}
+}
+
+func TestBuildUserFilter_InvalidRole(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/users?role=superadmin", nil)
+	filter := buildUserFilter(req, 1)
+
+	if filter.Role != "" {
+		t.Fatalf("expected empty role for invalid value, got %q", filter.Role)
+	}
+}
+
+// --- searchUsers tests ---
+
+func TestSearchUsers_NilStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+	users, total := handler.searchUsers(context.Background(), types.UserFilter{})
+
+	if users != nil {
+		t.Fatalf("expected nil users, got %v", users)
+	}
+	if total != 0 {
+		t.Fatalf("expected total 0, got %d", total)
+	}
+}
+
+func TestSearchUsers_SearchError(t *testing.T) {
+	userStore := &mockUserStore{searchErr: fmt.Errorf("db connection lost")}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	users, total := handler.searchUsers(context.Background(), types.UserFilter{})
+
+	if users != nil {
+		t.Fatalf("expected nil users on error, got %v", users)
+	}
+	if total != 0 {
+		t.Fatalf("expected total 0 on error, got %d", total)
+	}
+}
+
+func TestSearchUsers_Success(t *testing.T) {
+	userStore := &mockUserStore{
+		searchResults: []types.User{
+			{ID: "u1", Email: "alice@example.com"},
+		},
+		searchTotal: 1,
+	}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	users, total := handler.searchUsers(context.Background(), types.UserFilter{})
+
+	if len(users) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(users))
+	}
+	if total != 1 {
+		t.Fatalf("expected total 1, got %d", total)
+	}
+}
+
+// --- HandleUserDetail error path tests ---
+
+func TestHandleUserDetail_EmptyID(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore: &mockUserStore{},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty ID, got %d", w.Code)
+	}
+}
+
+func TestHandleUserDetail_NilUserStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/u1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for nil userStore, got %d", w.Code)
+	}
+}
+
+func TestHandleUserDetail_GetError(t *testing.T) {
+	userStore := &mockUserStore{getErr: fmt.Errorf("database unavailable")}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/u1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for Get error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserDetail_GetReturnsNilUser(t *testing.T) {
+	// byID map is empty so Get returns nil, nil.
+	userStore := &mockUserStore{byID: map[string]*types.User{}}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/nonexistent", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "nonexistent")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for nil user, got %d", w.Code)
+	}
+}
+
+func TestHandleUserDetail_GetToolPermissionsError(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		byID: map[string]*types.User{
+			"u1": {ID: "u1", Email: "alice@example.com", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+		getPermsErr: fmt.Errorf("permissions table unavailable"),
+	}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/users/u1", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserDetail(w, req)
+
+	// GetToolPermissions error is logged but the page still renders.
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 even with GetToolPermissions error, got %d", w.Code)
+	}
+}
+
+// --- HandleUserRoleUpdate error path tests ---
+
+func TestHandleUserRoleUpdate_EmptyID(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: &mockUserStore{}})
+
+	form := url.Values{"role": {"admin"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users//role", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserRoleUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty ID, got %d", w.Code)
+	}
+}
+
+func TestHandleUserRoleUpdate_NilUserStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+	form := url.Values{"role": {"admin"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/role", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserRoleUpdate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for nil userStore, got %d", w.Code)
+	}
+}
+
+func TestHandleUserRoleUpdate_UpdateRoleError(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		byID: map[string]*types.User{
+			"u1": {ID: "u1", Email: "alice@example.com", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+		updateRoleErr: fmt.Errorf("db write error"),
+	}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"role": {"admin"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/role", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserRoleUpdate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for UpdateRole error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserRoleUpdate_NoSession(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		byID: map[string]*types.User{
+			"u1": {ID: "u1", Email: "alice@example.com", Role: types.RoleUser, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	auditStore := &mockAuditStore{}
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"role": {"admin"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/role", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	// No session attached.
+	w := httptest.NewRecorder()
+
+	handler.HandleUserRoleUpdate(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(auditStore.logged) == 0 {
+		t.Fatal("expected audit entry")
+	}
+	if auditStore.logged[0].ClientID != "admin" {
+		t.Fatalf("expected changedBy=admin without session, got %s", auditStore.logged[0].ClientID)
+	}
+}
+
+// --- HandleUserPermissionsUpdate error path tests ---
+
+func TestHandleUserPermissionsUpdate_EmptyID(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: &mockUserStore{}})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users//permissions", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserPermissionsUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty ID, got %d", w.Code)
+	}
+}
+
+func TestHandleUserPermissionsUpdate_NilUserStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/permissions", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserPermissionsUpdate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for nil userStore, got %d", w.Code)
+	}
+}
+
+func TestHandleUserPermissionsUpdate_SetPermsError(t *testing.T) {
+	userStore := &mockUserStore{setPermsErr: fmt.Errorf("db error")}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/permissions", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserPermissionsUpdate(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for SetToolPermissions error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserPermissionsUpdate_NoSession(t *testing.T) {
+	userStore := &mockUserStore{}
+	auditStore := &mockAuditStore{}
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/permissions", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	// No session.
+	w := httptest.NewRecorder()
+
+	handler.HandleUserPermissionsUpdate(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(auditStore.logged) == 0 {
+		t.Fatal("expected audit entry")
+	}
+	if auditStore.logged[0].ClientID != "admin" {
+		t.Fatalf("expected grantedBy=admin without session, got %s", auditStore.logged[0].ClientID)
+	}
+}
+
+func TestHandleUserPermissionsUpdate_EmptyToolNames(t *testing.T) {
+	userStore := &mockUserStore{}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	// Submit with no tool_names field at all (clears all permissions).
+	form := url.Values{}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/permissions", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserPermissionsUpdate(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) != 1 {
+		t.Fatalf("expected 1 SetToolPermissions call, got %d", len(userStore.setPermsCalls))
+	}
+	if len(userStore.setPermsCalls[0].toolNames) != 0 {
+		t.Fatalf("expected 0 tool names, got %d", len(userStore.setPermsCalls[0].toolNames))
+	}
+}
+
+// --- HandleUserToolsAdd error path tests ---
+
+func TestHandleUserToolsAdd_EmptyID(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: &mockUserStore{}})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users//tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty ID, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsAdd_NilUserStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for nil userStore, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsAdd_GetToolPermissionsError(t *testing.T) {
+	userStore := &mockUserStore{getPermsErr: fmt.Errorf("permissions read error")}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for GetToolPermissions error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsAdd_SetPermsError(t *testing.T) {
+	userStore := &mockUserStore{setPermsErr: fmt.Errorf("write error")}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for SetToolPermissions error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsAdd_NoSession(t *testing.T) {
+	userStore := &mockUserStore{}
+	auditStore := &mockAuditStore{}
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	// No session.
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) == 0 {
+		t.Fatal("expected SetToolPermissions call")
+	}
+	if userStore.setPermsCalls[0].grantedBy != "admin" {
+		t.Fatalf("expected grantedBy=admin without session, got %s", userStore.setPermsCalls[0].grantedBy)
+	}
+}
+
+func TestHandleUserToolsAdd_DuplicateToolMerge(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "tool-a", GrantedBy: "admin", GrantedAt: now},
+		},
+	}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	// Add tool-a again (duplicate) plus tool-b (new).
+	form := url.Values{"tool_names": {"tool-a", "tool-b"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsAdd(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(userStore.setPermsCalls))
+	}
+	// Should have deduplicated: tool-a + tool-b = 2.
+	if len(userStore.setPermsCalls[0].toolNames) != 2 {
+		t.Fatalf("expected 2 merged tools, got %d", len(userStore.setPermsCalls[0].toolNames))
+	}
+}
+
+// --- HandleUserToolsRemove error path tests ---
+
+func TestHandleUserToolsRemove_EmptyID(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: &mockUserStore{}})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users//tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty ID, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsRemove_NilUserStore(t *testing.T) {
+	handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for nil userStore, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsRemove_GetToolPermissionsError(t *testing.T) {
+	userStore := &mockUserStore{getPermsErr: fmt.Errorf("permissions read error")}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"tool_names": {"tool-1"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for GetToolPermissions error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsRemove_SetPermsError(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "tool-a", GrantedBy: "admin", GrantedAt: now},
+			{UserID: "u1", ToolName: "tool-b", GrantedBy: "admin", GrantedAt: now},
+		},
+		setPermsErr: fmt.Errorf("write error"),
+	}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	form := url.Values{"tool_names": {"tool-a"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for SetToolPermissions error, got %d", w.Code)
+	}
+}
+
+func TestHandleUserToolsRemove_NoSession(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "tool-a", GrantedBy: "admin", GrantedAt: now},
+		},
+	}
+	auditStore := &mockAuditStore{}
+	handler := setupTestHandlerWithStores(t, AdminDeps{
+		UserStore:  userStore,
+		AuditStore: auditStore,
+	})
+
+	form := url.Values{"tool_names": {"tool-a"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	// No session.
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	if len(userStore.setPermsCalls) == 0 {
+		t.Fatal("expected SetToolPermissions call")
+	}
+	if userStore.setPermsCalls[0].grantedBy != "admin" {
+		t.Fatalf("expected revokedBy=admin without session, got %s", userStore.setPermsCalls[0].grantedBy)
+	}
+}
+
+func TestHandleUserToolsRemove_RemoveNonexistentTool(t *testing.T) {
+	now := time.Now()
+	userStore := &mockUserStore{
+		permissions: []types.UserToolPermission{
+			{UserID: "u1", ToolName: "tool-a", GrantedBy: "admin", GrantedAt: now},
+		},
+	}
+	handler := setupTestHandlerWithStores(t, AdminDeps{UserStore: userStore})
+
+	// Try to remove a tool that doesn't exist in the user's permissions.
+	form := url.Values{"tool_names": {"tool-nonexistent"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/u1/tools/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "u1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = withSession(req, defaultSession())
+	w := httptest.NewRecorder()
+
+	handler.HandleUserToolsRemove(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", w.Code)
+	}
+	// Original tool-a should remain since we tried to remove a non-existent one.
+	if len(userStore.setPermsCalls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(userStore.setPermsCalls))
+	}
+	if len(userStore.setPermsCalls[0].toolNames) != 1 {
+		t.Fatalf("expected 1 remaining tool, got %d", len(userStore.setPermsCalls[0].toolNames))
+	}
+}
+
+func TestHandlePruneOrphanedTools(t *testing.T) {
+	t.Run("successful prune with active servers", func(t *testing.T) {
+		serverStore := &mockServerStore{
+			servers: []types.ServerRecord{
+				{
+					ID:     "s1",
+					Name:   "active-server",
+					Status: types.StatusActive,
+					Capabilities: types.Capability{
+						Tools: []string{"tool.a", "tool.b"},
+					},
+				},
+				{
+					ID:     "s2",
+					Name:   "stale-server",
+					Status: types.StatusStale,
+					Capabilities: types.Capability{
+						Tools: []string{"tool.c"},
+					},
+				},
+			},
+		}
+		classStore := &mockClassificationStore{deleteNotInResult: 2}
+		auditStore := &mockAuditStore{}
+		broadcaster := &mockBroadcaster{}
+
+		handler := setupTestHandlerWithStores(t, AdminDeps{
+			ServerStore:         serverStore,
+			ClassificationStore: classStore,
+			AuditStore:          auditStore,
+			Broadcaster:         broadcaster,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/prune-orphaned-tools", nil)
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandlePruneOrphanedTools(w, req)
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("expected redirect (302), got %d: %s", w.Code, w.Body.String())
+		}
+		if len(classStore.deleteNotInCalled) != 1 {
+			t.Fatalf("expected 1 DeleteNotIn call, got %d", len(classStore.deleteNotInCalled))
+		}
+		// Only active server's tools should be passed.
+		called := classStore.deleteNotInCalled[0]
+		if len(called) != 2 {
+			t.Fatalf("expected 2 active tool names, got %d: %v", len(called), called)
+		}
+		// Verify stale server's tools were excluded.
+		for _, name := range called {
+			if name == "tool.c" {
+				t.Fatalf("stale server tool 'tool.c' should not be in active tools list")
+			}
+		}
+		if len(auditStore.logged) == 0 {
+			t.Fatal("expected audit entry")
+		}
+		if auditStore.logged[0].EventType != "tools_pruned" {
+			t.Fatalf("expected event_type=tools_pruned, got %s", auditStore.logged[0].EventType)
+		}
+		if len(broadcaster.published) == 0 {
+			t.Fatal("expected broadcast event")
+		}
+	})
+
+	t.Run("no active servers prunes all", func(t *testing.T) {
+		serverStore := &mockServerStore{
+			servers: []types.ServerRecord{
+				{ID: "s1", Name: "stale-server", Status: types.StatusStale},
+			},
+		}
+		classStore := &mockClassificationStore{deleteNotInResult: 5}
+		auditStore := &mockAuditStore{}
+
+		handler := setupTestHandlerWithStores(t, AdminDeps{
+			ServerStore:         serverStore,
+			ClassificationStore: classStore,
+			AuditStore:          auditStore,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/prune-orphaned-tools", nil)
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandlePruneOrphanedTools(w, req)
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("expected redirect, got %d", w.Code)
+		}
+		if len(classStore.deleteNotInCalled) != 1 {
+			t.Fatalf("expected 1 DeleteNotIn call, got %d", len(classStore.deleteNotInCalled))
+		}
+		if len(classStore.deleteNotInCalled[0]) != 0 {
+			t.Fatalf("expected empty active tools list, got %v", classStore.deleteNotInCalled[0])
+		}
+	})
+
+	t.Run("server list error", func(t *testing.T) {
+		serverStore := &mockServerStore{listErr: fmt.Errorf("db connection lost")}
+		classStore := &mockClassificationStore{}
+
+		handler := setupTestHandlerWithStores(t, AdminDeps{
+			ServerStore:         serverStore,
+			ClassificationStore: classStore,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/prune-orphaned-tools", nil)
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandlePruneOrphanedTools(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("DeleteNotIn error", func(t *testing.T) {
+		serverStore := &mockServerStore{
+			servers: []types.ServerRecord{
+				{ID: "s1", Status: types.StatusActive, Capabilities: types.Capability{Tools: []string{"tool.a"}}},
+			},
+		}
+		classStore := &mockClassificationStore{deleteNotInErr: fmt.Errorf("delete failed")}
+
+		handler := setupTestHandlerWithStores(t, AdminDeps{
+			ServerStore:         serverStore,
+			ClassificationStore: classStore,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/prune-orphaned-tools", nil)
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandlePruneOrphanedTools(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500, got %d", w.Code)
+		}
+	})
+
+	t.Run("nil stores graceful no-op", func(t *testing.T) {
+		handler := setupTestHandlerWithStores(t, AdminDeps{})
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/servers/prune-orphaned-tools", nil)
+		req = withSession(req, defaultSession())
+		w := httptest.NewRecorder()
+
+		handler.HandlePruneOrphanedTools(w, req)
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("expected redirect (302), got %d", w.Code)
+		}
+	})
 }

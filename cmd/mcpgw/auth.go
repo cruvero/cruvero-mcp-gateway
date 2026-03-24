@@ -17,6 +17,12 @@ import (
 
 var httpClientForAuth = &http.Client{Timeout: 30 * time.Second}
 
+// loginOptions configures the device code login flow.
+type loginOptions struct {
+	noBrowser bool
+	msgWriter io.Writer
+}
+
 func authCommand(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("auth command requires a subcommand: login, status, logout")
@@ -53,27 +59,42 @@ func authLoginCommand(args []string) error {
 
 	baseURL := strings.TrimRight(strings.TrimSpace(*gatewayURL), "/")
 
+	return performLogin(baseURL, loginOptions{noBrowser: *noBrowser, msgWriter: stdout})
+}
+
+// performLogin runs the device code flow and saves tokens on success.
+func performLogin(baseURL string, opts loginOptions) error {
 	codeResp, err := requestDeviceCode(baseURL)
 	if err != nil {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(stdout, "Go to: %s\n", codeResp.VerificationURI)
-	_, _ = fmt.Fprintf(stdout, "Enter code: %s\n", codeResp.UserCode)
+	_, _ = fmt.Fprintf(opts.msgWriter, "Go to: %s\n", codeResp.VerificationURI)
+	_, _ = fmt.Fprintf(opts.msgWriter, "Enter code: %s\n", codeResp.UserCode)
 
-	if !*noBrowser && codeResp.VerificationURI != "" {
-		openBrowser(codeResp.VerificationURI)
+	if !opts.noBrowser && codeResp.VerificationURI != "" {
+		browserURL := codeResp.VerificationURI
+		if codeResp.VerificationURIComplete != "" {
+			browserURL = codeResp.VerificationURIComplete
+		}
+		openBrowser(browserURL)
 	}
 
-	return pollForToken(baseURL, codeResp)
+	if err := pollForToken(baseURL, codeResp); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintln(opts.msgWriter, "Login successful.")
+	return nil
 }
 
 type deviceCodeResponse struct {
-	DeviceCode      string `json:"device_code"`
-	UserCode        string `json:"user_code"`
-	VerificationURI string `json:"verification_uri"`
-	ExpiresIn       int    `json:"expires_in"`
-	Interval        int    `json:"interval"`
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
 }
 
 func requestDeviceCode(baseURL string) (*deviceCodeResponse, error) {
@@ -123,6 +144,7 @@ type pollResult int
 const (
 	pollPending pollResult = iota
 	pollSuccess
+	pollFailed
 )
 
 func pollTokenOnce(baseURL string, deviceCode string) (pollResult, error) {
@@ -136,14 +158,28 @@ func pollTokenOnce(baseURL string, deviceCode string) (pollResult, error) {
 		return pollPending, nil
 	}
 
-	body, _ := io.ReadAll(tokenResp.Body)
+	body, err := io.ReadAll(tokenResp.Body)
 	_ = tokenResp.Body.Close()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "poll read error: %v\n", err)
+		return pollPending, nil
+	}
 
 	if tokenResp.StatusCode == http.StatusTooEarly {
 		return pollPending, nil
 	}
+	if tokenResp.StatusCode == http.StatusGone {
+		return pollFailed, fmt.Errorf("auth login: device code expired — please restart the login flow")
+	}
+	if tokenResp.StatusCode == http.StatusForbidden {
+		return pollFailed, fmt.Errorf("auth login: access denied by the identity provider")
+	}
 	if tokenResp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("auth login: token request failed with status %d: %s", tokenResp.StatusCode, string(body))
+		msg := parseErrorDescription(body)
+		if msg == "" {
+			msg = string(body)
+		}
+		return pollFailed, fmt.Errorf("auth login: token request failed with status %d: %s", tokenResp.StatusCode, msg)
 	}
 
 	return pollSuccess, saveTokenResponse(body, baseURL)
@@ -173,7 +209,6 @@ func saveTokenResponse(body []byte, baseURL string) error {
 		return fmt.Errorf("auth login: save tokens: %w", err)
 	}
 
-	_, _ = fmt.Fprintln(stdout, "Login successful.")
 	return nil
 }
 
@@ -217,6 +252,17 @@ func authLogoutCommand(args []string) error {
 
 	_, _ = fmt.Fprintln(stdout, "Logged out.")
 	return nil
+}
+
+func parseErrorDescription(body []byte) string {
+	var errResp struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && errResp.ErrorDescription != "" {
+		return errResp.ErrorDescription
+	}
+	return ""
 }
 
 func openBrowser(url string) {

@@ -23,4 +23,14 @@
     {{end}}
   </tbody>
 </table>
+{{if gt .TotalPages 1}}
+<div class="pagination">
+  {{range .PageNumbers}}
+  <a href="?page={{.}}&q={{$.Query | urlquery}}&risk={{$.RiskFilter | urlquery}}"
+     hx-get="/admin/tools?page={{.}}" hx-target="#tools-table"
+     hx-include="[name='q'],[name='risk']"
+     {{if eq . $.CurrentPage}}class="page-active"{{end}}>{{.}}</a>
+  {{end}}
+</div>
+{{end}}
 {{end}}
