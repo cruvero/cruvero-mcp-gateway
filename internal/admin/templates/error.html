@@ -1,0 +1,40 @@
+{{define "content"}}
+<div class="error-page">
+  <div class="error-visual">
+    <svg class="error-nodes" viewBox="0 0 200 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {{if eq .StatusCode 404}}
+      <!-- Disconnected nodes — resource not found -->
+      <circle cx="100" cy="20" r="14" fill="var(--color-primary)" opacity="0.6"/>
+      <circle cx="40" cy="120" r="14" fill="currentColor" opacity="0.25"/>
+      <circle cx="160" cy="120" r="14" fill="currentColor" opacity="0.15"/>
+      <path d="M 90,33 L 52,107" stroke="currentColor" stroke-width="2" stroke-opacity="0.15" stroke-dasharray="6 4"/>
+      <path d="M 110,33 L 148,107" stroke="currentColor" stroke-width="2" stroke-opacity="0.15" stroke-dasharray="6 4"/>
+      <path d="M 56,120 L 144,120" stroke="currentColor" stroke-width="2" stroke-opacity="0.08" stroke-dasharray="6 4"/>
+      {{else if eq .StatusCode 403}}
+      <!-- Blocked nodes — access denied -->
+      <circle cx="100" cy="20" r="14" fill="var(--color-warning)" opacity="0.6"/>
+      <circle cx="40" cy="120" r="14" fill="currentColor" opacity="0.25"/>
+      <circle cx="160" cy="120" r="14" fill="currentColor" opacity="0.15"/>
+      <path d="M 90,33 L 52,107" stroke="currentColor" stroke-width="2" stroke-opacity="0.2"/>
+      <path d="M 110,33 L 148,107" stroke="currentColor" stroke-width="2" stroke-opacity="0.2"/>
+      <line x1="78" y1="60" x2="122" y2="80" stroke="var(--color-warning)" stroke-width="2.5" stroke-opacity="0.5"/>
+      <line x1="122" y1="60" x2="78" y2="80" stroke="var(--color-warning)" stroke-width="2.5" stroke-opacity="0.5"/>
+      {{else}}
+      <!-- Broken nodes — server error -->
+      <circle cx="100" cy="20" r="14" fill="var(--color-danger)" opacity="0.6"/>
+      <circle cx="40" cy="120" r="14" fill="currentColor" opacity="0.25"/>
+      <circle cx="160" cy="120" r="14" fill="currentColor" opacity="0.15"/>
+      <path d="M 90,33 L 70,65" stroke="currentColor" stroke-width="2" stroke-opacity="0.2"/>
+      <path d="M 62,78 L 52,107" stroke="currentColor" stroke-width="2" stroke-opacity="0.2"/>
+      <path d="M 110,33 L 130,65" stroke="currentColor" stroke-width="2" stroke-opacity="0.2"/>
+      <path d="M 138,78 L 148,107" stroke="currentColor" stroke-width="2" stroke-opacity="0.2"/>
+      <path d="M 56,120 L 144,120" stroke="currentColor" stroke-width="2" stroke-opacity="0.08" stroke-dasharray="6 4"/>
+      {{end}}
+    </svg>
+  </div>
+  <div class="error-code">{{.StatusCode}}</div>
+  <div class="error-label">{{.StatusText}}</div>
+  <p class="error-message">{{.Message}}</p>
+  <a href="/admin/" class="btn error-back">Return to Dashboard</a>
+</div>
+{{end}}

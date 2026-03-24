@@ -6,12 +6,18 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/cruvero/mcp-gateway/internal/proxy"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/go-chi/chi/v5"
+)
+
+const (
+	adminModeStandalone = "standalone"
+	adminModeIntegrated = "integrated"
 )
 
 //go:embed templates/*.html
@@ -24,19 +30,49 @@ var staticFS embed.FS
 type AdminDeps struct {
 	Auth                 *AdminAuth
 	DevMode              bool
+	Mode                 string
+	PlatformServiceToken string
 	Logger               *slog.Logger
 	ServerStore          store.ServerStore
 	AuditStore           store.AuditStore
 	ClassificationStore  store.ToolClassificationStore
+	UserStore            store.UserStore
 	Broadcaster          registration.Broadcaster
 	RateLimitBackend     ratelimit.LimiterBackend
 	DiscoveryIndex       *proxy.DiscoveryIndex
 	ProgressiveDiscovery bool
+	SynonymStore         store.SynonymStore
+	ReindexLogStore      store.ReindexLogStore
+	SearchEngineType     string
+	EmbedderType         string
+	SearchStatusFunc     func() SearchStatusSnapshot
+}
+
+// SearchStatusSnapshot captures current search health as shown in admin UI.
+type SearchStatusSnapshot struct {
+	EngineType            string
+	EmbedderType          string
+	IndexedTools          int
+	EngineReady           bool
+	VectorReady           *bool
+	VectorSearchFallbacks uint64
+	VectorIndexFallbacks  uint64
+	EngineErrorFallbacks  uint64
+}
+
+func normalizeAdminMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case adminModeIntegrated:
+		return adminModeIntegrated
+	default:
+		return adminModeStandalone
+	}
 }
 
 // NewRouter creates the admin dashboard chi router.
 func NewRouter(deps AdminDeps) chi.Router {
-	if deps.Auth == nil && !deps.DevMode {
+	mode := normalizeAdminMode(deps.Mode)
+	if mode == adminModeStandalone && deps.Auth == nil && !deps.DevMode {
 		panic("admin: Auth must not be nil when DevMode is false")
 	}
 
@@ -45,6 +81,10 @@ func NewRouter(deps AdminDeps) chi.Router {
 	}
 
 	handler := NewAdminHandler(deps)
+
+	if mode == adminModeIntegrated {
+		return newIntegratedRouter(handler, deps)
+	}
 
 	r := chi.NewRouter()
 
@@ -81,10 +121,34 @@ func NewRouter(deps AdminDeps) chi.Router {
 		r.Get("/ratelimits", handler.HandleRateLimits)
 		r.Get("/audit", handler.HandleAudit)
 		r.Get("/audit/export", handler.HandleAuditExport)
+		r.Get("/users", handler.HandleUsers)
+		r.Get("/users/{id}", handler.HandleUserDetail)
+		r.Post("/users/{id}/role", handler.HandleUserRoleUpdate)
+		r.Post("/users/{id}/permissions", handler.HandleUserPermissionsUpdate)
+		r.Post("/users/{id}/tools/add", handler.HandleUserToolsAdd)
+		r.Post("/users/{id}/tools/remove", handler.HandleUserToolsRemove)
+
+		r.Get("/search", handler.HandleSearch)
+		r.Post("/search/test", handler.HandleSearchTest)
+		r.Get("/search/synonyms", handler.HandleSynonymList)
+		r.Post("/search/synonyms", handler.HandleSynonymCreate)
+		r.Post("/search/synonyms/{term}/delete", handler.HandleSynonymDelete)
+
 		r.Get("/servers", handler.HandleServers)
 		r.Get("/servers/{id}/ratelimit", handler.HandleServerRateLimitEdit)
 		r.Post("/servers/{id}/ratelimit", handler.HandleServerRateLimitUpdate)
+		r.Post("/servers/prune-orphaned-tools", handler.HandlePruneOrphanedTools)
 		r.Post("/servers/{id}/deregister", handler.HandleServerDeregister)
+
+		r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+			handler.renderError(w, r, http.StatusNotFound,
+				"The page you're looking for doesn't exist or has been moved.")
+		})
+	})
+
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		handler.renderError(w, r, http.StatusNotFound,
+			"The page you're looking for doesn't exist or has been moved.")
 	})
 
 	return r

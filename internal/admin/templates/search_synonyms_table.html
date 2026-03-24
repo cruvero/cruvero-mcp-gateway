@@ -1,0 +1,31 @@
+{{define "search_synonyms_table"}}
+{{if .Synonyms}}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Term</th>
+      <th>Synonyms</th>
+      <th>Updated</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Synonyms}}
+    <tr>
+      <td><code>{{.Term}}</code></td>
+      <td>{{range $i, $s := .Synonyms}}{{if $i}}, {{end}}<code>{{$s}}</code>{{end}}</td>
+      <td>{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
+      <td>
+        <form hx-post="/admin/search/synonyms/{{.Term}}/delete" hx-target="#synonyms-table" hx-swap="innerHTML" hx-confirm="Delete synonym group for '{{.Term}}'?">
+          <input type="hidden" name="_csrf" value="{{$.CSRFToken}}">
+          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="text-muted">No custom synonyms configured. Using built-in defaults.</p>
+{{end}}
+{{end}}

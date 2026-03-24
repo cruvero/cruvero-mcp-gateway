@@ -13,12 +13,12 @@ import (
 
 func testDiscoveryIndex() *proxy.DiscoveryIndex {
 	tools := []proxy.ToolDefinition{
-		{Name: "mcp.github.create_issue", Description: "Create a new issue in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)},
-		{Name: "mcp.github.list_issues", Description: "List issues in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.github.close_issue", Description: "Close an existing issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.send_message", Description: "Send a message to a Slack channel.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.slack.list_channels", Description: "List available Slack channels.", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		{Name: "mcp.jira.create_ticket", Description: "Create a Jira ticket for issue tracking.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.create_issue", Description: "Create a new issue in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)},
+		{Name: "github.list_issues", Description: "List issues in a GitHub repository.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "github.close_issue", Description: "Close an existing issue.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.send_message", Description: "Send a message to a Slack channel.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "slack.list_channels", Description: "List available Slack channels.", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "jira.create_ticket", Description: "Create a Jira ticket for issue tracking.", InputSchema: json.RawMessage(`{"type":"object"}`)},
 	}
 	idx := proxy.NewDiscoveryIndex()
 	idx.Index(tools)
@@ -129,9 +129,9 @@ func TestHandleToolSchema_ValidTool(t *testing.T) {
 
 	handler := setupBrowserHandler(t, true)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/tools/mcp.github.create_issue/schema", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/tools/github.create_issue/schema", nil)
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("name", "mcp.github.create_issue")
+	rctx.URLParams.Add("name", "github.create_issue")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 
@@ -145,8 +145,8 @@ func TestHandleToolSchema_ValidTool(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &tool); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if tool.Name != "mcp.github.create_issue" {
-		t.Fatalf("expected tool name mcp.github.create_issue, got %q", tool.Name)
+	if tool.Name != "github.create_issue" {
+		t.Fatalf("expected tool name github.create_issue, got %q", tool.Name)
 	}
 	// Should have full schema, not stripped.
 	if string(tool.InputSchema) == "{}" {
@@ -177,9 +177,9 @@ func TestHandleToolSchema_ProgressiveDiscoveryDisabled(t *testing.T) {
 
 	handler := setupBrowserHandler(t, false)
 
-	req := httptest.NewRequest(http.MethodGet, "/admin/tools/mcp.github.create_issue/schema", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/tools/github.create_issue/schema", nil)
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("name", "mcp.github.create_issue")
+	rctx.URLParams.Add("name", "github.create_issue")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 

@@ -1,5 +1,14 @@
 {{define "content"}}
 <h1>Registered Servers</h1>
+<div style="margin-bottom: 1rem;">
+  <form method="POST" action="/admin/servers/prune-orphaned-tools" style="display:inline">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+    <button type="submit" class="btn btn-danger btn-sm"
+            onclick="return confirm('Delete all tool classifications not exposed by any active server?')">
+      Prune Orphaned Tools
+    </button>
+  </form>
+</div>
 <div id="servers-table"
      hx-get="/admin/servers" hx-trigger="every 10s"
      hx-target="#servers-table" hx-swap="innerHTML">
