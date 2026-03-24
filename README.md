@@ -36,7 +36,7 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 - Prometheus metrics + OpenTelemetry distributed tracing
 - Helm chart with four environment overlays (base, dev, staging, prod)
 - ArgoCD GitOps deployment with ApplicationSet
-- Single static binary, distroless nonroot container image
+- Single static binary, scratch nonroot container image
 - Audit log with configurable retention and CSV export
 
 **Integration**
@@ -78,7 +78,7 @@ For the full architecture reference including sequence diagrams, protocol detail
 
 | Component | Required | Purpose | Notes |
 |-----------|----------|---------|-------|
-| Go 1.25.7 | Build only | Compile from source | Not needed for container deployment |
+| Go 1.26.1 | Build only | Compile from source | Not needed for container deployment |
 | PostgreSQL 16+ | **Yes** | Server registry, API keys, audit log, config | Single required runtime dependency |
 | Vault + Vault Operator | K8s only | Secret management (DB creds, TLS keys, session keys) | `VaultAuth` + `VaultStaticSecret` resources |
 | cert-manager | K8s only | TLS certificate provisioning | Gateway server cert + client CA |
@@ -123,17 +123,17 @@ The Helm chart is in `charts/mcpgateway/`. Install with environment-specific val
 
 ```bash
 # Dev
-helm install mcpgateway charts/mcpgateway -n cruvero-dev \
+helm install mcpgateway charts/mcpgateway -n myapp-dev \
   -f charts/mcpgateway/values.yaml \
   -f charts/mcpgateway/values-dev.yaml
 
 # Staging
-helm install mcpgateway charts/mcpgateway -n cruvero-staging \
+helm install mcpgateway charts/mcpgateway -n myapp-staging \
   -f charts/mcpgateway/values.yaml \
   -f charts/mcpgateway/values-staging.yaml
 
 # Production
-helm install mcpgateway charts/mcpgateway -n cruvero-prod \
+helm install mcpgateway charts/mcpgateway -n myapp-prod \
   -f charts/mcpgateway/values.yaml \
   -f charts/mcpgateway/values-prod.yaml
 ```
@@ -174,23 +174,23 @@ The `deploy/argocd/` directory contains:
 | File | Purpose |
 |------|---------|
 | `project.yaml` | AppProject scoping allowed namespaces and resource types |
-| `applicationset.yaml` | ApplicationSet with list generator for dev, staging, prod |
+| `applicationset.yaml` | ApplicationSet for the live dev deployment; staging/prod assets remain versioned in-repo |
 | `image-updater-mcpgateway-dev.yaml` | ArgoCD Image Updater config for dev auto-deploy |
 | `image-updater-rbac.yaml` | RBAC for Image Updater to read Harbor pull secrets |
 
 Sync policies:
 - **Dev**: automated sync with prune and self-heal, image updater auto-deploys on push to `dev`
-- **Staging**: automated sync, tracks `main` branch, image updater with `staging-*` tag filter
-- **Prod**: manual sync (automated sync disabled), tracks `main` branch with explicit version tags
+- **Staging**: chart values and image workflow are versioned in-repo, but the ArgoCD application is not currently applied from this repo
+- **Prod**: chart values and image workflow are versioned in-repo, but the ArgoCD application is not currently applied from this repo
 
 ### Security Posture
 
-- **Image**: `distroless/static-debian12:nonroot` -- no shell, no package manager
+- **Image**: `scratch` -- no shell, no package manager, no OS
 - **SecurityContext**: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, all capabilities dropped
 - **NetworkPolicy**: default-deny with explicit ingress/egress rules for Postgres, NATS, OTel, DNS, and backend servers
 - **PodDisruptionBudget**: `minAvailable: 1` (base), scales with environment
 - **HPA**: CPU-based autoscaling (target 70%)
-- **Trivy scanning**: CI pipeline scans images for CRITICAL and HIGH CVEs before push
+- **Image publishing**: dev, staging, and production image workflows build and publish images to Harbor without an in-workflow Trivy gate
 
 ## CLI Reference
 
@@ -262,11 +262,14 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `MCPGW_ADMIN_ENABLED` | `false` | No | Enable admin dashboard |
+| `MCPGW_ADMIN_MODE` | `standalone` | No | Admin mode: `standalone` (legacy HTMX UI) or `integrated` (Platform-delegated API) |
+| `MCPGW_PLATFORM_SERVICE_TOKEN` | -- | If integrated mode | Shared bearer token expected from Cruvero Platform for delegated `/admin/api/v1/*` auth |
 | `MCPGW_ADMIN_OIDC_CLIENT_ID` | -- | If admin (non-dev) | OIDC client ID for admin auth |
 | `MCPGW_ADMIN_OIDC_CLIENT_SECRET` | -- | No | OIDC client secret for admin auth |
 | `MCPGW_ADMIN_REQUIRED_SCOPE` | `admin` | No | Required OIDC scope for admin access |
 | `MCPGW_ADMIN_SESSION_KEY` | -- | If admin (non-dev) | 64-char hex string (32-byte AES-256-GCM key) |
 | `MCPGW_ADMIN_SESSION_TTL` | `8h` | No | Admin session duration |
+| `MCPGW_ADMIN_EXTERNAL_URL` | -- | No | Public base URL for OIDC callback redirect (e.g. `https://admin.example.com`) |
 | `MCPGW_ADMIN_DEV_MODE` | `false` | No | Bypass auth for local development (requires admin enabled) |
 
 ### Rate Limiting
@@ -317,6 +320,7 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | `MCPGW_CORS_ALLOWED_ORIGINS` | -- | If CORS | Comma-separated allowed origins |
 | `MCPGW_AUDIT_RETENTION_DAYS` | `90` | No | Days to retain audit log entries |
 | `MCPGW_AUDIT_CLEANUP_INTERVAL` | `1h` | No | Interval between retention cleanup runs |
+| `MCPGW_PROGRESSIVE_DISCOVERY` | `false` | No | Enable progressive tool discovery (lazy-load tool schemas on first call) |
 
 ## Authentication
 
@@ -348,6 +352,20 @@ Enable the admin dashboard with `MCPGW_ADMIN_ENABLED=true`. The dashboard provid
 - **CSV export** -- export up to 10,000 audit records with CSV injection prevention
 - **Per-server rate limiting** -- configure requests/second limits and burst capacity per backend server
 - **Rate limit inspection** -- view current rate limit state (when backend supports inspection)
+
+### Admin Modes
+
+- **`MCPGW_ADMIN_MODE=standalone` (default)**: existing `/admin/*` HTMX dashboard with local OIDC/session auth.
+- **`MCPGW_ADMIN_MODE=integrated`**: disables standalone `/admin` login/UI routes and exposes delegated admin API at `/admin/api/v1/*` for Cruvero Platform.
+
+Integrated mode delegated auth contract:
+
+- `Authorization: Bearer <platform service token>` (must match `MCPGW_PLATFORM_SERVICE_TOKEN`)
+- `X-Cruvero-Subject`
+- `X-Cruvero-Email`
+- `X-Cruvero-Tenant-ID`
+- `X-Cruvero-Role`
+- `X-Cruvero-Gateway-Role` (`viewer|editor|admin`)
 
 ### Production Setup
 
@@ -414,6 +432,10 @@ All logs use Go's `slog` package. Configure format (`json`/`text`) via `MCPGW_LO
 ## IDE Integration
 
 The gateway exposes a single MCP endpoint. IDEs connect via the `mcpgw mcp-proxy` stdio bridge, which translates between stdin/stdout JSON-RPC and the gateway's HTTP transport with automatic token management.
+
+### Token Lifespan
+
+The gateway honors the OIDC provider's `expires_in` value for access tokens issued via the Device Code flow. To control how long IDE sessions remain valid before re-authentication is required, configure the access token lifespan on your identity provider (e.g., Keycloak realm or client settings). The gateway does not override or extend token lifetimes -- the IdP is the sole authority.
 
 ### Authentication Setup
 
@@ -576,10 +598,12 @@ NATS subject pattern: `mcpgw.{gateway_id}.{category}.{scope}` -- categories: `ev
 | Device Verify | `GET /device/verify` | None | Browser verification page |
 | Health | `GET /healthz` | None | Liveness probe (always 200) |
 | Health | `GET /readyz` | None | Readiness probe (checks dependencies) |
+| Metadata | `GET /meta` | None | Gateway metadata (`admin_mode`, `version`, `gateway_id`) |
 | Registration | `PUT /v1/registrations/{id}` | mTLS | Register an MCP server |
 | Registration | `POST /v1/registrations/{id}/heartbeat` | mTLS | Server keep-alive |
 | Registration | `DELETE /v1/registrations/{id}` | mTLS | Deregister server |
 | Admin | `GET /admin/*` | OIDC session | Web dashboard |
+| Admin API | `/admin/api/v1/*` | Delegated Cruvero headers + service bearer | Integrated-mode admin API for servers/tools/users/audit/search-tuning |
 | Metrics | `GET /metrics` | None | Prometheus metrics (separate port) |
 
 ## Database Migrations
@@ -611,12 +635,16 @@ Migration files follow the convention `NNNN_description.{up,down}.sql` in the `m
 | 0008 | API key policy profile |
 | 0009 | Tool classifications |
 | 0010 | Server rate limit columns + CHECK constraints |
+| 0011 | pg_trgm search indexes for tools and audit |
+| 0012 | User access management |
+| 0013 | Search configuration |
+| 0014 | Audit log username and sort support |
 
 ## Development
 
 ### Requirements
 
-- Go `1.25.7` (pinned in `go.mod` and CI)
+- Go `1.26.1` (pinned in `go.mod`, CI, and container build)
 - `golangci-lint`, `staticcheck`, `govulncheck`, `gosec`, `dupl` for quality gates
 
 ### Quality Gates
@@ -647,6 +675,7 @@ Coverage thresholds are enforced per-package via `coverage-thresholds.json` (min
 ### Devcontainer
 
 The repository includes a `.devcontainer` configuration with Go, Helm, `kubectl`, and Argo CD CLI tooling for a reproducible development environment.
+The devcontainer image tracks the floating `1.26` minor line because the published base image is not patch-pinned; CI and release builds remain pinned to Go `1.26.1`, so local development can differ by patch level.
 
 ### Helm Validation
 
@@ -687,13 +716,12 @@ cruvero-mcp-gateway/
 │   ├── store/              Postgres store interfaces + implementations
 │   ├── testutil/           Integration, security, and load test suites
 │   └── types/              Shared domain types
-├── migrations/             SQL migrations (0001–0010)
+├── migrations/             SQL migrations (0001–0014)
 ├── charts/
 │   └── mcpgateway/         Helm chart + environment overlays
 ├── deploy/
 │   └── argocd/             GitOps manifests (AppProject, ApplicationSet)
-├── docs/
-│   └── OVERVIEW.md          Architecture reference
+├── docs/                   Architecture, integration, audit, and notes
 ├── scripts/                Quality gate and CI helper scripts
 ├── Dockerfile
 ├── Makefile

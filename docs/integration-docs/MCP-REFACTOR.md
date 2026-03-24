@@ -182,7 +182,7 @@ config:
   MCP_SERVER_LOG_LEVEL: "INFO"
   MCP_SERVER_MAX_CONCURRENCY: "10"
   MCP_SERVER_TOOL_TIMEOUT: "30s"
-  MCP_GATEWAY_URL: "https://mcpgateway-dev.cruvero-dev.svc:8443"
+  MCP_GATEWAY_URL: "https://mcpgateway-dev.myapp-dev.svc:8443"
   MCP_GATEWAY_HEARTBEAT_INTERVAL: ""
   MCP_GATEWAY_REQUEST_TIMEOUT: "15s"
   MCP_GATEWAY_TLS_CERT: "/gateway-tls/tls.crt"
