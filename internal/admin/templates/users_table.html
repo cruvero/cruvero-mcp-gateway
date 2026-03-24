@@ -1,0 +1,36 @@
+{{define "users_table"}}
+<table>
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Display Name</th>
+      <th>Role</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Users}}
+    <tr>
+      <td>{{.Email}}</td>
+      <td>{{.DisplayName}}</td>
+      <td><span class="badge badge-role-{{.Role}}">{{.Role}}</span></td>
+      <td>{{.CreatedAt.Format "2006-01-02"}}</td>
+      <td><a href="/admin/users/{{.ID}}">Manage</a></td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5">No users found.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{if gt .TotalPages 1}}
+<div class="pagination">
+  {{range .PageNumbers}}
+  <a href="?page={{.}}&q={{$.Query | urlquery}}&role={{$.RoleFilter | urlquery}}"
+     hx-get="/admin/users?page={{.}}" hx-target="#users-table"
+     hx-include="[name='q'],[name='role']"
+     {{if eq . $.CurrentPage}}class="page-active"{{end}}>{{.}}</a>
+  {{end}}
+</div>
+{{end}}
+{{end}}
