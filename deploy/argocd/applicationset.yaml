@@ -15,7 +15,7 @@ spec:
         elements:
           - env: dev
             namespace: <APP>-dev
-            valuesFile: values-dev.yaml
+            valuesFile: values-example.yaml
             targetRevision: dev
   template:
     metadata:
