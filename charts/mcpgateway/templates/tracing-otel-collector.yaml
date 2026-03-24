@@ -19,7 +19,7 @@ data:
 
     exporters:
       otlp_http/tempo:
-        endpoint: http://{{ include "mcpgateway.fullname" . }}-tempo:{{ .Values.tracing.tempo.service.otlpHttpPort }}
+        endpoint: "{{ required "tracing.collector.tempoEndpoint is required when tracing is enabled" .Values.tracing.collector.tempoEndpoint }}"
 
     extensions:
       health_check:

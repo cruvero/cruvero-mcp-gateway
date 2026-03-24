@@ -1,0 +1,117 @@
+# Example values overlay — copy and customize for your environment.
+# See values.yaml for all available keys and defaults.
+#
+# Usage:
+#   helm install mcpgateway charts/mcpgateway -n myapp-dev \
+#     -f charts/mcpgateway/values.yaml \
+#     -f charts/mcpgateway/values-example.yaml
+
+commonLabels:
+  environment: dev
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+
+image:
+  repository: registry.example.com/myorg/mcp-gateway
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets:
+  - name: my-registry-secret
+
+tls:
+  certManager:
+    enabled: true
+    secretName: mcpgateway-tls
+    issuerRef:
+      name: my-cert-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+    dnsNames:
+      - mcpgateway
+      - mcpgateway.myapp-dev
+      - mcpgateway.myapp-dev.svc
+      - mcpgateway.myapp-dev.svc.cluster.local
+
+service:
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+
+probes:
+  scheme: HTTPS
+
+# Runtime configuration — all keys become MCPGW_* environment variables.
+config:
+  MCPGW_OIDC_ISSUER: "https://keycloak.example.com/realms/myrealm"
+  MCPGW_OIDC_AUDIENCE: "mcp-gateway"
+  MCPGW_NATS_URL: "nats://nats.myapp-dev:4222"
+  MCPGW_SPIFFE_ALLOW_PREFIX: "spiffe://example.com/ns/myapp-dev/sa/"
+  MCPGW_PROGRESSIVE_DISCOVERY: "true"
+  MCPGW_SEARCH_ENGINE: "hybrid"
+  MCPGW_ADMIN_MODE: "standalone"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+
+nats:
+  enabled: true
+  tls:
+    enabled: true
+    certSecretName: nats-client-tls
+    caSecretName: nats-ca
+
+rateLimit:
+  backend: memory
+
+deviceFlow:
+  enabled: true
+  idpDeviceURL: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/auth/device"
+  idpTokenURL: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
+  clientID: "mcp-gateway-device"
+
+admin:
+  enabled: true
+  externalURL: "https://gateway.example.com"
+  oidc:
+    clientID: "mcp-admin"
+  requiredScope: admin
+
+orchestrate:
+  enabled: true
+  providers:
+    - name: openai
+      model: gpt-4o-mini
+      priority: 1
+
+ingress:
+  enabled: true
+  className: traefik
+  host: gateway.example.com
+  tls: true
+
+database:
+  url: "existing-secret-ref"
+  autoMigrate:
+    enabled: true
+
+vault:
+  enabled: false
+
+secrets:
+  existingSecret: "mcpgw-runtime"
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+  prometheusRule:
+    enabled: true
+
+tracing:
+  enabled: true
+  collector:
+    tempoEndpoint: "http://lgtm-gateway.monitoring:3100"
+
+networkPolicy:
+  enabled: true

@@ -41,10 +41,10 @@ probes:
 resources:
   requests:
     cpu: 100m
-    memory: 128Mi
+    memory: 256Mi
   limits:
     cpu: 500m
-    memory: 512Mi
+    memory: 1Gi
 
 autoscaling:
   enabled: true
@@ -74,8 +74,20 @@ config:
   MCPGW_METRICS_ADDR: ":9090"
   MCPGW_CRUVERO_ENABLED: "false"
   MCPGW_GATEWAY_ID: "auto"
+  MCPGW_ADMIN_MODE: "standalone"
   MCPGW_CORS_ENABLED: "false"
   MCPGW_RATE_LIMIT_BACKEND: "memory"
+  MCPGW_PROGRESSIVE_DISCOVERY: "true"
+  # -- Comma-separated SPIFFE ID prefixes for platform catalog mTLS access.
+  MCPGW_PLATFORM_SPIFFE_PREFIXES: ""
+  # -- Search engine type: substring, bm25, vector, or hybrid.
+  MCPGW_SEARCH_ENGINE: ""
+  # -- Path to ONNX Runtime shared library (used by vector/hybrid search).
+  MCPGW_ONNX_RUNTIME_PATH: "/usr/lib/libonnxruntime.so"
+  # -- Path to the ONNX model file (all-MiniLM-L6-v2).
+  MCPGW_ONNX_MODEL_PATH: "/models/all-MiniLM-L6-v2.onnx"
+  # -- Path to the HuggingFace tokenizer.json for the embedding model.
+  MCPGW_TOKENIZER_PATH: "/models/tokenizer.json"
   # OTel variables consumed by internal/config.
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
   OTEL_SERVICE_NAME: "mcpgw"
@@ -143,6 +155,21 @@ dragonfly:
   # -- DragonflyDB connection URL (set via secret for production).
   url: ""
 
+orchestrate:
+  # -- Enable the cruvero.orchestrate meta-tool (LLM-driven tool planning/execution).
+  enabled: false
+  # -- Ordered list of LLM providers for failover. Lower priority = tried first.
+  # API keys must be stored in the runtime secret as MCPGW_LLM_{UPPER(name)}_API_KEY.
+  providers: []
+  # Example:
+  #   - name: openai
+  #     model: gpt-4o-mini
+  #     priority: 1
+  #   - name: xai
+  #     model: grok-3-mini
+  #     base_url: https://api.x.ai/v1
+  #     priority: 10
+
 ingress:
   # -- Enable an Ingress resource for external access.
   enabled: false
@@ -185,6 +212,7 @@ secrets:
     natsURL: MCPGW_NATS_URL
     oidcIssuer: MCPGW_OIDC_ISSUER
     oidcAudience: MCPGW_OIDC_AUDIENCE
+    platformServiceToken: MCPGW_PLATFORM_SERVICE_TOKEN
     otlpEndpoint: OTEL_EXPORTER_OTLP_ENDPOINT
 
 monitoring:
@@ -197,9 +225,11 @@ monitoring:
     labels: {}
 
 tracing:
-  # -- Deploy in-cluster tracing stack (OTEL collector + Tempo monolithic).
+  # -- Deploy in-cluster OTel Collector that forwards traces to an external Tempo instance.
   enabled: false
   collector:
+    # -- OTLP HTTP endpoint of the Tempo instance that receives traces. Required when tracing.enabled=true.
+    tempoEndpoint: ""
     image:
       repository: otel/opentelemetry-collector-contrib
       tag: "0.146.1"
@@ -213,26 +243,6 @@ tracing:
       limits:
         cpu: 250m
         memory: 256Mi
-  tempo:
-    image:
-      repository: grafana/tempo
-      tag: "2.10.1"
-      pullPolicy: IfNotPresent
-    service:
-      httpPort: 3200
-      otlpHttpPort: 4318
-    retention: "48h"
-    persistence:
-      enabled: true
-      size: 10Gi
-      storageClassName: ""
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
 
 networkPolicy:
   enabled: true
@@ -260,6 +270,8 @@ networkPolicy:
         podSelector: {}
     # -- Allowed OIDC provider destinations (ports 443/80).
     oidc: []
+    # -- Allowed LLM API provider destinations (port 443, e.g. api.openai.com).
+    llm: []
     # -- Allowed OTLP collector destinations (port 4318).
     otel: []
     # -- DNS egress destinations (UDP/TCP 53).
