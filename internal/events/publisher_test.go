@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
@@ -46,6 +45,12 @@ func TestPublisherServerRegistered(t *testing.T) {
 	if payload.Endpoint != "alpha.default.svc:8443" {
 		t.Fatalf("expected endpoint alpha.default.svc:8443, got %q", payload.Endpoint)
 	}
+	if payload.EndpointURL != "https://alpha.default.svc:8443" {
+		t.Fatalf("expected endpoint_url https://alpha.default.svc:8443, got %q", payload.EndpointURL)
+	}
+	if len(payload.AllowedEndpoints) != 1 || payload.AllowedEndpoints[0] != "https://alpha.default.svc:8443" {
+		t.Fatalf("expected allowed_endpoints [https://alpha.default.svc:8443], got %#v", payload.AllowedEndpoints)
+	}
 	if payload.RegistrationID != "server-1" {
 		t.Fatalf("expected registration id server-1, got %q", payload.RegistrationID)
 	}
@@ -54,6 +59,106 @@ func TestPublisherServerRegistered(t *testing.T) {
 	}
 	if payload.OccurredAt.IsZero() {
 		t.Fatal("expected non-zero occurred_at")
+	}
+}
+
+func TestPublisherServerRegisteredEndpointNormalization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		host            string
+		protocol        string
+		port            int
+		wantEndpoint    string
+		wantEndpointURL string
+	}{
+		{
+			name:            "explicit http protocol",
+			host:            "alpha.default.svc",
+			protocol:        "http",
+			port:            8080,
+			wantEndpoint:    "alpha.default.svc:8080",
+			wantEndpointURL: "http://alpha.default.svc:8080",
+		},
+		{
+			name:            "invalid protocol defaults to https",
+			host:            "alpha.default.svc",
+			protocol:        "tcp",
+			port:            8443,
+			wantEndpoint:    "alpha.default.svc:8443",
+			wantEndpointURL: "https://alpha.default.svc:8443",
+		},
+		{
+			name:            "out of range port omitted",
+			host:            "alpha.default.svc",
+			protocol:        "https",
+			port:            70000,
+			wantEndpoint:    "alpha.default.svc",
+			wantEndpointURL: "https://alpha.default.svc",
+		},
+		{
+			name:            "ipv6 host out of range port omits port but keeps canonical brackets",
+			host:            "2001:db8::9",
+			protocol:        "https",
+			port:            70000,
+			wantEndpoint:    "2001:db8::9",
+			wantEndpointURL: "https://[2001:db8::9]",
+		},
+		{
+			name:            "unbracketed ipv6 host",
+			host:            "2001:db8::1",
+			protocol:        "https",
+			port:            8443,
+			wantEndpoint:    "[2001:db8::1]:8443",
+			wantEndpointURL: "https://[2001:db8::1]:8443",
+		},
+		{
+			name:            "bracketed ipv6 host",
+			host:            "[2001:db8::2]",
+			protocol:        "https",
+			port:            8443,
+			wantEndpoint:    "[2001:db8::2]:8443",
+			wantEndpointURL: "https://[2001:db8::2]:8443",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			publisher, subject, messages, cleanup := newPublisherFixture(t, EventServerRegistered)
+			defer cleanup()
+
+			err := publisher.PublishServerRegistered(context.Background(), types.ServerRecord{
+				ID:       "server-" + tt.name,
+				Name:     "alpha",
+				SPIFFEID: "spiffe://example.org/ns/default/sa/alpha",
+				Host:     tt.host,
+				Port:     tt.port,
+				Protocol: tt.protocol,
+				Capabilities: types.Capability{
+					Tools: []string{"tool.echo"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("publish server registered: %v", err)
+			}
+
+			envelope := expectEventEnvelope(t, messages, subject)
+			var payload ServerRegisteredPayload
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			if payload.Endpoint != tt.wantEndpoint {
+				t.Fatalf("endpoint: got %q, want %q", payload.Endpoint, tt.wantEndpoint)
+			}
+			if payload.EndpointURL != tt.wantEndpointURL {
+				t.Fatalf("endpoint_url: got %q, want %q", payload.EndpointURL, tt.wantEndpointURL)
+			}
+			if len(payload.AllowedEndpoints) != 1 || payload.AllowedEndpoints[0] != tt.wantEndpointURL {
+				t.Fatalf("allowed_endpoints: got %#v, want [%s]", payload.AllowedEndpoints, tt.wantEndpointURL)
+			}
+		})
 	}
 }
 
@@ -123,11 +228,10 @@ func TestPublisherPolicyViolated(t *testing.T) {
 func TestPublisherDisconnectedNoError(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-1")
+	client, err := NewClient(natsServerURL(t, srv), "gw-1")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -145,10 +249,9 @@ func newPublisherFixture(
 ) (*Publisher, string, <-chan *nats.Msg, func()) {
 	t.Helper()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-1")
+	client, err := NewClient(natsServerURL(t, srv), "gw-1")
 	if err != nil {
 		srv.Shutdown()
 		t.Fatalf("new client: %v", err)

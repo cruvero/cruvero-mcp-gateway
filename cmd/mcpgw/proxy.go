@@ -44,6 +44,8 @@ func runProxy(ctx context.Context, baseURL string, input io.Reader, output io.Wr
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
+	var sessionID string
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -56,28 +58,34 @@ func runProxy(ctx context.Context, baseURL string, input io.Reader, output io.Wr
 			continue
 		}
 
-		tokens, err := ensureValidToken()
+		tokens, err := ensureValidToken(baseURL)
 		if err != nil {
 			return fmt.Errorf("mcp-proxy: %w", err)
 		}
 
-		respBody, err := sendMCPRequest(ctx, baseURL+"/mcp", tokens.AccessToken, line)
+		respBody, respSessionID, err := sendMCPRequest(ctx, baseURL, tokens.AccessToken, sessionID, line)
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "mcp-proxy: request error: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "mcp-proxy: request error: %v\n", err)
 			continue
 		}
+		if respSessionID != "" {
+			sessionID = respSessionID
+		}
 
-		_, _ = output.Write(respBody)
-		_, _ = output.Write([]byte("\n"))
+		if len(respBody) > 0 {
+			_, _ = output.Write(respBody)
+			_, _ = output.Write([]byte("\n"))
+		}
 	}
 
 	return scanner.Err()
 }
 
-func ensureValidToken() (*auth.CachedTokens, error) {
+// loadAndRefreshToken loads cached tokens and refreshes if needed.
+func loadAndRefreshToken() (*auth.CachedTokens, error) {
 	tokens, err := auth.LoadTokens()
 	if err != nil {
-		return nil, fmt.Errorf("load tokens: %w (run 'mcpgw auth login' first)", err)
+		return nil, fmt.Errorf("load tokens: %w", err)
 	}
 
 	if !tokens.NeedsRefresh() {
@@ -95,23 +103,43 @@ func ensureValidToken() (*auth.CachedTokens, error) {
 	return refreshed, nil
 }
 
-func sendMCPRequest(ctx context.Context, endpoint, accessToken string, body []byte) ([]byte, error) {
+func ensureValidToken(baseURL string) (*auth.CachedTokens, error) {
+	tokens, err := loadAndRefreshToken()
+	if err == nil {
+		return tokens, nil
+	}
+
+	_, _ = fmt.Fprintf(stderr, "mcp-proxy: %v — starting login...\n", err)
+
+	if loginErr := performLogin(baseURL, loginOptions{noBrowser: true, msgWriter: stderr}); loginErr != nil {
+		return nil, fmt.Errorf("auto-login failed: %w", loginErr)
+	}
+
+	return auth.LoadTokens()
+}
+
+func sendMCPRequest(ctx context.Context, baseURL, accessToken, sessionID string, body []byte) ([]byte, string, error) {
+	endpoint := baseURL + "/mcp"
 	var lastErr error
+	respSessionID := sessionID
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, respSessionID, ctx.Err()
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
-			return nil, fmt.Errorf("build request: %w", err)
+			return nil, respSessionID, fmt.Errorf("build request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
+		if respSessionID != "" {
+			req.Header.Set("Mcp-Session-Id", respSessionID)
+		}
 
 		resp, err := httpClientForProxy.Do(req) // #nosec G704 -- endpoint is the user-configured gateway URL
 		if err != nil {
@@ -119,9 +147,13 @@ func sendMCPRequest(ctx context.Context, endpoint, accessToken string, body []by
 			continue
 		}
 
-		result, newToken, retryErr, fatalErr := handleMCPResponse(ctx, resp)
+		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+			respSessionID = sid
+		}
+
+		result, newToken, retryErr, fatalErr := handleMCPResponse(ctx, resp, baseURL)
 		if fatalErr != nil {
-			return nil, fatalErr
+			return nil, respSessionID, fatalErr
 		}
 		if retryErr != nil {
 			lastErr = retryErr
@@ -130,16 +162,16 @@ func sendMCPRequest(ctx context.Context, endpoint, accessToken string, body []by
 			}
 			continue
 		}
-		return result, nil
+		return result, respSessionID, nil
 	}
 
 	if lastErr != nil {
-		return nil, fmt.Errorf("after retries: %w", lastErr)
+		return nil, respSessionID, fmt.Errorf("after retries: %w", lastErr)
 	}
-	return nil, fmt.Errorf("request failed after retries")
+	return nil, respSessionID, fmt.Errorf("request failed after retries")
 }
 
-func handleMCPResponse(ctx context.Context, resp *http.Response) (result []byte, newToken string, retryErr error, fatalErr error) {
+func handleMCPResponse(ctx context.Context, resp *http.Response, baseURL string) (result []byte, newToken string, retryErr error, fatalErr error) {
 	respBody, readErr := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if readErr != nil {
@@ -152,8 +184,10 @@ func handleMCPResponse(ctx context.Context, resp *http.Response) (result []byte,
 			return extractSSEData(respBody), "", nil, nil
 		}
 		return respBody, "", nil, nil
+	case http.StatusAccepted:
+		return nil, "", nil, nil
 	case http.StatusUnauthorized:
-		tokens, refreshErr := ensureValidToken()
+		tokens, refreshErr := ensureValidToken(baseURL)
 		if refreshErr != nil {
 			return nil, "", nil, fmt.Errorf("auth failed and refresh failed: %w", refreshErr)
 		}
@@ -183,6 +217,7 @@ func waitForRetryAfter(ctx context.Context, retryAfter string) {
 func extractSSEData(body []byte) []byte {
 	var result bytes.Buffer
 	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // up to 1MB tokens
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "data:") {

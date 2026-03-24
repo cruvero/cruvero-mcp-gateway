@@ -32,6 +32,11 @@ func StartCleanup(ctx context.Context, store *LimiterStore, interval, maxIdle ti
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Re-check context to avoid running cleanup when both
+				// ctx.Done() and ticker.C are ready simultaneously.
+				if ctx.Err() != nil {
+					return
+				}
 				removed := store.Cleanup(maxIdle)
 				if removed > 0 {
 					slog.Default().InfoContext(ctx, "ratelimit cleanup removed idle entries", slog.Int("removed", removed))

@@ -133,6 +133,7 @@ func TestAPIKeyAuditAndFilterJSON(t *testing.T) {
 		ID:         "audit-1",
 		EventType:  "auth.success",
 		ClientID:   "client-1",
+		Username:   "client-1",
 		ServerName: "alpha",
 		Details: map[string]any{
 			"tool": "safe.tool",
@@ -156,7 +157,10 @@ func TestAPIKeyAuditAndFilterJSON(t *testing.T) {
 	auditFilter := AuditFilter{
 		EventType:  "policy.deny",
 		ClientID:   "client-2",
+		Username:   "client-2",
 		ServerName: "beta",
+		SortBy:     "created_at",
+		SortDir:    "desc",
 		Since:      &now,
 		Until:      &now,
 		Limit:      50,
@@ -238,6 +242,108 @@ func TestRiskLevelIsValid(t *testing.T) {
 			t.Parallel()
 			if got := tt.level.IsValid(); got != tt.want {
 				t.Fatalf("RiskLevel(%q).IsValid() = %v, want %v", tt.level, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUserRoleString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		role UserRole
+		want string
+	}{
+		{name: "admin", role: RoleAdmin, want: "admin"},
+		{name: "user", role: RoleUser, want: "user"},
+		{name: "viewer", role: RoleViewer, want: "viewer"},
+		{name: "blocked", role: RoleBlocked, want: "blocked"},
+		{name: "custom value", role: UserRole("custom"), want: "custom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.role.String(); got != tt.want {
+				t.Fatalf("UserRole.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUserRoleIsValid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		role UserRole
+		want bool
+	}{
+		{name: "admin is valid", role: RoleAdmin, want: true},
+		{name: "user is valid", role: RoleUser, want: true},
+		{name: "viewer is valid", role: RoleViewer, want: true},
+		{name: "blocked is valid", role: RoleBlocked, want: true},
+		{name: "empty string is invalid", role: UserRole(""), want: false},
+		{name: "arbitrary string is invalid", role: UserRole("not_a_role"), want: false},
+		{name: "uppercase variant is invalid", role: UserRole("ADMIN"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.role.IsValid(); got != tt.want {
+				t.Fatalf("UserRole(%q).IsValid() = %v, want %v", tt.role, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAuditSortBy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{name: "created_at", input: "created_at", expect: AuditSortByCreatedAt},
+		{name: "event_type", input: "event_type", expect: AuditSortByEventType},
+		{name: "username", input: "username", expect: AuditSortByUsername},
+		{name: "server_name", input: "server_name", expect: AuditSortByServerName},
+		{name: "trim and lowercase", input: "  USERNAME  ", expect: AuditSortByUsername},
+		{name: "fallback", input: "drop table", expect: AuditSortByCreatedAt},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := NormalizeAuditSortBy(tt.input); got != tt.expect {
+				t.Fatalf("NormalizeAuditSortBy(%q) = %q, want %q", tt.input, got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestNormalizeAuditSortDir(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{name: "asc", input: "asc", expect: AuditSortDirAsc},
+		{name: "uppercase asc", input: "ASC", expect: AuditSortDirAsc},
+		{name: "desc", input: "desc", expect: AuditSortDirDesc},
+		{name: "fallback", input: "invalid", expect: AuditSortDirDesc},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := NormalizeAuditSortDir(tt.input); got != tt.expect {
+				t.Fatalf("NormalizeAuditSortDir(%q) = %q, want %q", tt.input, got, tt.expect)
 			}
 		})
 	}

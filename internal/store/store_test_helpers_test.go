@@ -32,7 +32,7 @@ var (
 		"updated_at",
 	}
 	apiKeyColumnNames = []string{"id", "key_lookup_hash", "key_bcrypt_hash", "name", "scopes", "client_id", "policy_profile", "expires_at", "created_at"}
-	auditColumnNames  = []string{"id", "event_type", "client_id", "server_name", "details", "created_at"}
+	auditColumnNames  = []string{"id", "event_type", "client_id", "username", "server_name", "details", "created_at"}
 )
 
 func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {

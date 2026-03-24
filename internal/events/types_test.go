@@ -91,7 +91,9 @@ func TestServerRegisteredPayload_WithToolDefinitions(t *testing.T) {
 		Capabilities: types.Capability{
 			Tools: []string{"tool.echo"},
 		},
-		Endpoint: "alpha.default.svc:8443",
+		Endpoint:         "alpha.default.svc:8443",
+		EndpointURL:      "https://alpha.default.svc:8443",
+		AllowedEndpoints: []string{"https://alpha.default.svc:8443"},
 		ToolDefinitions: []ToolDefinitionPayload{
 			{Name: "echo", Description: "Echo tool", DeferLoading: true},
 			{Name: "ping", Description: "Ping tool", Annotations: json.RawMessage(`{"readOnlyHint":true}`)},
@@ -125,6 +127,12 @@ func TestServerRegisteredPayload_WithToolDefinitions(t *testing.T) {
 	}
 	if !decoded.ToolDefinitions[0].DeferLoading {
 		t.Fatal("expected DeferLoading=true")
+	}
+	if decoded.EndpointURL != "https://alpha.default.svc:8443" {
+		t.Fatalf("expected endpoint_url https://alpha.default.svc:8443, got %q", decoded.EndpointURL)
+	}
+	if len(decoded.AllowedEndpoints) != 1 || decoded.AllowedEndpoints[0] != "https://alpha.default.svc:8443" {
+		t.Fatalf("expected allowed_endpoints [https://alpha.default.svc:8443], got %#v", decoded.AllowedEndpoints)
 	}
 }
 
@@ -160,7 +168,7 @@ func TestToolMetadataConfigMessage_RoundTrip(t *testing.T) {
 		Version: 42,
 		Tools: []ToolMetadataEntry{
 			{
-				ToolName:    "mcp.github.create_issue",
+				ToolName:    "github.create_issue",
 				Category:    "github",
 				DisplayName: "Create Issue",
 				Summary:     "Creates a new issue",
@@ -169,7 +177,7 @@ func TestToolMetadataConfigMessage_RoundTrip(t *testing.T) {
 				Metadata:    map[string]any{"custom_key": "value"},
 			},
 			{
-				ToolName: "mcp.slack.send_message",
+				ToolName: "slack.send_message",
 				Category: "slack",
 			},
 		},

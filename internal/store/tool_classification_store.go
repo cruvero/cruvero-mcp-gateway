@@ -96,6 +96,60 @@ ON CONFLICT (tool_name) DO UPDATE SET
 	return nil
 }
 
+// Search returns tool classifications matching the filter with pagination and total count.
+func (s *PostgresToolClassificationStore) Search(ctx context.Context, filter types.ToolFilter) ([]types.ToolClassification, int, error) {
+	var conditions []string
+	var args []any
+	paramIdx := 1
+
+	if q := strings.TrimSpace(filter.Query); q != "" {
+		conditions = append(conditions, fmt.Sprintf("tool_name ILIKE '%%' || $%d || '%%'", paramIdx))
+		args = append(args, escapeILikePattern(q))
+		paramIdx++
+	}
+	if filter.RiskLevel.IsValid() {
+		conditions = append(conditions, fmt.Sprintf("risk_level = $%d", paramIdx))
+		args = append(args, string(filter.RiskLevel))
+		paramIdx++
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	countQuery := "SELECT COUNT(*) FROM tool_classifications" + where
+	var total int
+	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("tool classification store: search count: %w", err)
+	}
+
+	dataQuery := "SELECT " + toolClassificationColumns + " FROM tool_classifications" + where +
+		fmt.Sprintf(" ORDER BY tool_name LIMIT $%d OFFSET $%d", paramIdx, paramIdx+1)
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	dataArgs := append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, dataQuery, dataArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("tool classification store: search: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	results, err := scanToolClassifications(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return results, total, nil
+}
+
 // Delete removes a tool classification by name.
 func (s *PostgresToolClassificationStore) Delete(ctx context.Context, toolName string) error {
 	const query = `DELETE FROM tool_classifications WHERE tool_name = $1`
@@ -104,6 +158,44 @@ func (s *PostgresToolClassificationStore) Delete(ctx context.Context, toolName s
 		return fmt.Errorf("tool classification store: delete: %w", err)
 	}
 	return nil
+}
+
+// DeleteNotIn removes all tool classifications whose tool_name is not in activeToolNames.
+// When activeToolNames is empty, all classifications are deleted.
+// Returns the number of deleted rows.
+func (s *PostgresToolClassificationStore) DeleteNotIn(ctx context.Context, activeToolNames []string) (int64, error) {
+	var result sql.Result
+	var err error
+
+	normalized := make([]string, 0, len(activeToolNames))
+	for _, name := range activeToolNames {
+		trimmed := strings.TrimSpace(name)
+		if trimmed != "" {
+			normalized = append(normalized, trimmed)
+		}
+	}
+
+	if len(normalized) == 0 {
+		result, err = s.db.ExecContext(ctx, `DELETE FROM tool_classifications`)
+	} else {
+		placeholders := make([]string, len(normalized))
+		args := make([]any, len(normalized))
+		for i, name := range normalized {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+			args[i] = name
+		}
+		query := `DELETE FROM tool_classifications WHERE tool_name NOT IN (` + strings.Join(placeholders, ", ") + `)`
+		result, err = s.db.ExecContext(ctx, query, args...)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("tool classification store: delete not in: %w", err)
+	}
+	rows, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return 0, fmt.Errorf("tool classification store: delete not in rows affected: %w", rowsErr)
+	}
+	return rows, nil
 }
 
 type toolClassificationScanner interface {

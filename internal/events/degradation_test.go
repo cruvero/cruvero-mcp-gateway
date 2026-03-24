@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,11 +28,10 @@ func TestDegradationManagerOnDisconnectSetsState(t *testing.T) {
 func TestDegradationManagerOnReconnectPublishesSnapshotRequest(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-degrade")
+	client, err := NewClient(natsServerURL(t, srv), "gw-degrade")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -84,11 +82,10 @@ func TestDegradationManagerOnReconnectPublishesSnapshotRequest(t *testing.T) {
 func TestDegradationManagerLoadCachedConfig(t *testing.T) {
 	t.Parallel()
 
-	port := freePort(t)
-	srv := runNATSServer(t, port)
+	srv := runNATSServer(t, 0)
 	defer srv.Shutdown()
 
-	client, err := NewClient(fmt.Sprintf("nats://127.0.0.1:%d", port), "gw-cache")
+	client, err := NewClient(natsServerURL(t, srv), "gw-cache")
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

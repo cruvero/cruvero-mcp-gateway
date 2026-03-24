@@ -196,8 +196,8 @@ func TestToolMetadataConfigHandler_ValidPayload(t *testing.T) {
 	payload := ToolMetadataConfigMessage{
 		Version: 1,
 		Tools: []ToolMetadataEntry{
-			{ToolName: "mcp.github.create_issue", Category: "github", Tags: []string{"vcs", "issues"}, Priority: 5},
-			{ToolName: "mcp.slack.send_message", Category: "slack", Summary: "Send message to channel"},
+			{ToolName: "github.create_issue", Category: "github", Tags: []string{"vcs", "issues"}, Priority: 5},
+			{ToolName: "slack.send_message", Category: "slack", Summary: "Send message to channel"},
 		},
 	}
 	body, err := json.Marshal(payload)

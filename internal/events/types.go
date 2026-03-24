@@ -45,18 +45,20 @@ type EventEnvelope struct {
 
 // ServerRegisteredPayload is the payload for EventServerRegistered.
 type ServerRegisteredPayload struct {
-	EventID         string                `json:"event_id,omitempty"`
-	OccurredAt      time.Time             `json:"occurred_at,omitempty"`
-	ServerID        string                `json:"server_id"`
-	RegistrationID  string                `json:"registration_id,omitempty"`
-	LeaseEpoch      int64                 `json:"lease_epoch,omitempty"`
-	CapabilityHash  string                `json:"capability_hash,omitempty"`
-	SyncState       string                `json:"sync_state,omitempty"`
-	Name            string                `json:"name"`
-	SPIFFEID        string                `json:"spiffe_id"`
-	Capabilities    types.Capability      `json:"capabilities"`
-	Endpoint        string                `json:"endpoint"`
-	ToolDefinitions []ToolDefinitionPayload `json:"tool_definitions,omitempty"`
+	EventID          string                  `json:"event_id,omitempty"`
+	OccurredAt       time.Time               `json:"occurred_at,omitempty"`
+	ServerID         string                  `json:"server_id"`
+	RegistrationID   string                  `json:"registration_id,omitempty"`
+	LeaseEpoch       int64                   `json:"lease_epoch,omitempty"`
+	CapabilityHash   string                  `json:"capability_hash,omitempty"`
+	SyncState        string                  `json:"sync_state,omitempty"`
+	Name             string                  `json:"name"`
+	SPIFFEID         string                  `json:"spiffe_id"`
+	Capabilities     types.Capability        `json:"capabilities"`
+	Endpoint         string                  `json:"endpoint"`
+	EndpointURL      string                  `json:"endpoint_url,omitempty"`
+	AllowedEndpoints []string                `json:"allowed_endpoints,omitempty"`
+	ToolDefinitions  []ToolDefinitionPayload `json:"tool_definitions,omitempty"`
 }
 
 // ServerDeregisteredPayload is the payload for EventServerDeregistered.
