@@ -15,12 +15,15 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 - Auto-registration with heartbeat keepalive and server state machine
 - Federated tool routing (`mcp.<server>.<tool>`) with round-robin load balancing
 - Resource routing by URI prefix across backends
+- Progressive tool discovery with pluggable search engines (BM25, vector, hybrid)
+- LLM-driven orchestrator meta-tool for multi-step tool planning and execution
 
 **Security**
 - mTLS with SPIFFE identity extraction
 - Dual auth: API keys (CLI/headless) + OIDC JWT (service-to-service)
 - OAuth2 Device Code flow for IDE authentication
 - Per-tool allow/deny policies with risk classification (read_only, write, destructive)
+- Per-user tool permissions with OIDC auto-registration
 - SSRF-protected server registration
 - Security headers, constant-time CSRF protection, AES-GCM encrypted sessions
 
@@ -29,57 +32,188 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 - Per-server rate limiting configurable via admin dashboard (block, throttle, or unlimited per backend)
 - Circuit breakers with configurable failure threshold and recovery timeout
 - Automatic retry with backoff on transient failures
-- Graceful degradation when NATS is unavailable
+- Graceful degradation when NATS or backends are unavailable
+
+**Search & Discovery**
+- Progressive tool discovery -- LLMs see meta-tools instead of the full catalog
+- BM25 full-text search engine with TF-IDF ranking
+- Vector search engine with in-process ONNX embedder (all-MiniLM-L6-v2)
+- Hybrid search combining BM25 + vector via Reciprocal Rank Fusion
+- Synonym expansion for search query augmentation
+- Dynamic tool activation with per-session caps
 
 **Operations**
-- Admin dashboard (HTMX web UI) for server, tool, audit, and rate limit management
+- Admin dashboard (HTMX web UI) for server, tool, audit, user, and search management
+- User access management with role-based tool permissions
+- Audit log with username extraction, sorting, filtering, and CSV export
 - Prometheus metrics + OpenTelemetry distributed tracing
-- Helm chart with four environment overlays (base, dev, staging, prod)
+- Helm chart with example values overlay
 - ArgoCD GitOps deployment with ApplicationSet
-- Single static binary, scratch nonroot container image
-- Audit log with configurable retention and CSV export
+- Single static binary, distroless nonroot container image
 
 **Integration**
 - Standalone mode (Postgres only) or Cruvero platform integration (NATS event bus)
+- Integrated admin mode with delegated API for platform embedding
 - stdio-to-HTTP bridge (`mcpgw mcp-proxy`) for IDE integration
 - Device Code flow for browser-based CLI/IDE authentication
 
 ## Architecture Overview
 
-```
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│  Claude Code │   │  Cruvero UI │   │  Other MCP  │
-│    (IDE)     │   │  (Platform) │   │   Clients   │
-└──────┬───────┘   └──────┬───────┘   └──────┬───────┘
-       │ stdio            │ HTTPS            │ HTTPS
-       ▼                  ▼                  ▼
-┌──────────────────────────────────────────────────┐
-│                  MCP Gateway                      │
-│  ┌──────────────────────────────────────────┐    │
-│  │  mTLS → Identity → Auth → Rate Limit →   │    │
-│  │  Policy → Circuit Breaker → Proxy/Route   │    │
-│  └──────────────────────────────────────────┘    │
-│  ┌────────────┐  ┌───────────┐  ┌────────────┐  │
-│  │  Postgres   │  │   NATS    │  │ Prometheus  │  │
-│  │  (required) │  │ (optional)│  │  + OTel     │  │
-│  └────────────┘  └───────────┘  └────────────┘  │
-└──────┬──────────────┬──────────────┬─────────────┘
-       │              │              │
-       ▼              ▼              ▼
-┌────────────┐ ┌────────────┐ ┌────────────┐
-│ MCP Server │ │ MCP Server │ │ MCP Server │
-│ (SonarQube)│ │ (K8s)      │ │ (GitHub)   │
-└────────────┘ └────────────┘ └────────────┘
+```mermaid
+graph TB
+    subgraph Clients
+        IDE["IDE / Claude Code<br/>(stdio)"]
+        Platform["Cruvero Platform<br/>(HTTPS)"]
+        CLI["CLI / Scripts<br/>(HTTPS)"]
+    end
+
+    subgraph Gateway["MCP Gateway :8443"]
+        Auth["Auth Layer<br/>mTLS · OIDC · API Key"]
+        RL["Rate Limiter<br/>Memory · Dragonfly · NATS"]
+        Policy["Policy Engine<br/>Classification · Audit"]
+        Proxy["MCP Proxy<br/>Tool Routing · Discovery"]
+        Admin["Admin Dashboard<br/>HTMX · OIDC Sessions"]
+        Orch["Orchestrator<br/>LLM Plan & Execute"]
+        Search["Search Engine<br/>BM25 · Vector · Hybrid"]
+    end
+
+    subgraph Storage
+        PG[("PostgreSQL<br/>(required)")]
+        NATS["NATS JetStream<br/>(optional)"]
+        DF["DragonflyDB<br/>(optional)"]
+    end
+
+    subgraph Backends
+        MCP1["MCP Server<br/>SonarQube"]
+        MCP2["MCP Server<br/>Kubernetes"]
+        MCP3["MCP Server<br/>GitHub"]
+    end
+
+    IDE --> Gateway
+    Platform --> Gateway
+    CLI --> Gateway
+
+    Auth --> RL --> Policy --> Proxy
+    Proxy --> Search
+    Proxy --> Orch
+    Proxy --> MCP1 & MCP2 & MCP3
+
+    Gateway --> PG
+    Gateway -.-> NATS
+    Gateway -.-> DF
 ```
 
-For the full architecture reference including sequence diagrams, protocol details, and database schema, see [docs/OVERVIEW.md](docs/OVERVIEW.md).
+### Request Flow
+
+```mermaid
+sequenceDiagram
+    participant C as MCP Client
+    participant G as Gateway
+    participant A as Auth
+    participant R as Rate Limiter
+    participant P as Policy Engine
+    participant B as Backend Server
+
+    C->>G: POST /mcp (tools/call)
+    G->>A: Authenticate (mTLS / OIDC / API Key)
+    A-->>G: Identity + Permissions
+    G->>R: Check rate limit (client + server)
+    R-->>G: Allowed
+    G->>P: Evaluate tool policy
+    P-->>G: Classify (read_only / write / destructive)
+    P->>P: Write audit log
+    G->>B: Forward tool call (HTTPS + mTLS)
+    B-->>G: Tool result
+    G-->>C: JSON-RPC response
+```
+
+### Server Registration
+
+```mermaid
+sequenceDiagram
+    participant B as Backend Server
+    participant G as Gateway
+    participant DB as PostgreSQL
+    participant N as NATS
+
+    B->>G: PUT /v1/registrations/{id} (mTLS)
+    G->>G: Validate SPIFFE identity
+    G->>DB: Store server record
+    G->>G: Index capabilities (tools, resources)
+    G->>N: Publish server.registered event
+    G-->>B: 200 OK (lease epoch)
+
+    loop Every MCPGW_HEARTBEAT_TTL
+        B->>G: POST /v1/registrations/{id}/heartbeat
+        G->>DB: Update last_heartbeat
+        G-->>B: 200 OK
+    end
+
+    Note over G: Sweeper detects missed heartbeats
+    G->>DB: Mark stale then deregister
+    G->>N: Publish server.deregistered
+```
+
+### Progressive Tool Discovery
+
+```mermaid
+flowchart LR
+    subgraph Client
+        LLM["LLM / IDE"]
+    end
+
+    subgraph Gateway
+        Meta["Meta-tools<br/>search_tools · get_tool_schema"]
+        SE["Search Engine<br/>BM25 · Vector · Hybrid"]
+        DI["Discovery Index"]
+        Act["Session Activation"]
+    end
+
+    subgraph Backends
+        Tools["Backend Tools<br/>(not enumerated upfront)"]
+    end
+
+    LLM -->|"tools/list → meta-tools only"| Meta
+    LLM -->|"search_tools(query)"| SE
+    SE --> DI
+    DI -->|"Top-N results"| LLM
+    LLM -->|"get_tool_schema(names)"| Act
+    Act --> Tools
+    Tools -->|"Full schema"| LLM
+    LLM -->|"tools/call"| Tools
+```
+
+### Authentication
+
+```mermaid
+flowchart TD
+    Req["Incoming Request"] --> TLS{"Client cert<br/>present?"}
+    TLS -->|Yes| SPIFFE["Extract SPIFFE ID"]
+    SPIFFE --> Prefix{"Matches allowed<br/>prefix?"}
+    Prefix -->|Yes| OK["Authenticated"]
+    Prefix -->|No| Deny["401 Unauthorized"]
+    TLS -->|No| Bearer{"Authorization<br/>header?"}
+    Bearer -->|"3-part JWT"| OIDC["Validate OIDC token"]
+    OIDC --> Claims{"Valid issuer<br/>& audience?"}
+    Claims -->|Yes| OK
+    Claims -->|No| Deny
+    Bearer -->|"Other token"| APIKey["Lookup API Key hash"]
+    APIKey --> Found{"Key exists<br/>& active?"}
+    Found -->|Yes| OK
+    Found -->|No| Deny
+    Bearer -->|None| XKey{"X-API-Key<br/>header?"}
+    XKey -->|Yes| APIKey
+    XKey -->|No| Deny
+```
+
+For the full architecture reference including protocol details and database schema, see [docs/OVERVIEW.md](docs/OVERVIEW.md).
 
 ## Prerequisites
 
 | Component | Required | Purpose | Notes |
 |-----------|----------|---------|-------|
 | Go 1.26.1 | Build only | Compile from source | Not needed for container deployment |
-| PostgreSQL 16+ | **Yes** | Server registry, API keys, audit log, config | Single required runtime dependency |
+| PostgreSQL 16+ | **Yes** | Server registry, API keys, audit log, users, search config | Single required runtime dependency |
 | Vault + Vault Operator | K8s only | Secret management (DB creds, TLS keys, session keys) | `VaultAuth` + `VaultStaticSecret` resources |
 | cert-manager | K8s only | TLS certificate provisioning | Gateway server cert + client CA |
 | NATS JetStream | Cruvero mode | Event bus for control plane sync | Not needed in standalone mode |
@@ -119,33 +253,15 @@ The dev certificate script generates a CA, server certificate (with localhost SA
 
 ### Helm Chart
 
-The Helm chart is in `charts/mcpgateway/`. Install with environment-specific values:
+The Helm chart is in `charts/mcpgateway/`. Install with the example values overlay:
 
 ```bash
-# Dev
 helm install mcpgateway charts/mcpgateway -n myapp-dev \
   -f charts/mcpgateway/values.yaml \
-  -f charts/mcpgateway/values-dev.yaml
-
-# Staging
-helm install mcpgateway charts/mcpgateway -n myapp-staging \
-  -f charts/mcpgateway/values.yaml \
-  -f charts/mcpgateway/values-staging.yaml
-
-# Production
-helm install mcpgateway charts/mcpgateway -n myapp-prod \
-  -f charts/mcpgateway/values.yaml \
-  -f charts/mcpgateway/values-prod.yaml
+  -f charts/mcpgateway/values-example.yaml
 ```
 
-### Environment Overlays
-
-| File | Replicas | Autoscaling | Rate Limit Backend | Image Tag | Key Differences |
-|------|----------|-------------|-------------------|-----------|-----------------|
-| `values.yaml` (base) | 2 | 2–10 | memory | latest | Base defaults |
-| `values-dev.yaml` | 1 | disabled | memory | dev | Tracing enabled, ingress enabled |
-| `values-staging.yaml` | 2 | 2–5 | memory | staging-latest | ServiceMonitor + PrometheusRule |
-| `values-prod.yaml` | 3 | 3–20 | dragonfly | v1.0.0 | DragonflyDB, NATS TLS, increased resources |
+Copy `values-example.yaml` and customize for your environment. See `values.yaml` for all available keys and defaults.
 
 ### Secret Management
 
@@ -174,23 +290,21 @@ The `deploy/argocd/` directory contains:
 | File | Purpose |
 |------|---------|
 | `project.yaml` | AppProject scoping allowed namespaces and resource types |
-| `applicationset.yaml` | ApplicationSet for the live dev deployment; staging/prod assets remain versioned in-repo |
-| `image-updater-mcpgateway-dev.yaml` | ArgoCD Image Updater config for dev auto-deploy |
-| `image-updater-rbac.yaml` | RBAC for Image Updater to read Harbor pull secrets |
+| `applicationset.yaml` | ApplicationSet for multi-environment deployment |
+| `image-updater-rbac.yaml` | RBAC for Image Updater to read registry pull secrets |
 
 Sync policies:
-- **Dev**: automated sync with prune and self-heal, image updater auto-deploys on push to `dev`
-- **Staging**: chart values and image workflow are versioned in-repo, but the ArgoCD application is not currently applied from this repo
-- **Prod**: chart values and image workflow are versioned in-repo, but the ArgoCD application is not currently applied from this repo
+- **Dev**: automated sync with prune and self-heal, image updater auto-deploys on push
+- **Staging/Prod**: manual sync, version-pinned image tags
 
 ### Security Posture
 
-- **Image**: `scratch` -- no shell, no package manager, no OS
+- **Image**: `distroless/cc` -- minimal runtime with C library support for ONNX, no shell or package manager
+- **User**: `nonroot:nonroot` (UID 65532)
 - **SecurityContext**: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, all capabilities dropped
 - **NetworkPolicy**: default-deny with explicit ingress/egress rules for Postgres, NATS, OTel, DNS, and backend servers
 - **PodDisruptionBudget**: `minAvailable: 1` (base), scales with environment
 - **HPA**: CPU-based autoscaling (target 70%)
-- **Image publishing**: dev, staging, and production image workflows build and publish images to Harbor without an in-workflow Trivy gate
 
 ## CLI Reference
 
@@ -262,8 +376,9 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `MCPGW_ADMIN_ENABLED` | `false` | No | Enable admin dashboard |
-| `MCPGW_ADMIN_MODE` | `standalone` | No | Admin mode: `standalone` (legacy HTMX UI) or `integrated` (Platform-delegated API) |
-| `MCPGW_PLATFORM_SERVICE_TOKEN` | -- | If integrated mode | Shared bearer token expected from Cruvero Platform for delegated `/admin/api/v1/*` auth |
+| `MCPGW_ADMIN_MODE` | `standalone` | No | Admin mode: `standalone` (HTMX UI) or `integrated` (platform-delegated API) |
+| `MCPGW_PLATFORM_SERVICE_TOKEN` | -- | If integrated mode | Bearer token for delegated `/admin/api/v1/*` auth |
+| `MCPGW_PLATFORM_SPIFFE_PREFIXES` | -- | No | Comma-separated SPIFFE prefixes for platform catalog mTLS access |
 | `MCPGW_ADMIN_OIDC_CLIENT_ID` | -- | If admin (non-dev) | OIDC client ID for admin auth |
 | `MCPGW_ADMIN_OIDC_CLIENT_SECRET` | -- | No | OIDC client secret for admin auth |
 | `MCPGW_ADMIN_REQUIRED_SCOPE` | `admin` | No | Required OIDC scope for admin access |
@@ -289,6 +404,24 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | `MCPGW_CIRCUIT_TIMEOUT` | `30s` | No | Circuit breaker recovery timeout |
 | `MCPGW_RETRY_MAX` | `3` | No | Max retry attempts |
 | `MCPGW_HEARTBEAT_TTL` | `30s` | No | Server heartbeat timeout |
+
+### Search & Discovery
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_PROGRESSIVE_DISCOVERY` | `false` | No | Enable progressive tool discovery (lazy-load tool schemas on first call) |
+| `MCPGW_SEARCH_ENGINE` | -- | No | Search engine: `substring`, `bm25`, `vector`, or `hybrid` |
+| `MCPGW_ONNX_RUNTIME_PATH` | `/usr/lib/libonnxruntime.so` | If vector/hybrid | Path to ONNX Runtime shared library |
+| `MCPGW_ONNX_MODEL_PATH` | `/models/all-MiniLM-L6-v2.onnx` | If vector/hybrid | Path to ONNX embedding model |
+| `MCPGW_TOKENIZER_PATH` | `/models/tokenizer.json` | If vector/hybrid | Path to HuggingFace tokenizer |
+
+### Orchestrator
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_ORCHESTRATE_ENABLED` | `false` | No | Enable the orchestrate meta-tool (LLM-driven tool planning/execution) |
+| `MCPGW_LLM_PROVIDERS` | -- | If orchestrate | JSON array of LLM provider configs (`name`, `model`, `priority`, `base_url`) |
+| `MCPGW_LLM_{NAME}_API_KEY` | -- | Per provider | API key for each LLM provider (e.g. `MCPGW_LLM_OPENAI_API_KEY`) |
 
 ### Cruvero Integration
 
@@ -320,7 +453,6 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | `MCPGW_CORS_ALLOWED_ORIGINS` | -- | If CORS | Comma-separated allowed origins |
 | `MCPGW_AUDIT_RETENTION_DAYS` | `90` | No | Days to retain audit log entries |
 | `MCPGW_AUDIT_CLEANUP_INTERVAL` | `1h` | No | Interval between retention cleanup runs |
-| `MCPGW_PROGRESSIVE_DISCOVERY` | `false` | No | Enable progressive tool discovery (lazy-load tool schemas on first call) |
 
 ## Authentication
 
@@ -348,15 +480,17 @@ Enable the admin dashboard with `MCPGW_ADMIN_ENABLED=true`. The dashboard provid
 
 - **Server management** -- view registered servers, deregister unhealthy backends
 - **Tool classification** -- search, filter, and set risk levels (read_only, write, destructive)
-- **Audit log viewer** -- paginated logs with filters by client, tool, decision, and date range
+- **User management** -- manage user roles and per-user tool permissions
+- **Audit log viewer** -- paginated logs with filters by client, tool, username, decision, and date range
 - **CSV export** -- export up to 10,000 audit records with CSV injection prevention
 - **Per-server rate limiting** -- configure requests/second limits and burst capacity per backend server
 - **Rate limit inspection** -- view current rate limit state (when backend supports inspection)
+- **Search configuration** -- manage synonym groups, test search queries
 
 ### Admin Modes
 
-- **`MCPGW_ADMIN_MODE=standalone` (default)**: existing `/admin/*` HTMX dashboard with local OIDC/session auth.
-- **`MCPGW_ADMIN_MODE=integrated`**: disables standalone `/admin` login/UI routes and exposes delegated admin API at `/admin/api/v1/*` for Cruvero Platform.
+- **`MCPGW_ADMIN_MODE=standalone` (default)**: `/admin/*` HTMX dashboard with local OIDC/session auth.
+- **`MCPGW_ADMIN_MODE=integrated`**: disables standalone `/admin` login/UI routes and exposes delegated admin API at `/admin/api/v1/*` for platform embedding.
 
 Integrated mode delegated auth contract:
 
@@ -423,7 +557,7 @@ The gateway exposes metrics on `MCPGW_METRICS_ADDR` (default `:9090`). The Helm 
 
 ### OpenTelemetry Tracing
 
-Configure distributed tracing by setting `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector address. The Helm chart can deploy a dedicated OTel Collector Deployment/Service and a Tempo instance when `tracing.enabled=true`.
+Configure distributed tracing by setting `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector address. The Helm chart can deploy a dedicated OTel Collector when `tracing.enabled=true`.
 
 ### Structured Logging
 
@@ -602,8 +736,9 @@ NATS subject pattern: `mcpgw.{gateway_id}.{category}.{scope}` -- categories: `ev
 | Registration | `PUT /v1/registrations/{id}` | mTLS | Register an MCP server |
 | Registration | `POST /v1/registrations/{id}/heartbeat` | mTLS | Server keep-alive |
 | Registration | `DELETE /v1/registrations/{id}` | mTLS | Deregister server |
+| Catalog | `GET /v1/catalog` | mTLS (platform) | Platform tool catalog |
 | Admin | `GET /admin/*` | OIDC session | Web dashboard |
-| Admin API | `/admin/api/v1/*` | Delegated Cruvero headers + service bearer | Integrated-mode admin API for servers/tools/users/audit/search-tuning |
+| Admin API | `/admin/api/v1/*` | Platform bearer | Integrated-mode admin API for servers/tools/users/audit/search |
 | Metrics | `GET /metrics` | None | Prometheus metrics (separate port) |
 
 ## Database Migrations
@@ -637,7 +772,7 @@ Migration files follow the convention `NNNN_description.{up,down}.sql` in the `m
 | 0010 | Server rate limit columns + CHECK constraints |
 | 0011 | pg_trgm search indexes for tools and audit |
 | 0012 | User access management |
-| 0013 | Search configuration |
+| 0013 | Search configuration (synonyms, reindex log) |
 | 0014 | Audit log username and sort support |
 
 ## Development
@@ -654,7 +789,7 @@ Run the full suite before opening a PR:
 ```bash
 go build ./cmd/mcpgw
 go test -race ./...
-make quality    # vet → lint → staticcheck → govulncheck → gosec → dupl → godoc-check → coverage-check
+make quality    # vet -> lint -> staticcheck -> govulncheck -> gosec -> dupl -> godoc-check -> coverage-check
 ```
 
 Individual checks:
@@ -668,7 +803,7 @@ Individual checks:
 | `./scripts/check-gosec.sh` | Security-focused scan |
 | `./scripts/check-dupl.sh` | Duplicate code detection |
 | `./scripts/check-godoc.sh` | Exported symbols documented |
-| `./scripts/check-coverage.sh` | Per-package coverage ≥ threshold |
+| `./scripts/check-coverage.sh` | Per-package coverage >= threshold |
 
 Coverage thresholds are enforced per-package via `coverage-thresholds.json` (minimum 80%).
 
@@ -679,20 +814,13 @@ The devcontainer image tracks the floating `1.26` minor line because the publish
 
 ### Helm Validation
 
-Validate chart rendering for all environments before deployment PRs:
+Validate chart rendering before deployment PRs:
 
 ```bash
 make chart-lint
 make chart-render-base
-make chart-render-dev
-make chart-render-staging
-make chart-render-prod
 make chart-validate
 ```
-
-### Development Phases
-
-The gateway was developed across 18 sequential phases covering core infrastructure through production hardening.
 
 ## Repository Layout
 
@@ -702,26 +830,30 @@ cruvero-mcp-gateway/
 ├── cmd/
 │   └── mcpgw/              Single binary with subcommands
 ├── internal/
-│   ├── admin/              Admin dashboard (OIDC auth, HTMX templates, handlers)
+│   ├── admin/              Admin dashboard (OIDC auth, HTMX templates, integrated API)
 │   ├── auth/               API key + OIDC + Device Code flow authentication
 │   ├── config/             Environment-based configuration
 │   ├── events/             NATS client, event types, pub/sub
 │   ├── identity/           mTLS, SPIFFE ID, cert validation
+│   ├── llm/                LLM failover client (OpenAI-compatible providers)
+│   ├── orchestrator/       LLM-driven tool planning and execution
 │   ├── policy/             Tool safety, allowlist/denylist, risk classification
-│   ├── proxy/              MCP protocol handler, tool/resource routing
+│   ├── proxy/              MCP protocol handler, tool/resource routing, discovery
 │   ├── ratelimit/          Token bucket with memory/dragonfly/NATS backends
 │   ├── registration/       Server registration, handshake, heartbeat
 │   ├── resilience/         Circuit breaker, retry, connection pool
-│   ├── server/             HTTP server, router, middleware
+│   ├── search/             Search engines (BM25, vector, hybrid, ONNX embedder)
+│   ├── server/             HTTP server, router, middleware, catalog API
 │   ├── store/              Postgres store interfaces + implementations
 │   ├── testutil/           Integration, security, and load test suites
 │   └── types/              Shared domain types
-├── migrations/             SQL migrations (0001–0014)
+├── migrations/             SQL migrations (0001-0014)
 ├── charts/
-│   └── mcpgateway/         Helm chart + environment overlays
+│   └── mcpgateway/         Helm chart with values-example.yaml overlay
 ├── deploy/
-│   └── argocd/             GitOps manifests (AppProject, ApplicationSet)
-├── docs/                   Architecture, integration, audit, and notes
+│   ├── argocd/             GitOps manifests (AppProject, ApplicationSet)
+│   └── pki/                Vault PKI + cert-manager bootstrap
+├── docs/                   Architecture, integration, and audit docs
 ├── scripts/                Quality gate and CI helper scripts
 ├── Dockerfile
 ├── Makefile
