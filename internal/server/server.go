@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -9,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,21 +40,60 @@ type Server struct {
 	ready           atomic.Bool
 	shutdownTimeout time.Duration
 
-	policyEngine     *policy.Engine
-	rateLimitBackend ratelimit.LimiterBackend
-	profileResolver  ratelimit.ProfileResolver
-	proxyAuthMW       func(http.Handler) http.Handler
-	proxyPolicyMW     func(http.Handler) http.Handler
-	cleanupInterval   time.Duration
-	cleanupMaxIdleTTL time.Duration
-	eventsClient      *events.Client
-	eventSubscriber   *events.Subscriber
-	eventPublisher    *events.Publisher
-	degradation       *events.DegradationManager
-	serverCfgHandler     *events.ServerConfigHandler
-	settingsHandler      *events.ServerSettingsConfigHandler
-	ackHandler           *events.ServerRegisteredAckHandler
-	toolMetadataHandler  *events.ToolMetadataConfigHandler
+	policyEngine        *policy.Engine
+	rateLimitBackend    ratelimit.LimiterBackend
+	profileResolver     ratelimit.ProfileResolver
+	proxyAuthMW         func(http.Handler) http.Handler
+	proxyPolicyMW       func(http.Handler) http.Handler
+	cleanupInterval     time.Duration
+	cleanupMaxIdleTTL   time.Duration
+	eventsClient        *events.Client
+	eventSubscriber     *events.Subscriber
+	eventPublisher      *events.Publisher
+	degradation         *events.DegradationManager
+	serverCfgHandler    *events.ServerConfigHandler
+	settingsHandler     *events.ServerSettingsConfigHandler
+	ackHandler          *events.ServerRegisteredAckHandler
+	toolMetadataHandler *events.ToolMetadataConfigHandler
+	toolCountFunc       func() int
+	searchStatusFunc    func() SearchStatus
+	buildVersion        string
+	metaLimiter         *metaRateLimiter
+}
+
+var currentServerVersion atomic.Value
+
+func init() {
+	currentServerVersion.Store("dev")
+}
+
+// SetServerVersion configures the build version reported by metadata endpoints.
+func SetServerVersion(version string) {
+	trimmed := strings.TrimSpace(version)
+	if trimmed == "" {
+		trimmed = "dev"
+	}
+	currentServerVersion.Store(trimmed)
+}
+
+func serverVersion() string {
+	v, _ := currentServerVersion.Load().(string)
+	if strings.TrimSpace(v) == "" {
+		return "dev"
+	}
+	return v
+}
+
+// SearchStatus captures current search subsystem health and fallback counters.
+type SearchStatus struct {
+	Engine                string
+	Embedder              string
+	IndexedTools          int
+	Ready                 bool
+	VectorReady           *bool
+	VectorSearchFallbacks uint64
+	VectorIndexFallbacks  uint64
+	EngineErrorFallbacks  uint64
 }
 
 // New builds a configured HTTP server with middleware and routes.
@@ -73,6 +115,8 @@ func New(cfg *config.Config, logger *slog.Logger, db *sql.DB) *Server {
 		router:          router,
 		startTime:       time.Now().UTC(),
 		shutdownTimeout: resolveShutdownTimeout(cfg),
+		buildVersion:    serverVersion(),
+		metaLimiter:     newMetaRateLimiter(10, 10, 10000),
 
 		cleanupInterval:   time.Minute,
 		cleanupMaxIdleTTL: 5 * time.Minute,
@@ -295,7 +339,7 @@ func (s *Server) startShutdownWatcher(ctx context.Context) <-chan error {
 	shutdownErrCh := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownTimeout)
 		defer cancel()
 		if s.metricsSrv != nil {
 			if err := s.metricsSrv.Shutdown(shutdownCtx); err != nil {
@@ -416,12 +460,40 @@ func (s *Server) RateLimitBackend() ratelimit.LimiterBackend {
 	return s.rateLimitBackend
 }
 
+// MountCatalog mounts the platform tool catalog endpoint under
+// /admin/api/tools/catalog with mTLS authentication restricted to the given
+// SPIFFE ID prefixes. When platformPrefixes is empty the endpoint is not
+// mounted (secure-by-default).
+func (s *Server) MountCatalog(handler http.Handler, platformPrefixes []string) {
+	if s == nil || handler == nil || len(platformPrefixes) == 0 {
+		return
+	}
+	s.router.Route("/admin/api/tools/catalog", func(r chi.Router) {
+		r.Use(identity.MTLSMiddleware(platformPrefixes, s.logger))
+		r.Mount("/", handler)
+	})
+}
+
 // MountDeviceFlowRoutes mounts device code flow endpoints under /device.
 func (s *Server) MountDeviceFlowRoutes(handler http.Handler) {
 	if s == nil || handler == nil {
 		return
 	}
 	s.router.Mount("/device", handler)
+}
+
+// MountAPIKeyAPI mounts the API key management endpoints under /v1/apikeys
+// with the same auth middleware used for the proxy routes.
+func (s *Server) MountAPIKeyAPI(handler http.Handler) {
+	if s == nil || handler == nil {
+		return
+	}
+	s.router.Route("/v1/apikeys", func(r chi.Router) {
+		if s.proxyAuthMW != nil {
+			r.Use(s.proxyAuthMW)
+		}
+		r.Mount("/", handler)
+	})
 }
 
 // SetRateLimitBackend replaces the default memory rate-limit backend.
@@ -504,6 +576,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) setupRoutes() {
 	s.router.Get("/healthz", s.handleHealth)
 	s.router.Get("/readyz", s.handleReady)
+	s.router.Get("/meta", s.handleMeta)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -550,6 +623,10 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		if settingsConfigVersion > 0 {
 			payload["settings_config_version"] = settingsConfigVersion
 		}
+		if s.toolCountFunc != nil {
+			payload["active_tools"] = s.toolCountFunc()
+		}
+		s.addSearchStatus(payload)
 
 		if !everConnected && !hasCachedConfig {
 			payload["status"] = "not_ready"
@@ -561,15 +638,222 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	payload := map[string]any{"status": "ok"}
+	if s.toolCountFunc != nil {
+		payload["active_tools"] = s.toolCountFunc()
+	}
+	s.addSearchStatus(payload)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) addSearchStatus(payload map[string]any) {
+	if s.searchStatusFunc == nil {
+		return
+	}
+	searchStatus := s.searchStatusFunc()
+	status := "ok"
+	if !searchStatus.Ready {
+		status = "degraded"
+	}
+
+	searchPayload := map[string]any{
+		"engine": searchStatus.Engine,
+		"status": status,
+	}
+	if searchStatus.Embedder != "" {
+		searchPayload["embedder"] = searchStatus.Embedder
+	}
+	if searchStatus.IndexedTools > 0 {
+		searchPayload["indexed_tools"] = searchStatus.IndexedTools
+	}
+	if searchStatus.VectorReady != nil {
+		vectorStatus := "ok"
+		if !*searchStatus.VectorReady {
+			vectorStatus = "degraded"
+		}
+		searchPayload["vector_status"] = vectorStatus
+	}
+	if searchStatus.VectorSearchFallbacks > 0 || searchStatus.VectorIndexFallbacks > 0 || searchStatus.EngineErrorFallbacks > 0 {
+		searchPayload["fallbacks"] = map[string]uint64{
+			"vector_search": searchStatus.VectorSearchFallbacks,
+			"vector_index":  searchStatus.VectorIndexFallbacks,
+			"engine_error":  searchStatus.EngineErrorFallbacks,
+		}
+	}
+	payload["search"] = searchPayload
+}
+
+func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	if s.metaLimiter != nil {
+		if !s.metaLimiter.Allow(clientIPFromRequest(r)) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{
+				"status": "rate_limited",
+			})
+			return
+		}
+	}
+
+	mode := "standalone"
+	gatewayID := ""
+	if s.cfg != nil {
+		if strings.TrimSpace(s.cfg.AdminMode) == "integrated" {
+			mode = "integrated"
+		}
+		gatewayID = strings.TrimSpace(s.cfg.GatewayID)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"admin_mode": mode,
+		"version":    s.buildVersion,
+		"gateway_id": gatewayID,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	_, _ = w.Write(body.Bytes())
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	if r == nil {
+		return "unknown"
 	}
+
+	remoteIP := parseIPToken(r.RemoteAddr)
+	if remoteIP == "" {
+		remoteIP = "unknown"
+	}
+
+	if remoteIP != "unknown" && isTrustedProxyIP(remoteIP) {
+		if forwarded := firstForwardedIP(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+			return forwarded
+		}
+		if realIP := parseIPToken(r.Header.Get("X-Real-IP")); realIP != "" {
+			return realIP
+		}
+	}
+
+	return remoteIP
+}
+
+func parseIPToken(raw string) string {
+	token := strings.TrimSpace(raw)
+	if token == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(token); err == nil {
+		token = host
+	}
+	token = strings.Trim(strings.TrimSpace(token), "[]")
+	ip := net.ParseIP(token)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func firstForwardedIP(forwardedFor string) string {
+	for _, token := range strings.Split(forwardedFor, ",") {
+		if ip := parseIPToken(token); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func isTrustedProxyIP(ipRaw string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipRaw))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+type metaRateLimiter struct {
+	rate       float64
+	burst      float64
+	maxEntries int
+	mu         sync.Mutex
+	tokens     map[string]float64
+	last       map[string]time.Time
+}
+
+func newMetaRateLimiter(ratePerSecond float64, burst float64, maxEntries int) *metaRateLimiter {
+	if ratePerSecond <= 0 || burst <= 0 || maxEntries <= 0 {
+		return nil
+	}
+	return &metaRateLimiter{
+		rate:       ratePerSecond,
+		burst:      burst,
+		maxEntries: maxEntries,
+		tokens:     make(map[string]float64),
+		last:       make(map[string]time.Time),
+	}
+}
+
+func (l *metaRateLimiter) Allow(key string) bool {
+	if l == nil {
+		return true
+	}
+	if strings.TrimSpace(key) == "" {
+		key = "unknown"
+	}
+
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	prev, exists := l.last[key]
+	if !exists && len(l.last) >= l.maxEntries {
+		l.evictOldestLocked()
+	}
+
+	tokens := l.tokens[key]
+	if prev.IsZero() {
+		tokens = l.burst
+	} else {
+		elapsed := now.Sub(prev).Seconds()
+		tokens = minFloat(l.burst, tokens+elapsed*l.rate)
+	}
+
+	if tokens < 1 {
+		l.tokens[key] = tokens
+		l.last[key] = now
+		return false
+	}
+
+	l.tokens[key] = tokens - 1
+	l.last[key] = now
+	return true
+}
+
+func (l *metaRateLimiter) evictOldestLocked() {
+	oldestKey := ""
+	var oldestTime time.Time
+	for key, ts := range l.last {
+		if oldestKey == "" || ts.Before(oldestTime) {
+			oldestKey = key
+			oldestTime = ts
+		}
+	}
+	if oldestKey == "" {
+		return
+	}
+	delete(l.last, oldestKey)
+	delete(l.tokens, oldestKey)
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func defaultPolicyProfile(cfg *config.Config) *types.PolicyProfile {
@@ -650,6 +934,38 @@ func (s *Server) SetDegradationManager(manager *events.DegradationManager) {
 		return
 	}
 	s.degradation = manager
+}
+
+// SetToolCountFunc sets a callback that returns the current active tool count.
+func (s *Server) SetToolCountFunc(fn func() int) {
+	if s == nil {
+		return
+	}
+	s.toolCountFunc = fn
+}
+
+// SetSearchReadyFunc wires a function that reports the search engine type and
+// readiness status for the readyz endpoint.
+func (s *Server) SetSearchReadyFunc(fn func() (string, bool)) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.searchStatusFunc = func() SearchStatus {
+		engineType, ready := fn()
+		return SearchStatus{
+			Engine: engineType,
+			Ready:  ready,
+		}
+	}
+}
+
+// SetSearchStatusFunc wires a function that reports detailed search status
+// for the readyz endpoint.
+func (s *Server) SetSearchStatusFunc(fn func() SearchStatus) {
+	if s == nil {
+		return
+	}
+	s.searchStatusFunc = fn
 }
 
 // ToolMetadataHandler returns the tool metadata config handler for late-binding.

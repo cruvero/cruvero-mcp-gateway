@@ -59,6 +59,173 @@ func TestReadyzReturns200(t *testing.T) {
 	}
 }
 
+func TestMetaReturnsConfiguredModeVersionAndGatewayID(t *testing.T) {
+	t.Parallel()
+
+	SetServerVersion("1.2.3-test")
+	cfg := baseConfig()
+	cfg.AdminMode = "integrated"
+	cfg.GatewayID = "gw-1"
+
+	srv := New(cfg, testLogger(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/meta", nil)
+	rec := httptest.NewRecorder()
+
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if payload["admin_mode"] != "integrated" {
+		t.Fatalf("expected admin_mode integrated, got %q", payload["admin_mode"])
+	}
+	if payload["version"] != "1.2.3-test" {
+		t.Fatalf("expected version 1.2.3-test, got %q", payload["version"])
+	}
+	if payload["gateway_id"] != "gw-1" {
+		t.Fatalf("expected gateway_id gw-1, got %q", payload["gateway_id"])
+	}
+}
+
+func TestMetaRateLimitPerIP(t *testing.T) {
+	t.Parallel()
+
+	srv := New(baseConfig(), testLogger(), nil)
+	lastCode := 0
+	for i := 0; i < 11; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/meta", nil)
+		req.RemoteAddr = "203.0.113.10:4444"
+		rec := httptest.NewRecorder()
+		srv.router.ServeHTTP(rec, req)
+		lastCode = rec.Code
+	}
+
+	if lastCode != http.StatusTooManyRequests {
+		t.Fatalf("expected final request to be rate limited with 429, got %d", lastCode)
+	}
+}
+
+func TestMetaRateLimiterEvictsOldestIPEntriesAfterTime(t *testing.T) {
+	t.Parallel()
+
+	limiter := newMetaRateLimiter(100, 100, 3)
+	if limiter == nil {
+		t.Fatal("expected limiter to be initialized")
+	}
+
+	keys := []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"}
+	for _, key := range keys {
+		if !limiter.Allow(key) {
+			t.Fatalf("expected first request for %s to pass", key)
+		}
+	}
+	limiter.mu.Lock()
+	base := time.Now()
+	limiter.last["203.0.113.1"] = base
+	limiter.last["203.0.113.2"] = base.Add(1 * time.Millisecond)
+	limiter.last["203.0.113.3"] = base.Add(2 * time.Millisecond)
+	limiter.mu.Unlock()
+
+	// Adding a fourth unique key should evict the oldest entry (203.0.113.1).
+	if !limiter.Allow("203.0.113.4") {
+		t.Fatal("expected first request for newest key to pass")
+	}
+
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+
+	if len(limiter.last) != 3 {
+		t.Fatalf("expected 3 tracked entries after eviction, got %d", len(limiter.last))
+	}
+	if _, exists := limiter.last["203.0.113.1"]; exists {
+		t.Fatal("expected oldest key to be evicted")
+	}
+	if _, exists := limiter.last["203.0.113.4"]; !exists {
+		t.Fatal("expected newest key to be present after eviction")
+	}
+}
+
+func TestClientIPFromRequest_TrustedProxyUsesForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/meta", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "198.51.100.10, 127.0.0.1")
+
+	got := clientIPFromRequest(req)
+	if got != "198.51.100.10" {
+		t.Fatalf("expected forwarded client ip, got %q", got)
+	}
+}
+
+func TestClientIPFromRequest_UntrustedSourceIgnoresForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/meta", nil)
+	req.RemoteAddr = "198.51.100.50:2345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.20")
+	req.Header.Set("X-Real-IP", "203.0.113.21")
+
+	got := clientIPFromRequest(req)
+	if got != "198.51.100.50" {
+		t.Fatalf("expected remote addr ip, got %q", got)
+	}
+}
+
+func TestReadyzIncludesActiveToolCount(t *testing.T) {
+	t.Parallel()
+
+	srv := New(baseConfig(), testLogger(), nil)
+	srv.SetToolCountFunc(func() int { return 42 })
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	toolCount, ok := payload["active_tools"]
+	if !ok {
+		t.Fatal("expected active_tools in readyz response")
+	}
+	if toolCount != float64(42) {
+		t.Fatalf("expected active_tools=42, got %v", toolCount)
+	}
+}
+
+func TestReadyzOmitsToolCountWithoutFunc(t *testing.T) {
+	t.Parallel()
+
+	srv := New(baseConfig(), testLogger(), nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := payload["active_tools"]; ok {
+		t.Fatal("expected no active_tools key when func is not set")
+	}
+}
+
 func TestReadyzReturns503WhenNotReady(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +340,60 @@ func TestReadyzCruveroDegradedWithCacheReturns200AndSettings(t *testing.T) {
 	}
 	if payload["settings_config_version"] != float64(9) {
 		t.Fatalf("expected settings_config_version 9, got %+v", payload["settings_config_version"])
+	}
+}
+
+func TestReadyzCruveroIncludesSearchStatus(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.CruveroEnabled = true
+
+	srv := New(cfg, testLogger(), nil)
+	manager := events.NewDegradationManager(nil, nil, nil, testLogger())
+	if err := manager.OnReconnect(context.Background()); err != nil {
+		t.Fatalf("set connected state: %v", err)
+	}
+	srv.SetDegradationManager(manager)
+
+	vectorReady := false
+	srv.SetSearchStatusFunc(func() SearchStatus {
+		return SearchStatus{
+			Engine:                "hybrid",
+			Embedder:              "onnx-in-process",
+			IndexedTools:          63,
+			Ready:                 false,
+			VectorReady:           &vectorReady,
+			VectorSearchFallbacks: 4,
+			VectorIndexFallbacks:  1,
+			EngineErrorFallbacks:  2,
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	searchPayload, ok := payload["search"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected search object in payload, got %+v", payload["search"])
+	}
+	if searchPayload["engine"] != "hybrid" {
+		t.Fatalf("expected search.engine=hybrid, got %+v", searchPayload["engine"])
+	}
+	if searchPayload["status"] != "degraded" {
+		t.Fatalf("expected search.status=degraded, got %+v", searchPayload["status"])
+	}
+	if searchPayload["vector_status"] != "degraded" {
+		t.Fatalf("expected search.vector_status=degraded, got %+v", searchPayload["vector_status"])
 	}
 }
 
@@ -526,13 +747,13 @@ func TestWriteJSONEncodeErrorPath(t *testing.T) {
 
 func baseConfig() *config.Config {
 	return &config.Config{
-		ListenAddr:        ":0",
-		MetricsAddr:       "127.0.0.1:0",
-		DBURL:             "postgres://db",
-		RateDefault:       10,
-		RateBurst:         20,
-		CircuitThreshold:  5,
-		RetryMax:          3,
+		ListenAddr:           ":0",
+		MetricsAddr:          "127.0.0.1:0",
+		DBURL:                "postgres://db",
+		RateDefault:          10,
+		RateBurst:            20,
+		CircuitThreshold:     5,
+		RetryMax:             3,
 		DBMaxOpenConns:       25,
 		DBMaxIdleConns:       10,
 		DBConnMaxLifetime:    5 * time.Minute,

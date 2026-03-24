@@ -199,6 +199,54 @@ func TestCapabilityIndexConcurrentAddLookup(t *testing.T) {
 	}
 }
 
+func TestToolCountReturnsDistinctToolCount(t *testing.T) {
+	t.Parallel()
+
+	idx := NewCapabilityIndex()
+	if got := idx.ToolCount(); got != 0 {
+		t.Fatalf("expected 0 tools on empty index, got %d", got)
+	}
+
+	idx.Add(indexTestServer("s1", types.StatusActive, []string{"tool.alpha", "tool.beta"}, nil))
+	if got := idx.ToolCount(); got != 2 {
+		t.Fatalf("expected 2 tools after add, got %d", got)
+	}
+
+	idx.Add(indexTestServer("s2", types.StatusActive, []string{"tool.alpha", "tool.gamma"}, nil))
+	if got := idx.ToolCount(); got != 3 {
+		t.Fatalf("expected 3 tools after second add (shared tool.alpha), got %d", got)
+	}
+
+	idx.Remove("s2")
+	if got := idx.ToolCount(); got != 2 {
+		t.Fatalf("expected 2 tools after removing s2 (tool.gamma gone, tool.alpha stays), got %d", got)
+	}
+}
+
+func TestToolCountAfterRebuild(t *testing.T) {
+	t.Parallel()
+
+	idx := NewCapabilityIndex()
+	idx.Add(indexTestServer("s1", types.StatusActive, []string{"old.tool"}, nil))
+
+	servers := []types.ServerRecord{
+		indexTestServer("s2", types.StatusActive, []string{"new.a", "new.b", "new.c"}, nil),
+	}
+	idx.Rebuild(servers)
+	if got := idx.ToolCount(); got != 3 {
+		t.Fatalf("expected 3 tools after rebuild, got %d", got)
+	}
+}
+
+func TestToolCountNilIndex(t *testing.T) {
+	t.Parallel()
+
+	var idx *CapabilityIndex
+	if got := idx.ToolCount(); got != 0 {
+		t.Fatalf("expected 0 on nil index, got %d", got)
+	}
+}
+
 func indexTestServer(id string, status types.ServerStatus, tools []string, resources []string) types.ServerRecord {
 	return types.ServerRecord{
 		ID:     id,

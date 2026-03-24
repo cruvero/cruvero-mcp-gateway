@@ -23,7 +23,7 @@ func TestToolCacheHitReturnsCachedDefinition(t *testing.T) {
 	t.Parallel()
 
 	cache := NewToolCache(1 * time.Minute)
-	cache.Set("tool.echo", ToolDefinition{Name: "tool.echo"}, "server-1")
+	cache.Set("tool.echo", ToolDefinition{Name: "tool.echo"}, "server-1", "server-1")
 
 	def, ok := cache.Get("tool.echo")
 	if !ok {
@@ -38,8 +38,8 @@ func TestToolCacheInvalidateClearsEntries(t *testing.T) {
 	t.Parallel()
 
 	cache := NewToolCache(1 * time.Minute)
-	cache.Set("tool.alpha", ToolDefinition{Name: "tool.alpha"}, "server-1")
-	cache.Set("tool.beta", ToolDefinition{Name: "tool.beta"}, "server-2")
+	cache.Set("tool.alpha", ToolDefinition{Name: "tool.alpha"}, "server-1", "server-1")
+	cache.Set("tool.beta", ToolDefinition{Name: "tool.beta"}, "server-2", "server-2")
 
 	cache.Invalidate()
 	if _, ok := cache.Get("tool.alpha"); ok {
@@ -54,8 +54,8 @@ func TestToolCacheInvalidateServer(t *testing.T) {
 	t.Parallel()
 
 	cache := NewToolCache(1 * time.Minute)
-	cache.Set("tool.alpha", ToolDefinition{Name: "tool.alpha"}, "server-1")
-	cache.Set("tool.beta", ToolDefinition{Name: "tool.beta"}, "server-2")
+	cache.Set("tool.alpha", ToolDefinition{Name: "tool.alpha"}, "server-1", "server-1")
+	cache.Set("tool.beta", ToolDefinition{Name: "tool.beta"}, "server-2", "server-2")
 
 	cache.InvalidateServer("server-1")
 	if _, ok := cache.Get("tool.alpha"); ok {
@@ -156,7 +156,7 @@ func TestHandleListToolsExposesConflictsByBackendNamespace(t *testing.T) {
 		t.Fatalf("expected both backend-scoped tools, got %d", len(tools))
 	}
 	names := []string{tools[0].Name, tools[1].Name}
-	if !slices.Contains(names, "mcp.server-1.tool.same") || !slices.Contains(names, "mcp.server-2.tool.same") {
+	if !slices.Contains(names, "server-1.tool.same") || !slices.Contains(names, "server-2.tool.same") {
 		t.Fatalf("expected namespaced conflict tools, got %v", names)
 	}
 	if firstCalls.Load() != 1 {
@@ -195,9 +195,114 @@ func TestHandleListToolsAggregatesMultipleBackends(t *testing.T) {
 	}
 
 	names := []string{tools[0].Name, tools[1].Name}
-	if !slices.Contains(names, "mcp.server-1.tool.alpha") || !slices.Contains(names, "mcp.server-2.tool.beta") {
-		t.Fatalf("expected aggregated namespaced tools [mcp.server-1.tool.alpha, mcp.server-2.tool.beta], got %v", names)
+	if !slices.Contains(names, "server-1.tool.alpha") || !slices.Contains(names, "server-2.tool.beta") {
+		t.Fatalf("expected aggregated namespaced tools [server-1.tool.alpha, server-2.tool.beta], got %v", names)
 	}
+}
+
+func TestHandleListToolsSkipsFailingBackend(t *testing.T) {
+	t.Parallel()
+
+	// Backend 1: healthy
+	var healthyCalls atomic.Int64
+	record1, client1, cleanup1 := buildToolBackendClient(t, "server-1", "tool.alpha", "alpha", &healthyCalls)
+	defer cleanup1()
+
+	// Backend 2: will fail (server closed immediately)
+	record2, client2, cleanup2 := buildFailingToolBackend(t, "server-2", "tool.beta")
+	defer cleanup2()
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record1)
+	index.Add(record2)
+
+	proxyServer := NewProxyServer(index, &config.Config{}, nil, 0, nil)
+	proxyServer.clients[record1.ID] = client1
+	proxyServer.clients[record2.ID] = client2
+
+	tools, err := proxyServer.handleListTools(context.Background())
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool from healthy backend, got %d", len(tools))
+	}
+	if tools[0].Name != "server-1.tool.alpha" {
+		t.Fatalf("expected server-1.tool.alpha, got %q", tools[0].Name)
+	}
+	if healthyCalls.Load() != 1 {
+		t.Fatalf("expected healthy backend queried once, got %d", healthyCalls.Load())
+	}
+}
+
+func TestHandleListToolsAllBackendsFail(t *testing.T) {
+	t.Parallel()
+
+	record1, client1, cleanup1 := buildFailingToolBackend(t, "server-1", "tool.alpha")
+	defer cleanup1()
+	record2, client2, cleanup2 := buildFailingToolBackend(t, "server-2", "tool.beta")
+	defer cleanup2()
+
+	index := registration.NewCapabilityIndex()
+	index.Add(record1)
+	index.Add(record2)
+
+	proxyServer := NewProxyServer(index, &config.Config{}, nil, 0, nil)
+	proxyServer.clients[record1.ID] = client1
+	proxyServer.clients[record2.ID] = client2
+
+	tools, err := proxyServer.handleListTools(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error when all backends fail, got %v", err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("expected 0 tools when all backends fail, got %d", len(tools))
+	}
+}
+
+func buildFailingToolBackend(
+	t *testing.T,
+	serverID string,
+	toolName string,
+) (types.ServerRecord, *BackendClient, func()) {
+	t.Helper()
+
+	mcpSrv := mcpserver.NewMCPServer(
+		"backend-"+serverID,
+		"1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool(toolName, mcp.WithDescription("will fail")),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("unreachable"), nil
+		},
+	)
+
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	srv := httptest.NewTLSServer(mux)
+
+	record := recordFromServerURL(t, srv.URL)
+	record.ID = serverID
+	record.Name = serverID
+	record.Status = types.StatusActive
+	record.Capabilities = types.Capability{Tools: []string{toolName}}
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(srv.Certificate())
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    rootPool,
+	}
+
+	client := NewBackendClient(record, tlsConfig, 2*time.Second)
+
+	// Close the server so the client fails on connect.
+	srv.Close()
+
+	return record, client, func() { _ = client.Close() }
 }
 
 func buildToolBackendClient(
@@ -237,6 +342,7 @@ func buildToolBackendClient(
 
 	record := recordFromServerURL(t, srv.URL)
 	record.ID = serverID
+	record.Name = serverID
 	record.Status = types.StatusActive
 	record.Capabilities = types.Capability{Tools: []string{toolName}}
 

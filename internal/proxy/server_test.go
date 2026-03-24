@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,7 +131,7 @@ func TestRewriteLegacyToolCallNameRewritesBareTool(t *testing.T) {
 	if fromName != "quick_add_task" {
 		t.Fatalf("expected fromName quick_add_task, got %q", fromName)
 	}
-	if toName != "mcp.mcp-todoist.quick_add_task" {
+	if toName != "todoist.quick_add_task" {
 		t.Fatalf("expected federated tool name, got %q", toName)
 	}
 
@@ -139,7 +140,7 @@ func TestRewriteLegacyToolCallNameRewritesBareTool(t *testing.T) {
 		t.Fatalf("decode rewritten payload: %v", err)
 	}
 	params, _ := payload["params"].(map[string]any)
-	if got, _ := params["name"].(string); got != "mcp.mcp-todoist.quick_add_task" {
+	if got, _ := params["name"].(string); got != "todoist.quick_add_task" {
 		t.Fatalf("expected rewritten params.name, got %q", got)
 	}
 }
@@ -154,6 +155,22 @@ func TestRewriteLegacyToolCallNameNoRewriteForFederatedName(t *testing.T) {
 	}
 	if changed {
 		t.Fatal("expected federated name not to be rewritten")
+	}
+	if string(rewritten) != string(body) {
+		t.Fatalf("expected body unchanged, got %s", string(rewritten))
+	}
+}
+
+func TestRewriteLegacyToolCallNameNoRewriteForNewFormatName(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"todoist.quick_add_task","arguments":{"text":"x"}}}`)
+	rewritten, _, _, changed, err := rewriteLegacyToolCallName(body, "mcp-todoist")
+	if err != nil {
+		t.Fatalf("rewrite legacy tool call: %v", err)
+	}
+	if changed {
+		t.Fatal("expected new-format federated name not to be rewritten")
 	}
 	if string(rewritten) != string(body) {
 		t.Fatalf("expected body unchanged, got %s", string(rewritten))
@@ -263,6 +280,10 @@ func (m *mockAuditStore) Log(_ context.Context, entry *types.AuditEntry) error {
 }
 
 // Query is a no-op stub required by the AuditStore interface.
+func (m *mockAuditStore) Count(_ context.Context, _ types.AuditFilter) (int, error) {
+	return 0, nil
+}
+
 func (m *mockAuditStore) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
 	return nil, nil
 }
@@ -290,7 +311,7 @@ func TestAuditToolCall(t *testing.T) {
 		{
 			name:            "nil audit store does not panic",
 			auditStore:      nil,
-			toolName:        "mcp.test.hello",
+			toolName:        "test.hello",
 			responsePreview: "ok",
 			isError:         false,
 			expectEntry:     false,
@@ -300,7 +321,7 @@ func TestAuditToolCall(t *testing.T) {
 			auditStore: &mockAuditStore{
 				logged: make(chan struct{}, 1),
 			},
-			toolName:        "mcp.backend.run_query",
+			toolName:        "backend.run_query",
 			responsePreview: "rows returned: 42",
 			isError:         false,
 			expectEntry:     true,
@@ -310,7 +331,7 @@ func TestAuditToolCall(t *testing.T) {
 			auditStore: &mockAuditStore{
 				logged: make(chan struct{}, 1),
 			},
-			toolName:        "mcp.backend.bad_call",
+			toolName:        "backend.bad_call",
 			responsePreview: "internal error",
 			isError:         true,
 			expectEntry:     true,
@@ -321,7 +342,7 @@ func TestAuditToolCall(t *testing.T) {
 				logged: make(chan struct{}, 1),
 				logErr: fmt.Errorf("database unavailable"),
 			},
-			toolName:        "mcp.backend.flaky",
+			toolName:        "backend.flaky",
 			responsePreview: "partial",
 			isError:         false,
 			expectEntry:     true,
@@ -385,6 +406,88 @@ func TestAuditToolCall(t *testing.T) {
 	}
 }
 
+func TestInvalidateToolCache(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil ProxyServer does not panic", func(t *testing.T) {
+		t.Parallel()
+		var ps *ProxyServer
+		ps.InvalidateToolCache()
+	})
+
+	t.Run("nil toolCache does not panic", func(t *testing.T) {
+		t.Parallel()
+		ps := &ProxyServer{}
+		ps.InvalidateToolCache()
+	})
+
+	t.Run("clears all cached entries", func(t *testing.T) {
+		t.Parallel()
+		cache := NewToolCache(time.Minute)
+		cache.Set("srv.tool1", ToolDefinition{Name: "srv.tool1"}, "srv", "srv")
+		cache.Set("srv.tool2", ToolDefinition{Name: "srv.tool2"}, "srv", "srv")
+
+		ps := NewProxyServer(
+			registration.NewCapabilityIndex(),
+			&config.Config{},
+			nil, 0, nil,
+		)
+		ps.toolCache = cache
+
+		if _, ok := cache.Get("srv.tool1"); !ok {
+			t.Fatal("expected tool1 in cache before invalidation")
+		}
+
+		ps.InvalidateToolCache()
+
+		if _, ok := cache.Get("srv.tool1"); ok {
+			t.Error("expected tool1 evicted after full invalidation")
+		}
+		if _, ok := cache.Get("srv.tool2"); ok {
+			t.Error("expected tool2 evicted after full invalidation")
+		}
+	})
+}
+
+func TestInvalidateToolCacheForServer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil ProxyServer does not panic", func(t *testing.T) {
+		t.Parallel()
+		var ps *ProxyServer
+		ps.InvalidateToolCacheForServer("srv-1")
+	})
+
+	t.Run("nil toolCache does not panic", func(t *testing.T) {
+		t.Parallel()
+		ps := &ProxyServer{}
+		ps.InvalidateToolCacheForServer("srv-1")
+	})
+
+	t.Run("removes only entries for target server", func(t *testing.T) {
+		t.Parallel()
+		cache := NewToolCache(time.Minute)
+		cache.Set("srv1.tool", ToolDefinition{Name: "srv1.tool"}, "srv-1", "srv-1")
+		cache.Set("srv2.tool", ToolDefinition{Name: "srv2.tool"}, "srv-2", "srv-2")
+
+		ps := NewProxyServer(
+			registration.NewCapabilityIndex(),
+			&config.Config{},
+			nil, 0, nil,
+		)
+		ps.toolCache = cache
+
+		ps.InvalidateToolCacheForServer("srv-1")
+
+		if _, ok := cache.Get("srv1.tool"); ok {
+			t.Error("expected srv-1 tool evicted")
+		}
+		if _, ok := cache.Get("srv2.tool"); !ok {
+			t.Error("expected srv-2 tool to remain")
+		}
+	})
+}
+
 func TestSyncMCPToolsProgressiveDiscoveryEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -443,27 +546,29 @@ func TestSyncMCPToolsProgressiveDiscoveryEnabled(t *testing.T) {
 		t.Fatal("expected discoveryIndex to be non-nil when progressive discovery enabled")
 	}
 
-	// Verify search_tools and get_tool_schema are registered.
+	// Backend tools, meta-tools, and request_access must all be registered.
 	allTools := proxyServer.mcpServer.ListTools()
 
-	if allTools["search_tools"] == nil {
-		t.Error("expected search_tools meta-tool to be registered")
+	expectedTools := map[string]bool{
+		"github.create_issue":  true,
+		"github.list_issues":   true,
+		"search_tools":         true,
+		"get_tool_schema":      true,
+		requestAccessToolName:  true,
 	}
-	if allTools["get_tool_schema"] == nil {
-		t.Error("expected get_tool_schema meta-tool to be registered")
+	if len(allTools) != len(expectedTools) {
+		t.Errorf("expected %d registered tools, got %d", len(expectedTools), len(allTools))
+	}
+	for name := range allTools {
+		if !expectedTools[name] {
+			t.Errorf("unexpected tool %q in registry", name)
+		}
 	}
 
-	// Verify backend tools have DeferLoading set and stripped schemas.
-	for name, st := range allTools {
-		if name == "search_tools" || name == "get_tool_schema" {
-			continue
-		}
-		if !st.Tool.DeferLoading {
-			t.Errorf("tool %q should have DeferLoading=true", name)
-		}
-		if len(st.Tool.RawInputSchema) > 0 && string(st.Tool.RawInputSchema) != "{}" {
-			t.Errorf("tool %q should have stripped input schema, got %s", name, string(st.Tool.RawInputSchema))
-		}
+	// Discovery index must still contain backend tools.
+	results, total := proxyServer.discoveryIndex.Search("issue", "", 0, 10)
+	if total == 0 || len(results) == 0 {
+		t.Error("expected discovery index to contain backend tools")
 	}
 }
 
@@ -525,6 +630,42 @@ func TestSyncMCPToolsProgressiveDiscoveryDisabled(t *testing.T) {
 			t.Errorf("meta-tool %q should not be registered when progressive discovery disabled", name)
 		}
 	}
+}
+
+// mockSession implements server.SessionWithTools for unit testing session tool
+// activation without requiring a real HTTP transport.
+type mockSession struct {
+	id          string
+	initialized bool
+	notifCh     chan mcp.JSONRPCNotification
+	mu          sync.Mutex
+	tools       map[string]mcpserver.ServerTool
+}
+
+func newMockSession(id string) *mockSession {
+	return &mockSession{
+		id:          id,
+		initialized: true,
+		notifCh:     make(chan mcp.JSONRPCNotification, 16),
+		tools:       make(map[string]mcpserver.ServerTool),
+	}
+}
+
+func (s *mockSession) Initialize()                                        { s.initialized = true }
+func (s *mockSession) Initialized() bool                                  { return s.initialized }
+func (s *mockSession) NotificationChannel() chan<- mcp.JSONRPCNotification { return s.notifCh }
+func (s *mockSession) SessionID() string                                  { return s.id }
+func (s *mockSession) GetSessionTools() map[string]mcpserver.ServerTool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]mcpserver.ServerTool, len(s.tools))
+	maps.Copy(out, s.tools)
+	return out
+}
+func (s *mockSession) SetSessionTools(tools map[string]mcpserver.ServerTool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tools = tools
 }
 
 func TestBuildSearchToolsMetaHandlers(t *testing.T) {
@@ -659,7 +800,7 @@ func TestBuildSearchToolsMetaHandlers(t *testing.T) {
 		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
 			Params: mcp.CallToolParams{
 				Name:      "get_tool_schema",
-				Arguments: map[string]any{"names": []any{"mcp.testsvr.create_issue"}},
+				Arguments: map[string]any{"names": []any{"testsvr.create_issue"}},
 			},
 		})
 		if err != nil {
@@ -677,8 +818,8 @@ func TestBuildSearchToolsMetaHandlers(t *testing.T) {
 		if len(tools) != 1 {
 			t.Fatalf("expected 1 tool, got %d", len(tools))
 		}
-		if tools[0].Name != "mcp.testsvr.create_issue" {
-			t.Errorf("expected tool name mcp.testsvr.create_issue, got %q", tools[0].Name)
+		if tools[0].Name != "testsvr.create_issue" {
+			t.Errorf("expected tool name testsvr.create_issue, got %q", tools[0].Name)
 		}
 		if string(tools[0].InputSchema) == "{}" {
 			t.Error("expected full input schema, got stripped version")
@@ -787,6 +928,350 @@ func TestBuildSearchToolsMetaHandlers(t *testing.T) {
 		}
 		if !result.IsError {
 			t.Error("expected error result when names is not an array")
+		}
+	})
+}
+
+func TestSyncMCPRegistryDebounce(t *testing.T) {
+	t.Parallel()
+
+	proxyServer := NewProxyServer(
+		registration.NewCapabilityIndex(),
+		&config.Config{},
+		nil,
+		0,
+		nil,
+	)
+	if err := proxyServer.SetupMCP(); err != nil {
+		t.Fatalf("setup mcp: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First sync should succeed and set lastSyncTime.
+	if err := proxyServer.syncMCPRegistry(ctx); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	firstSync := proxyServer.lastSyncTime
+	if firstSync.IsZero() {
+		t.Fatal("expected lastSyncTime to be set after first sync")
+	}
+
+	// Second sync within debounce window should be skipped.
+	if err := proxyServer.syncMCPRegistry(ctx); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if !proxyServer.lastSyncTime.Equal(firstSync) {
+		t.Error("expected lastSyncTime unchanged within debounce window")
+	}
+
+	// Simulate expiry by backdating lastSyncTime.
+	proxyServer.lastSyncTime = time.Now().Add(-registrySyncDebounce - time.Second)
+
+	if err := proxyServer.syncMCPRegistry(ctx); err != nil {
+		t.Fatalf("third sync after debounce expiry: %v", err)
+	}
+	if !proxyServer.lastSyncTime.After(firstSync) {
+		t.Error("expected lastSyncTime to advance after debounce expiry")
+	}
+
+	// InvalidateToolCache should reset debounce so next sync runs immediately.
+	thirdSync := proxyServer.lastSyncTime
+	proxyServer.InvalidateToolCache()
+	if !proxyServer.lastSyncTime.IsZero() {
+		t.Error("expected lastSyncTime reset after InvalidateToolCache")
+	}
+
+	if err := proxyServer.syncMCPRegistry(ctx); err != nil {
+		t.Fatalf("sync after invalidation: %v", err)
+	}
+	if !proxyServer.lastSyncTime.After(thirdSync) {
+		t.Error("expected sync to run after cache invalidation")
+	}
+}
+
+// newTestProxyWithSession creates a ProxyServer with progressive discovery enabled,
+// a real backend, and a registered mock session.
+func newTestProxyWithSession(t *testing.T) (*ProxyServer, *mockSession) {
+	t.Helper()
+
+	mcpSrv := mcpserver.NewMCPServer("backend-session", "1.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("deploy", mcp.WithDescription("Deploy a service to the cluster."), mcp.WithString("service", mcp.Required())),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("deployed"), nil
+		},
+	)
+	mcpSrv.AddTool(
+		mcp.NewTool("rollback", mcp.WithDescription("Rollback a deployment."), mcp.WithString("service", mcp.Required())),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("rolled back"), nil
+		},
+	)
+
+	handler := mcpserver.NewStreamableHTTPServer(mcpSrv)
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+	backendSrv := httptest.NewTLSServer(mux)
+	t.Cleanup(backendSrv.Close)
+
+	record := recordFromServerURL(t, backendSrv.URL)
+	record.ID = "backend-session-1"
+	record.Name = "k8s"
+	record.Status = types.StatusActive
+
+	rootPool := x509.NewCertPool()
+	rootPool.AddCert(backendSrv.Certificate())
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: rootPool}
+
+	capIdx := registration.NewCapabilityIndex()
+	record.Capabilities = types.Capability{Tools: []string{"deploy", "rollback"}}
+	capIdx.Add(record)
+
+	proxyServer := NewProxyServer(
+		capIdx,
+		&config.Config{ProgressiveDiscovery: true},
+		tlsCfg,
+		2*time.Second,
+		nil,
+	)
+	if err := proxyServer.SetupMCP(); err != nil {
+		t.Fatalf("setup mcp: %v", err)
+	}
+	if err := proxyServer.syncMCPTools(context.Background()); err != nil {
+		t.Fatalf("sync tools: %v", err)
+	}
+
+	session := newMockSession("test-session-1")
+	if err := proxyServer.mcpServer.RegisterSession(context.Background(), session); err != nil {
+		t.Fatalf("register session: %v", err)
+	}
+
+	return proxyServer, session
+}
+
+func TestGetToolSchemaActivatesSessionTools(t *testing.T) {
+	t.Parallel()
+
+	t.Run("activates tool in caller session", func(t *testing.T) {
+		t.Parallel()
+		ps, session := newTestProxyWithSession(t)
+
+		ctx := ps.mcpServer.WithContext(context.Background(), session)
+		st := ps.mcpServer.ListTools()["get_tool_schema"]
+		if st == nil {
+			t.Fatal("get_tool_schema not registered")
+		}
+
+		result, err := st.Handler(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"k8s.deploy"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("expected non-error result, got: %v", result.Content)
+		}
+
+		// Verify tool was activated in the session.
+		sessionTools := session.GetSessionTools()
+		if _, ok := sessionTools["k8s.deploy"]; !ok {
+			t.Error("expected k8s.deploy to be activated in session tools")
+		}
+		// rollback was not requested and should not be activated.
+		if _, ok := sessionTools["k8s.rollback"]; ok {
+			t.Error("k8s.rollback should not be activated (not requested)")
+		}
+	})
+
+	t.Run("duplicate activation is idempotent", func(t *testing.T) {
+		t.Parallel()
+		ps, session := newTestProxyWithSession(t)
+
+		ctx := ps.mcpServer.WithContext(context.Background(), session)
+		st := ps.mcpServer.ListTools()["get_tool_schema"]
+
+		req := mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"k8s.deploy"}},
+			},
+		}
+
+		// Call twice.
+		if _, err := st.Handler(ctx, req); err != nil {
+			t.Fatalf("first call: %v", err)
+		}
+		if _, err := st.Handler(ctx, req); err != nil {
+			t.Fatalf("second call: %v", err)
+		}
+
+		sessionTools := session.GetSessionTools()
+		count := 0
+		for name := range sessionTools {
+			if name == "k8s.deploy" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected exactly 1 k8s.deploy entry, got %d", count)
+		}
+	})
+
+	t.Run("no session context still returns schema", func(t *testing.T) {
+		t.Parallel()
+		ps, _ := newTestProxyWithSession(t)
+
+		st := ps.mcpServer.ListTools()["get_tool_schema"]
+
+		// Call with bare context (no session).
+		result, err := st.Handler(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"k8s.deploy"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if result.IsError {
+			t.Fatal("expected non-error result")
+		}
+
+		// Schema should still be returned.
+		var tools []ToolDefinition
+		text := result.Content[0].(mcp.TextContent).Text
+		if err := json.Unmarshal([]byte(text), &tools); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(tools) != 1 || tools[0].Name != "k8s.deploy" {
+			t.Errorf("expected schema for k8s.deploy, got %v", tools)
+		}
+	})
+
+	t.Run("activation cap enforced", func(t *testing.T) {
+		t.Parallel()
+		ps, session := newTestProxyWithSession(t)
+
+		// Pre-fill the session with maxActivatedSessionTools tools.
+		prefilled := make(map[string]mcpserver.ServerTool, maxActivatedSessionTools)
+		for i := range maxActivatedSessionTools {
+			name := fmt.Sprintf("fake.tool_%d", i)
+			prefilled[name] = mcpserver.ServerTool{
+				Tool: mcp.NewTool(name, mcp.WithDescription("filler")),
+			}
+		}
+		session.SetSessionTools(prefilled)
+
+		ctx := ps.mcpServer.WithContext(context.Background(), session)
+		st := ps.mcpServer.ListTools()["get_tool_schema"]
+
+		result, err := st.Handler(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"k8s.deploy"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if result.IsError {
+			t.Fatal("expected non-error result even when cap reached")
+		}
+
+		// Schema should still be returned.
+		var tools []ToolDefinition
+		text := result.Content[0].(mcp.TextContent).Text
+		if err := json.Unmarshal([]byte(text), &tools); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if len(tools) != 1 {
+			t.Errorf("expected 1 tool in schema response, got %d", len(tools))
+		}
+
+		// deploy should NOT have been activated because cap was reached.
+		sessionTools := session.GetSessionTools()
+		if _, ok := sessionTools["k8s.deploy"]; ok {
+			t.Error("k8s.deploy should not be activated when session tool cap is reached")
+		}
+	})
+
+	t.Run("activation trimmed when batch exceeds remaining cap", func(t *testing.T) {
+		t.Parallel()
+		ps, session := newTestProxyWithSession(t)
+
+		// Fill session to one slot below the cap.
+		prefilled := make(map[string]mcpserver.ServerTool, maxActivatedSessionTools-1)
+		for i := range maxActivatedSessionTools - 1 {
+			name := fmt.Sprintf("fake.tool_%d", i)
+			prefilled[name] = mcpserver.ServerTool{
+				Tool: mcp.NewTool(name, mcp.WithDescription("filler")),
+			}
+		}
+		session.SetSessionTools(prefilled)
+
+		ctx := ps.mcpServer.WithContext(context.Background(), session)
+		st := ps.mcpServer.ListTools()["get_tool_schema"]
+
+		// Request 2 tools but only 1 slot remains.
+		result, err := st.Handler(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"k8s.deploy", "k8s.rollback"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if result.IsError {
+			t.Fatal("expected non-error result")
+		}
+
+		sessionTools := session.GetSessionTools()
+		activated := 0
+		for _, name := range []string{"k8s.deploy", "k8s.rollback"} {
+			if _, ok := sessionTools[name]; ok {
+				activated++
+			}
+		}
+		if activated != 1 {
+			t.Errorf("expected exactly 1 tool activated (trimmed to fit cap), got %d", activated)
+		}
+		if len(sessionTools) > maxActivatedSessionTools {
+			t.Errorf("session tools (%d) exceeded cap (%d)", len(sessionTools), maxActivatedSessionTools)
+		}
+	})
+
+	t.Run("multiple tools activated at once", func(t *testing.T) {
+		t.Parallel()
+		ps, session := newTestProxyWithSession(t)
+
+		ctx := ps.mcpServer.WithContext(context.Background(), session)
+		st := ps.mcpServer.ListTools()["get_tool_schema"]
+
+		result, err := st.Handler(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      "get_tool_schema",
+				Arguments: map[string]any{"names": []any{"k8s.deploy", "k8s.rollback"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if result.IsError {
+			t.Fatalf("expected non-error result")
+		}
+
+		sessionTools := session.GetSessionTools()
+		for _, name := range []string{"k8s.deploy", "k8s.rollback"} {
+			if _, ok := sessionTools[name]; !ok {
+				t.Errorf("expected %s to be activated in session tools", name)
+			}
 		}
 	})
 }

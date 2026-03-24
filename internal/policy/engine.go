@@ -315,7 +315,8 @@ func (e *Engine) resolveRiskLevel(
 	}
 
 	if tc == nil {
-		return types.RiskUnknown
+		level, _ := AutoClassify(toolName, "")
+		return level
 	}
 
 	if cache != nil {

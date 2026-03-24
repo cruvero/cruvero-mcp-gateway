@@ -91,3 +91,7 @@ func (r *auditRecorder) Log(_ context.Context, entry *types.AuditEntry) error {
 func (r *auditRecorder) Query(_ context.Context, _ types.AuditFilter) ([]types.AuditEntry, error) {
 	return nil, nil
 }
+
+func (r *auditRecorder) Count(_ context.Context, _ types.AuditFilter) (int, error) {
+	return 0, nil
+}

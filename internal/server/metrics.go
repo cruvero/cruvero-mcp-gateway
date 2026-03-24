@@ -117,6 +117,13 @@ var (
 		},
 		[]string{"tool", "backend"},
 	)
+
+	ActiveToolsGauge = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "mcpgw_active_tools",
+			Help: "Current number of active tools in the capability index.",
+		},
+	)
 )
 
 // StartMetricsServer returns an HTTP server configured to expose Prometheus metrics on /metrics.
@@ -209,6 +216,11 @@ func ObserveToolCall(tool string, backend string, status string, duration time.D
 	normalizedBackend := normalizeLabel(backend, "unknown")
 	ToolCallsTotal.WithLabelValues(normalizedTool, normalizedBackend, normalizeLabel(status, "unknown")).Inc()
 	ToolCallDuration.WithLabelValues(normalizedTool, normalizedBackend).Observe(duration.Seconds())
+}
+
+// SetActiveToolCount sets the active tools gauge to the given count.
+func SetActiveToolCount(count int) {
+	ActiveToolsGauge.Set(float64(count))
 }
 
 func normalizePath(path string) string {

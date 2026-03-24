@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -64,7 +65,12 @@ func (p *ProxyServer) collectResources(ctx context.Context, serverIDs []string, 
 
 		resources, err := client.ListResources(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list resources: backend %s: %w", srv.ID, err)
+			p.logger.Warn("backend resource listing failed, skipping",
+				slog.String("backend_id", srv.ID),
+				slog.String("backend_name", srv.Name),
+				slog.String("error", err.Error()),
+			)
+			continue
 		}
 		for _, resource := range resources {
 			if _, exists := resourcesByURI[resource.URI]; !exists {

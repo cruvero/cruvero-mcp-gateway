@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	servermetrics "github.com/cruvero/mcp-gateway/internal/server"
 	"github.com/cruvero/mcp-gateway/internal/store"
 	"github.com/cruvero/mcp-gateway/internal/types"
 )
@@ -26,6 +27,16 @@ func NewCapabilityIndex() *CapabilityIndex {
 	}
 }
 
+// ToolCount returns the number of distinct tools in the index.
+func (i *CapabilityIndex) ToolCount() int {
+	if i == nil {
+		return 0
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return len(i.tools)
+}
+
 // Rebuild replaces index state from a full server snapshot.
 func (i *CapabilityIndex) Rebuild(servers []types.ServerRecord) {
 	if i == nil {
@@ -43,6 +54,7 @@ func (i *CapabilityIndex) Rebuild(servers []types.ServerRecord) {
 		}
 		i.addLocked(server)
 	}
+	servermetrics.SetActiveToolCount(len(i.tools))
 }
 
 // Add inserts a server into the index.
@@ -54,6 +66,7 @@ func (i *CapabilityIndex) Add(server types.ServerRecord) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.addLocked(server)
+	servermetrics.SetActiveToolCount(len(i.tools))
 }
 
 func (i *CapabilityIndex) addLocked(server types.ServerRecord) {
@@ -124,6 +137,7 @@ func (i *CapabilityIndex) removeLocked(serverID string) {
 		}
 		i.resources[prefix] = filtered
 	}
+	servermetrics.SetActiveToolCount(len(i.tools))
 }
 
 // LookupTool returns servers that expose the requested tool.
