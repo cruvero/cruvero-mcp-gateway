@@ -1,8 +1,10 @@
 # cruvero-mcp-gateway
 
-[![CI](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/cruvero/cruvero-mcp-gateway)](go.mod)
-
+[![CI](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/cruvero/cruvero-mcp-gateway/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/cruvero/cruvero-mcp-gateway/dev)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cruvero/mcp-gateway)](https://goreportcard.com/report/github.com/cruvero/mcp-gateway)
+[![License](https://img.shields.io/github/license/cruvero/cruvero-mcp-gateway)](LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/cruvero/cruvero-mcp-gateway?include_prereleases&sort=semver)](https://github.com/cruvero/cruvero-mcp-gateway/releases)
 
 A pure-Go mTLS reverse proxy that acts as a unified gateway for MCP (Model Context Protocol) servers on Kubernetes. The gateway auto-discovers backend MCP servers via a registration handshake, aggregates their tool catalogs into a single MCP-compliant endpoint, and proxies requests with rate limiting, circuit breakers, and per-tool policy enforcement. Clients connect to one gateway instead of managing individual backends.
 
