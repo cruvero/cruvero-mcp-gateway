@@ -18,6 +18,8 @@ const logKeyAuthType = "auth.type"
 type AuthOptions struct {
 	APIKeyStore   store.APIKeyStore `json:"api_key_store"`
 	OIDCValidator *OIDCValidator    `json:"oidc_validator"`
+	UserStore     store.UserStore   `json:"user_store"`
+	AuditStore    store.AuditStore  `json:"audit_store"`
 	Logger        *slog.Logger      `json:"logger"`
 }
 
@@ -33,7 +35,7 @@ func AuthMiddleware(opts AuthOptions) func(http.Handler) http.Handler {
 			opts:          opts,
 			next:          next,
 			apiKeyHandler: APIKeyMiddleware(opts.APIKeyStore, logger)(next),
-			oidcHandler:   OIDCMiddleware(opts.OIDCValidator, logger)(next),
+			oidcHandler:   OIDCMiddlewareWithUserStore(opts.OIDCValidator, opts.UserStore, opts.AuditStore, logger)(next),
 		}
 		return http.HandlerFunc(d.serveHTTP)
 	}
