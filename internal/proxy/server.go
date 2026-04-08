@@ -51,6 +51,7 @@ type ProxyServer struct {
 	searchCleanup     func()
 	embedderType      string
 	orchestrator      *orchestrator.Orchestrator
+	nsResolver        *NamespaceResolver
 }
 
 // NewProxyServer creates a new proxy server.
@@ -68,6 +69,14 @@ func NewProxyServer(
 		backendTimeout = defaultBackendTimeout
 	}
 
+	var nsResolver *NamespaceResolver
+	if cfg != nil {
+		nsResolver = NewNamespaceResolver(cfg.ToolNamespaceMode, cfg.NamespaceSeparator, index)
+	}
+
+	router := NewRouter(index, &RoundRobinStrategy{}, tlsConfig, backendTimeout, logger)
+	router.SetNamespaceResolver(nsResolver)
+
 	ps := &ProxyServer{
 		index:          index,
 		clients:        make(map[string]*BackendClient),
@@ -76,7 +85,8 @@ func NewProxyServer(
 		logger:         logger,
 		tlsConfig:      tlsConfig,
 		backendTimeout: backendTimeout,
-		router:         NewRouter(index, &RoundRobinStrategy{}, tlsConfig, backendTimeout, logger),
+		router:         router,
+		nsResolver:     nsResolver,
 	}
 
 	if cfg != nil && cfg.ProgressiveDiscovery {

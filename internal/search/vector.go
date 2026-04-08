@@ -9,29 +9,54 @@ import (
 	"sync"
 )
 
+// vectorPartition groups documents and their embeddings for a single server.
+type vectorPartition struct {
+	serverID   string
+	docs       []Document
+	embeddings [][]float32
+}
+
 // VectorEngine implements Engine using document embeddings and cosine
 // similarity for semantic search. It delegates embedding to an Embedder
 // (typically an HTTP sidecar running all-MiniLM-L6-v2).
 //
-// Thread-safe via sync.RWMutex.
+// Thread-safe via sync.RWMutex. Supports server-partitioned storage
+// with incremental updates using an optional EmbeddingCache.
 type VectorEngine struct {
 	mu         sync.RWMutex
+	partitions map[string]*vectorPartition
+	embedder   Embedder
+	cache      *EmbeddingCache
+
+	// Flat storage kept for backward-compatible access in tests.
 	docs       []Document
 	embeddings [][]float32
-	embedder   Embedder
 }
 
 // NewVectorEngine creates a vector search engine backed by the given embedder.
 func NewVectorEngine(embedder Embedder) *VectorEngine {
-	return &VectorEngine{embedder: embedder}
+	return &VectorEngine{
+		embedder:   embedder,
+		partitions: make(map[string]*vectorPartition),
+	}
+}
+
+// SetEmbeddingCache attaches an LRU embedding cache for incremental updates.
+func (e *VectorEngine) SetEmbeddingCache(cache *EmbeddingCache) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cache = cache
 }
 
 // Index embeds all documents via the sidecar and stores the results.
+// This clears all partitions and stores everything in a flat structure,
+// preserving backward compatibility.
 func (e *VectorEngine) Index(ctx context.Context, docs []Document) error {
 	if len(docs) == 0 {
 		e.mu.Lock()
 		e.docs = nil
 		e.embeddings = nil
+		e.partitions = make(map[string]*vectorPartition)
 		e.mu.Unlock()
 		return nil
 	}
@@ -53,6 +78,9 @@ func (e *VectorEngine) Index(ctx context.Context, docs []Document) error {
 	e.mu.Lock()
 	e.docs = docs
 	e.embeddings = embeddings
+	e.partitions = map[string]*vectorPartition{
+		"__default__": {serverID: "__default__", docs: docs, embeddings: embeddings},
+	}
 	e.mu.Unlock()
 
 	return nil
@@ -61,6 +89,14 @@ func (e *VectorEngine) Index(ctx context.Context, docs []Document) error {
 // Search embeds the query and returns documents ranked by cosine similarity.
 func (e *VectorEngine) Search(ctx context.Context, query string, limit int) ([]ScoredResult, error) {
 	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+
+	e.mu.RLock()
+	empty := len(e.partitions) == 0
+	e.mu.RUnlock()
+
+	if empty {
 		return nil, nil
 	}
 
@@ -77,20 +113,19 @@ func (e *VectorEngine) Search(ctx context.Context, query string, limit int) ([]S
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	if len(e.docs) == 0 {
-		return nil, nil
-	}
-
 	type scored struct {
 		key   string
 		score float64
 	}
 
-	results := make([]scored, 0, len(e.docs))
-	for i, docEmb := range e.embeddings {
-		sim := cosineSimilarity(qVec, docEmb)
-		if sim > 0 {
-			results = append(results, scored{key: e.docs[i].Key, score: sim})
+	var results []scored
+
+	for _, p := range e.partitions {
+		for i, docEmb := range p.embeddings {
+			sim := cosineSimilarity(qVec, docEmb)
+			if sim > 0 {
+				results = append(results, scored{key: p.docs[i].Key, score: sim})
+			}
 		}
 	}
 
@@ -112,29 +147,144 @@ func (e *VectorEngine) Search(ctx context.Context, query string, limit int) ([]S
 	return out, nil
 }
 
+// AddPartition adds or replaces documents for a server partition, using
+// the embedding cache for incremental efficiency when available.
+func (e *VectorEngine) AddPartition(ctx context.Context, serverID string, docs []Document) error {
+	if len(docs) == 0 {
+		e.RemovePartition(serverID)
+		return nil
+	}
+
+	embeddings, err := e.embedWithCache(ctx, docs)
+	if err != nil {
+		return fmt.Errorf("add vector partition: %w", err)
+	}
+
+	e.mu.Lock()
+	e.partitions[serverID] = &vectorPartition{
+		serverID:   serverID,
+		docs:       docs,
+		embeddings: embeddings,
+	}
+	e.rebuildFlatLocked()
+	e.mu.Unlock()
+
+	return nil
+}
+
+// RemovePartition removes all documents for a server.
+func (e *VectorEngine) RemovePartition(serverID string) {
+	e.mu.Lock()
+	delete(e.partitions, serverID)
+	e.rebuildFlatLocked()
+	e.mu.Unlock()
+}
+
+// UpdatePartition is equivalent to AddPartition.
+func (e *VectorEngine) UpdatePartition(ctx context.Context, serverID string, docs []Document) error {
+	return e.AddPartition(ctx, serverID, docs)
+}
+
 // Remove removes a document by key.
 func (e *VectorEngine) Remove(key string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	idx := -1
-	for i, doc := range e.docs {
-		if doc.Key == key {
-			idx = i
-			break
+	for pid, p := range e.partitions {
+		idx := -1
+		for i, doc := range p.docs {
+			if doc.Key == key {
+				idx = i
+				break
+			}
 		}
-	}
-	if idx < 0 {
+		if idx < 0 {
+			continue
+		}
+
+		p.docs = append(p.docs[:idx], p.docs[idx+1:]...)
+		p.embeddings = append(p.embeddings[:idx], p.embeddings[idx+1:]...)
+
+		if len(p.docs) == 0 {
+			delete(e.partitions, pid)
+		}
+
+		e.rebuildFlatLocked()
 		return
 	}
-
-	e.docs = append(e.docs[:idx], e.docs[idx+1:]...)
-	e.embeddings = append(e.embeddings[:idx], e.embeddings[idx+1:]...)
 }
 
 // Ready reports whether the embedding sidecar is reachable.
 func (e *VectorEngine) Ready() bool {
 	return e.embedder.Ready(context.Background())
+}
+
+// embedWithCache computes embeddings, using the cache for unchanged docs.
+func (e *VectorEngine) embedWithCache(ctx context.Context, docs []Document) ([][]float32, error) {
+	e.mu.RLock()
+	cache := e.cache
+	e.mu.RUnlock()
+
+	if cache == nil {
+		// No cache: embed all documents directly.
+		texts := make([]string, len(docs))
+		for i, doc := range docs {
+			texts[i] = buildEmbedText(doc)
+		}
+		return e.embedder.Embed(ctx, texts)
+	}
+
+	result := make([][]float32, len(docs))
+	var needEmbed []int // indexes of docs needing fresh embeddings
+
+	for i, doc := range docs {
+		hash := cache.ContentHash(doc.Name, doc.Description)
+		if emb, ok := cache.Get(hash); ok {
+			result[i] = emb
+		} else {
+			needEmbed = append(needEmbed, i)
+		}
+	}
+
+	if len(needEmbed) == 0 {
+		return result, nil
+	}
+
+	texts := make([]string, len(needEmbed))
+	for j, idx := range needEmbed {
+		texts[j] = buildEmbedText(docs[idx])
+	}
+
+	fresh, err := e.embedder.Embed(ctx, texts)
+	if err != nil {
+		return nil, err
+	}
+	if len(fresh) != len(needEmbed) {
+		return nil, fmt.Errorf("embedding count mismatch: got %d, want %d", len(fresh), len(needEmbed))
+	}
+
+	for j, idx := range needEmbed {
+		result[idx] = fresh[j]
+		hash := cache.ContentHash(docs[idx].Name, docs[idx].Description)
+		cache.Set(hash, fresh[j])
+	}
+
+	return result, nil
+}
+
+// rebuildFlatLocked rebuilds the flat docs/embeddings slices from partitions.
+// Must be called under write lock.
+func (e *VectorEngine) rebuildFlatLocked() {
+	var allDocs []Document
+	var allEmb [][]float32
+
+	for _, p := range e.partitions {
+		allDocs = append(allDocs, p.docs...)
+		allEmb = append(allEmb, p.embeddings...)
+	}
+
+	e.docs = allDocs
+	e.embeddings = allEmb
 }
 
 // buildEmbedText constructs a single text from all document fields for embedding.

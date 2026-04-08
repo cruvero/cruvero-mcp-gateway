@@ -197,7 +197,7 @@ type toolAggregator struct {
 func (a *toolAggregator) aggregateTool(ctx context.Context, toolName string) error {
 	candidates := a.proxy.index.LookupTool(toolName)
 	for _, backend := range candidates {
-		federatedName := federatedToolName(backend, toolName)
+		federatedName := a.resolveFederatedName(backend, toolName)
 		if federatedName == "" {
 			continue
 		}
@@ -271,6 +271,17 @@ func (p *ProxyServer) loadBackendDefinitions(
 	}
 	cache[backend.ID] = byName
 	return byName, nil
+}
+
+func (a *toolAggregator) resolveFederatedName(server types.ServerRecord, toolName string) string {
+	if ns := a.proxy.nsResolver; ns != nil && ns.Mode() != NamespaceModeReject {
+		serverName := strings.TrimSpace(server.Name)
+		if serverName == "" {
+			serverName = strings.TrimSpace(server.ID)
+		}
+		return ns.ApplyNamespace(toolName, serverName)
+	}
+	return federatedToolName(server, toolName)
 }
 
 func federatedToolName(server types.ServerRecord, toolName string) string {

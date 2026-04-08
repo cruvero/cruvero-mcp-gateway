@@ -143,10 +143,14 @@ func TestVectorEngine_EmbedderError(t *testing.T) {
 		t.Fatal("expected error from embedder failure during Index")
 	}
 
-	// Search should propagate error.
-	_, err = e.Search(context.Background(), "test", 0)
-	if err == nil {
-		t.Fatal("expected error from embedder failure during Search")
+	// Search on an empty index (Index failed, so nothing was stored) should
+	// short-circuit without calling the embedder. No docs = nil results, no error.
+	results, searchErr := e.Search(context.Background(), "test", 0)
+	if searchErr != nil {
+		t.Fatalf("expected nil error on empty index search, got: %v", searchErr)
+	}
+	if results != nil {
+		t.Fatalf("expected nil results on empty index, got %v", results)
 	}
 }
 

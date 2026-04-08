@@ -13,18 +13,20 @@ This document describes the architecture of the MCP Gateway as derived from the 
 5. [Authentication & Authorization](#authentication--authorization)
 6. [Backend Server Management](#backend-server-management)
 7. [Proxy & Routing](#proxy--routing)
-8. [Resilience Layer](#resilience-layer)
-9. [Rate Limiting](#rate-limiting)
-10. [Policy Engine & Tool Classification](#policy-engine--tool-classification)
-11. [Progressive Discovery & Search](#progressive-discovery--search)
-12. [Orchestrator](#orchestrator)
-13. [Events & Cross-Pod Synchronization](#events--cross-pod-synchronization)
-14. [Admin Dashboard](#admin-dashboard)
-15. [Observability](#observability)
-16. [Database Schema](#database-schema)
-17. [Kubernetes Deployment](#kubernetes-deployment)
-18. [CLI Subcommands](#cli-subcommands)
-19. [Package Map](#package-map)
+8. [Per-Server Virtual Endpoints](#per-server-virtual-endpoints)
+9. [Resilience Layer](#resilience-layer)
+10. [Rate Limiting](#rate-limiting)
+11. [Policy Engine & Tool Classification](#policy-engine--tool-classification)
+12. [Progressive Discovery & Search](#progressive-discovery--search)
+13. [Realtime Capability Refresh](#realtime-capability-refresh)
+14. [Orchestrator](#orchestrator)
+15. [Events & Cross-Pod Synchronization](#events--cross-pod-synchronization)
+16. [Admin Dashboard](#admin-dashboard)
+17. [Observability](#observability)
+18. [Database Schema](#database-schema)
+19. [Kubernetes Deployment](#kubernetes-deployment)
+20. [CLI Subcommands](#cli-subcommands)
+21. [Package Map](#package-map)
 
 ---
 
@@ -32,26 +34,37 @@ This document describes the architecture of the MCP Gateway as derived from the 
 
 The MCP Gateway is a production-grade reverse proxy and aggregator for [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers, written in Go. It sits between AI clients (IDEs, LLM agents) and one or more MCP backend servers, providing a single entry point with unified authentication, rate limiting, policy enforcement, tool discovery, and observability.
 
+The gateway exposes two endpoint modes: a **unified `/mcp/` endpoint** that aggregates tools from all backends (for LLM agents and the Cruvero platform), and **per-server virtual endpoints** at `/mcp/servers/{name}/` that provide individual MCP connections for IDE clients (Copilot, Cursor, Claude Code, Windsurf). An auto-discovery document at `/.well-known/mcp.json` lists all available per-server URLs.
+
 ```
- +-----------+    +-----------+    +-----------+
- |  IDE /    |    |  LLM      |    |  CLI      |
- |  VS Code  |    |  Agent    |    |  Client   |
- +-----+-----+    +-----+-----+    +-----+-----+
-       |                |                |
-       +--------+-------+--------+-------+
-                |   MCP Protocol (HTTPS)
-                v
-  +-----------------------------+
-  |      MCP Gateway (:8443)    |
-  |                             |
-  |  Auth -> RateLimit -> Policy|
-  |         -> Proxy -> Route   |
-  +------+----------+-----------+
-         |          |
-    +----+----+ +---+-----+
-    | Backend | | Backend  |  ...
-    | MCP Srv | | MCP Srv  |
-    +---------+ +----------+
+ IDE Clients (Copilot, Cursor, Claude Code)    LLM Agents / Cruvero
+       |              |              |                  |
+       v              v              v                  v
+  /mcp/servers/   /mcp/servers/   /mcp/servers/     /mcp/
+   todoist/        github/         slack/       (unified, aggregated)
+       |              |              |                  |
+       +------+-------+------+------+      +-----------+
+              |              |             |
+              v              v             v
+  +-----------------------------------------------------------+
+  |                    MCP Gateway (:8443)                     |
+  |                                                           |
+  |  /.well-known/mcp.json   (auto-discovery document)       |
+  |  GET /mcp/servers         (server listing with metadata)  |
+  |                                                           |
+  |  Middleware Chain:                                         |
+  |    RequestID -> Tracing -> Metrics -> Auth -> ServerScope  |
+  |    -> RateLimit -> Policy -> Handler                       |
+  |                                                           |
+  |  Routing: RoundRobin | SessionAffinity (per-server)       |
+  |  Namespacing: reject | namespace_always | on_conflict     |
+  +------+----------+-----------+                             |
+         |          |           |                              |
+    +----+----+ +---+-----+ +--+------+                       |
+    | Backend | | Backend  | | Backend |  ...                  |
+    | MCP Srv | | MCP Srv  | | MCP Srv |                      |
+    +---------+ +----------+ +---------+                      |
+  +-----------------------------------------------------------+
 ```
 
 ---
@@ -70,7 +83,7 @@ The MCP Gateway is a production-grade reverse proxy and aggregator for [Model Co
 |  +--------v---------------------------------------------------+  |
 |  |              Middleware Chain                               |  |
 |  |  RequestID -> Tracing -> Metrics -> Logging -> CORS        |  |
-|  |  -> Auth (mTLS | OIDC | API Key)                          |  |
+|  |  -> Auth (mTLS | OIDC | API Key) -> Server Scope           |  |
 |  |  -> Rate Limit -> Policy Enforcement                       |  |
 |  +--------+---------------------------------------------------+  |
 |           |                                                      |
@@ -84,13 +97,20 @@ The MCP Gateway is a production-grade reverse proxy and aggregator for [Model Co
 |  |  |  discovery)   |  |  heartbeats, |  |  Dragonfly)    |  |  |
 |  |  +-------+-------+  |  sweeper)    |  +----------------+  |  |
 |  |          |           +--------------+                      |  |
-|  |  +-------v-------+                                        |  |
-|  |  | Router        |  +----------------+  +--------------+  |  |
-|  |  | (round-robin, |  | Orchestrator   |  | Search       |  |  |
-|  |  |  circuit      |  | (LLM-driven    |  | (BM25,       |  |  |
-|  |  |  breaker,     |  |  multi-step    |  |  vector,     |  |  |
-|  |  |  retry)       |  |  planning)     |  |  hybrid)     |  |  |
-|  |  +-------+-------+  +----------------+  +--------------+  |  |
+|  |  +-------v-------+  +----------------+                     |  |
+|  |  | Router        |  | Virtual Server |                     |  |
+|  |  | (round-robin, |  | Handler        |                     |  |
+|  |  |  session      |  | (per-server    |                     |  |
+|  |  |  affinity,    |  |  MCP proxy)    |                     |  |
+|  |  |  circuit      |  +----------------+                     |  |
+|  |  |  breaker,     |                                        |  |
+|  |  |  retry,       |  +----------------+  +--------------+  |  |
+|  |  |  namespace)   |  | Orchestrator   |  | Search       |  |  |
+|  |  +-------+-------+  | (LLM-driven    |  | (BM25,       |  |  |
+|  |          |           |  multi-step    |  |  vector,     |  |  |
+|  |          |           |  planning)     |  |  hybrid,     |  |  |
+|  |          |           +----------------+  |  partitioned)|  |  |
+|  |          |                               +--------------+  |  |
 |  |          |                                                 |  |
 |  +------------------------------------------------------------------------+
 |           |                                                      |
@@ -141,9 +161,16 @@ The gateway initializes in the following order:
          |
 14. auth.AuthMiddleware()    Wire authentication middleware chain
          |
-15. Mount routes             Registration, proxy, admin, API key routes
+15. ServerScopeMiddleware    (if MCPGW_SERVER_SCOPE_ENFORCEMENT=true)
          |
-16. gw.Start()               Listen on TLS :8443 + metrics on :9090
+16. Mount routes             Registration, proxy, admin, API key routes
+         |
+17. Per-server endpoints     (if MCPGW_PER_SERVER_ENDPOINTS=true)
+         |                   VirtualServerHandler at /mcp/servers/{name}/
+         |
+18. Discovery routes         /.well-known/mcp.json + GET /mcp/servers
+         |
+19. gw.Start()               Listen on TLS :8443 + metrics on :9090
 ```
 
 ---
@@ -155,7 +182,7 @@ A complete tool-call request flows through the system as follows:
 ```
 Client (IDE / LLM Agent)
   |
-  |  HTTPS POST /mcp/ (Streamable HTTP or SSE)
+  |  HTTPS POST /mcp/ or /mcp/servers/{name}/ (Streamable HTTP or SSE)
   v
 +-------------------------------------------------------------------+
 | 1. RequestID Middleware       Assign X-Request-ID correlation ID   |
@@ -179,7 +206,16 @@ Client (IDE / LLM Agent)
 |    +-- mTLS?  --> Extract SPIFFE ID from client cert              |
 |    +-- JWT?   --> Validate via OIDC issuer, cache token           |
 |    +-- APIKey? -> SHA-256 lookup + bcrypt verify                  |
-|    Result: Identity injected into context                         |
+|    Result: Identity + ServerScope injected into context            |
++-------------------------------------------------------------------+
+  |
++-------------------------------------------------------------------+
+| 5b. Server Scope Middleware   For per-server endpoints:            |
+|     (if enabled)              check {serverName} against scope.    |
+|                               For unified endpoint: set scope in   |
+|                               context for deferred check.          |
+|                               Empty scope = gateway-wide access.   |
+|                               403 + X-Denied-Reason if denied.     |
 +-------------------------------------------------------------------+
   |
 +-------------------------------------------------------------------+
@@ -195,18 +231,21 @@ Client (IDE / LLM Agent)
 |                               403 if denied                        |
 +-------------------------------------------------------------------+
   |
-+-------------------------------------------------------------------+
-| 8. ProxyServer Handler                                            |
-|    a. Parse tool name + arguments                                 |
-|    b. ToolCache lookup (hit -> use cached definition)             |
-|    c. CapabilityIndex.FindServers(toolName)                       |
-|    d. Router.Route() -> RoundRobinStrategy selects backend        |
-|    e. Circuit breaker check (open -> 503)                         |
-|    f. BackendClient.CallTool() -> HTTP to backend MCP server      |
-|    g. Retry on transient failure (exponential backoff)            |
-|    h. Normalize response -> ToolResult                            |
-|    i. Audit log insert                                            |
-+-------------------------------------------------------------------+
+  +-------- /mcp/servers/{name}/ --------+-------- /mcp/ (unified) --------+
+  |                                      |                                  |
++-------------------------------+  +-------------------------------------------+
+| 8a. VirtualServerHandler      |  | 8b. ProxyServer Handler                   |
+|     Resolve {serverName}      |  |     a. Parse tool name + arguments         |
+|     Validate name pattern     |  |     b. ToolCache lookup                    |
+|     Lookup in CapabilityIndex |  |     c. NamespaceResolver.Resolve(name)     |
+|     404 if not found          |  |     d. CapabilityIndex.FindServers(tool)   |
+|     503 if not active         |  |     e. Server scope check (deferred)       |
+|     Reverse proxy to backend  |  |     f. Router.Route() -> strategy selects  |
+|     (bare tool names, no      |  |        (RoundRobin or SessionAffinity)     |
+|      namespace prefix)        |  |     g. Circuit breaker + retry             |
++-------------------------------+  |     h. BackendClient.CallTool()            |
+                                   |     i. Audit log insert                    |
+                                   +-------------------------------------------+
   |
   v
 Client receives JSON / SSE response
@@ -258,9 +297,29 @@ gateway_users (1) ---< (N) user_tool_permissions
      +-- oidc_sub             +-- granted_by (audit trail)
 ```
 
+### Server-Scoped API Keys
+
+API keys can optionally restrict access to specific backend servers via the `server_scope` field. When enforcement is enabled (`MCPGW_SERVER_SCOPE_ENFORCEMENT=true`), the `ServerScopeMiddleware` checks every request:
+
+```
+Auth Middleware → identity.ServerScope = ["todoist", "github"]
+       |
+ServerScopeMiddleware
+       |
+  Per-server endpoint (/mcp/servers/slack/)?
+       |
+  "slack" in ["todoist", "github"]? → NO → 403 Forbidden
+                                            X-Denied-Reason: server_scope
+```
+
+For the unified `/mcp/` endpoint, scope checking is deferred until after tool-to-server resolution in the Router, since the target server is not known until the tool name is resolved via the CapabilityIndex.
+
+An empty `server_scope` means gateway-wide access (backward compatible with existing keys).
+
 Implementation files:
-- `internal/auth/apikey_middleware.go` - API key authentication
+- `internal/auth/apikey_middleware.go` - API key authentication + server scope injection
 - `internal/auth/oidc_middleware.go` - OIDC JWT validation
+- `internal/auth/server_scope.go` - ServerScopeMiddleware, CheckServerScope
 - `internal/identity/middleware.go` - mTLS / SPIFFE extraction
 - `internal/auth/rbac.go` - Role-based access control
 
@@ -321,13 +380,44 @@ The `CapabilityIndex` is an in-memory, mutex-protected map that enables O(1) too
 CapabilityIndex
   tools:     map[toolName] -> []ServerRecord
   resources: map[resourceURI] -> []ServerRecord
+
+  LookupTool(name) -> []ServerRecord
+  LookupServer(name) -> *ServerRecord    (case-insensitive, scans tool entries)
+  ListServers() -> []ServerStats          (deduplicated, with tool/resource counts)
 ```
 
-It is rebuilt from the database on startup and kept in sync via heartbeats, registrations, and cross-pod broadcasts.
+It is rebuilt from the database on startup and kept in sync via heartbeats, registrations, capability refresh events, and cross-pod broadcasts.
+
+### Heartbeat Capability Refresh
+
+Each backend includes a `capabilities_hash` (SHA-256 of its serialized tool/resource catalog) in heartbeat payloads. The gateway compares this hash to the stored value and triggers an inline capability refresh on mismatch:
+
+```
+Backend                           Gateway
+  |                                 |
+  |-- POST /registration/{id}/heartbeat
+  |   { "capabilities_hash": "a1b2c3..." }
+  |                                 |
+  |                    Compare hash with stored value
+  |                    Hash matches? → normal heartbeat response
+  |                    Hash differs? → call tools/list on backend
+  |                                   → update CapabilityIndex
+  |                                   → trigger incremental search reindex
+  |                                   → store new hash
+  |                                   → broadcast to other pods
+  |                                 |
+  |<-- 200 OK                       |
+  |   { "capabilities_hash": "a1b2c3..." }
+```
+
+Backends that do not send the hash (e.g., third-party servers) fall back to existing behavior with no refresh triggered. Refresh failures are logged but never fail the heartbeat.
 
 Implementation files:
-- `internal/registration/index.go` - CapabilityIndex
-- `internal/registration/service.go` - Registration lifecycle
+- `internal/registration/index.go` - CapabilityIndex, LookupServer, ListServers
+- `internal/registration/service.go` - Registration lifecycle, ToolLister integration
+- `internal/registration/heartbeat.go` - Heartbeat with hash comparison
+- `internal/registration/refresh.go` - RefreshCapabilities, ToolLister interface
+- `internal/registration/refresh_handler.go` - Push refresh HTTP handler
 - `internal/registration/sweeper.go` - Heartbeat sweeper
 - `internal/registration/handler.go` - HTTP handlers
 
@@ -342,25 +432,65 @@ The `Router` selects a backend server for each tool call:
 ```
 Router.Route(ctx, toolName, args)
   |
-  1. CapabilityIndex.FindServers(toolName)
+  1. NamespaceResolver.Resolve(toolName) (if configured)
+  |     -> (serverHint, bareToolName) or fallback to federated name
+  |
+  2. CapabilityIndex.FindServers(toolName)
   |     -> []ServerRecord (all backends hosting this tool)
   |
-  2. RoutingStrategy.Select(candidates)
-  |     -> RoundRobinStrategy: atomic counter % len(candidates)
+  3. Server scope check (deferred from middleware)
+  |     -> ErrServerScopeDenied if target server not in scope
   |
-  3. Per-server rate limit check
+  4. RoutingStrategy.Select(ctx, candidates, req)
+  |     -> RoundRobinStrategy: atomic counter % len(candidates)
+  |     -> SessionAffinityStrategy: rendezvous hash on Mcp-Session-Id
+  |        (falls back to RoundRobin when no session ID present)
+  |
+  5. Per-server rate limit check
   |     -> ServerRateLimitError if exceeded
   |
-  4. Get/create ResilientClient for selected server
+  6. Get/create ResilientClient for selected server
   |     -> Circuit breaker + retry wrapper
   |
-  5. ResilientClient.CallTool(ctx, toolName, args)
+  7. ResilientClient.CallTool(ctx, toolName, args)
   |     -> Circuit breaker gate
   |     -> HTTP POST to backend
   |     -> Retry on transient errors
   |
-  6. Return ToolResult or error
+  8. Return ToolResult or error
 ```
+
+### Routing Strategies
+
+The `RoutingStrategy` interface allows pluggable backend selection:
+
+```go
+type RoutingStrategy interface {
+    Select(ctx context.Context, candidates []types.ServerRecord,
+           req *RoutingRequest) (*types.ServerRecord, error)
+}
+```
+
+| Strategy | Behavior | Use Case |
+|----------|----------|----------|
+| `RoundRobinStrategy` | Atomic counter modulo candidate count | Default; stateless backends |
+| `SessionAffinityStrategy` | Rendezvous (HRW) hashing on `Mcp-Session-Id` | Stateful backends with session state |
+
+Session affinity is configured per-server via the `routing_strategy` column in `mcp_servers` (default: `round_robin`). When set to `session_affinity`, the gateway uses rendezvous hashing (FNV-1a 64-bit) to consistently map the same MCP session to the same backend replica. On replica removal, only sessions pinned to the removed replica are redistributed.
+
+### Tool Namespace Isolation
+
+The `NamespaceResolver` handles tool name collisions when multiple backends register tools with the same name:
+
+| Mode | Config Value | Behavior |
+|------|-------------|----------|
+| Reject | `reject` (default) | Registration fails on tool name conflicts |
+| Always namespace | `namespace_always` | All tools prefixed: `{server}.{tool}` on unified endpoint |
+| Namespace on conflict | `namespace_on_conflict` | Only conflicting names prefixed; unique names stay bare |
+
+On per-server endpoints (`/mcp/servers/{name}/`), tool names are always bare — no namespace prefix is applied since the scope is implicit.
+
+The separator character is configurable via `MCPGW_NAMESPACE_SEPARATOR` (default: `.`). Resolution splits on the first separator to extract a server hint and bare tool name.
 
 ### Tool Cache
 
@@ -368,8 +498,9 @@ Router.Route(ctx, toolName, args)
 
 ```
 ToolCache
-  entries: map[cacheKey] -> {definition, expiry}
+  entries: map[cacheKey] -> {definition, expiry, serverID, serverName}
   TTL: 30s default
+  InvalidateServer(serverID)   per-server invalidation on capability refresh
 ```
 
 ### Streamable HTTP Transport
@@ -377,10 +508,94 @@ ToolCache
 The gateway uses the `mark3labs/mcp-go` library's `StreamableHTTPServer` for full MCP protocol compliance, supporting bidirectional JSON-RPC over HTTP with SSE streaming for long-running operations.
 
 Implementation files:
-- `internal/proxy/server.go` - ProxyServer
-- `internal/proxy/router.go` - Router, RoutingStrategy, RoundRobinStrategy
+- `internal/proxy/server.go` - ProxyServer, namespace resolver wiring
+- `internal/proxy/router.go` - Router, RoutingStrategy, RoutingRequest, server scope check
+- `internal/proxy/session_affinity.go` - SessionAffinityStrategy (rendezvous hashing)
+- `internal/proxy/namespace.go` - NamespaceResolver, namespace modes
 - `internal/proxy/client.go` - BackendClient
+- `internal/proxy/tools.go` - Tool aggregation, federated naming, namespace application
 - `internal/proxy/cache.go` - ToolCache
+
+---
+
+## Per-Server Virtual Endpoints
+
+When `MCPGW_PER_SERVER_ENDPOINTS=true` (default), each registered active backend is exposed as an individual, fully MCP-compliant endpoint:
+
+```
+Routes:
+  GET|POST  /mcp/servers/{serverName}/       Full MCP passthrough
+  GET|POST  /mcp/servers/{serverName}/sse    SSE transport variant
+  GET       /.well-known/mcp.json            Auto-discovery document
+  GET       /mcp/servers                     Server listing (JSON)
+```
+
+### VirtualServerHandler
+
+The `VirtualServerHandler` resolves `{serverName}` from the URL, validates it against a strict pattern (`^[a-z0-9][a-z0-9_-]{0,62}$`), looks up the server in the CapabilityIndex, and reverse-proxies the request to the backend:
+
+```
+Client POST /mcp/servers/todoist/
+  |
+  v
+Middleware Chain (same as unified: Auth -> ServerScope -> RateLimit -> Policy)
+  |
+  v
+VirtualServerHandler
+  |
+  1. Extract {serverName} from URL
+  2. Validate name pattern
+  3. CapabilityIndex.LookupServer(name)
+  4. Not found → 404 | Not active → 503
+  5. Get or create cached reverse proxy instance (sync.Map)
+  6. Forward request to backend at {scheme}://{host}:{port}/mcp
+  |
+  v
+Client receives MCP JSON-RPC / SSE response
+```
+
+Per-server instances are cached in a `sync.Map` and invalidated when the server deregisters or its tool catalog changes.
+
+### Auto-Discovery Document
+
+`GET /.well-known/mcp.json` returns a JSON document listing all active per-server endpoints:
+
+```json
+{
+  "mcpServers": {
+    "todoist": {
+      "url": "https://gw.example.com/mcp/servers/todoist/",
+      "name": "Todoist MCP Server",
+      "version": "1.2.0",
+      "status": "active"
+    }
+  }
+}
+```
+
+The response is cached in-memory with a configurable TTL (`MCPGW_WELL_KNOWN_CACHE_TTL`, default 5s) using an `atomic.Pointer` for lock-free reads. The cache is invalidated on server registration/deregistration events.
+
+### Server Listing
+
+`GET /mcp/servers` returns a JSON array with per-server metadata:
+
+```json
+[
+  {
+    "name": "todoist",
+    "url": "/mcp/servers/todoist/",
+    "version": "1.2.0",
+    "status": "active",
+    "tool_count": 8,
+    "resource_count": 2
+  }
+]
+```
+
+Implementation files:
+- `internal/proxy/virtual_server.go` - VirtualServerHandler, reverse proxy creation
+- `internal/proxy/discovery_doc.go` - DiscoveryDocHandler, TTL cache
+- `internal/proxy/server_list.go` - ServerListHandler, server metadata
 
 ---
 
@@ -633,17 +848,109 @@ Client                         Gateway                        Backends
 | Engine | Config Value | Description |
 |--------|-------------|-------------|
 | Substring | `substring` | PostgreSQL trigram matching |
-| BM25 | `bm25` | In-memory inverted index with TF-IDF scoring |
+| BM25 | `bm25` | In-memory partitioned inverted index with TF-IDF scoring |
 | Vector | `vector` | ONNX model embeddings with cosine similarity |
 | Hybrid | `hybrid` | BM25 + Vector with reciprocal rank fusion |
 
+### Partitioned Search Indexes
+
+Both BM25 and Vector engines use server-partitioned indexes for incremental updates. When a backend's tool catalog changes (detected via heartbeat hash mismatch or push refresh), only that server's partition is rebuilt — not the entire index.
+
+```
+BM25Engine
+  partitions: map[serverID] -> *bm25Partition
+  globalIDF:  map[term] -> float64  (recomputed lazily after partition change)
+
+  AddPartition(serverID, docs)    Insert server's tools
+  UpdatePartition(serverID, docs) Replace server's tools
+  RemovePartition(serverID)       Delete server's tools
+  Index(docs)                     Full rebuild (backward compat)
+  Search(query, limit)            Query across all partitions
+
+VectorEngine
+  partitions: map[serverID] -> *vectorPartition
+  cache:      *EmbeddingCache     (LRU, keyed by content hash)
+
+  AddPartition(ctx, serverID, docs)
+  UpdatePartition(ctx, serverID, docs)   Reuse cached embeddings for unchanged tools
+  RemovePartition(serverID)
+
+HybridEngine
+  UpdatePartition(ctx, serverID, docs)   Delegates to both BM25 and Vector
+  RemovePartition(serverID)              Delegates to both
+```
+
+### Embedding Cache
+
+The `EmbeddingCache` avoids recomputing ONNX embeddings for unchanged tools during incremental reindex:
+
+```
+EmbeddingCache
+  entries: map[SHA-256(name + description)] -> []float32
+  maxSize: MCPGW_EMBEDDING_CACHE_MAX_SIZE (default: 10000)
+  eviction: LRU
+```
+
+When a server's tools change, content hashes are computed for each tool. Tools whose hash matches the cache reuse the existing embedding. Only new or changed tools trigger ONNX inference.
+
 Implementation files:
 - `internal/search/engine.go` - Engine interface
-- `internal/search/bm25.go` - BM25 engine
-- `internal/search/vector.go` - Vector search engine
-- `internal/search/hybrid.go` - Hybrid fusion engine
+- `internal/search/bm25.go` - BM25 engine (partitioned)
+- `internal/search/vector.go` - Vector search engine (partitioned)
+- `internal/search/hybrid.go` - Hybrid fusion engine (partition delegation)
+- `internal/search/embedding_cache.go` - LRU embedding cache
 - `internal/search/onnx_embedder.go` - ONNX Runtime embedder
 - `internal/proxy/discovery.go` - DiscoveryIndex, meta-tool handlers
+
+---
+
+## Realtime Capability Refresh
+
+Two complementary mechanisms ensure the CapabilityIndex and search indexes always reflect the current tool catalog:
+
+### Mechanism 1 — Heartbeat Hash Detection
+
+Every heartbeat can include a `capabilities_hash`. The gateway compares it to the stored hash. On mismatch, the gateway triggers an inline `tools/list` refresh, updates the store and indexes, and broadcasts the change to other pods. See [Heartbeat Capability Refresh](#heartbeat-capability-refresh) above.
+
+### Mechanism 2 — Push Refresh Endpoint
+
+Fleet servers can proactively notify the gateway when their capabilities change:
+
+```
+POST /v1/registrations/{id}/capabilities
+Authorization: mTLS (SPIFFE ID must match registered server)
+Rate Limit: 10 requests/minute per server
+
+Response: 200 OK
+{
+  "tools_count": 12,
+  "resources_count": 3,
+  "reindex_triggered": true,
+  "capabilities_hash": "d4e5f6..."
+}
+```
+
+The handler validates the caller's SPIFFE identity, enforces per-server rate limiting, calls `RefreshCapabilities()` to fetch the updated catalog, and broadcasts a `server.capabilities_changed` event for cross-pod synchronization.
+
+### Refresh Pipeline
+
+```
+Hash mismatch OR Push endpoint
+  |
+  v
+RefreshCapabilities()
+  |
+  1. ToolLister.ListToolNames(server)   Fetch current tools from backend
+  2. ServerStore.Update(record)          Persist new hash + capabilities
+  3. CapabilityIndex.RefreshServer()     Update in-memory index
+  4. Broadcaster.Publish(event)          Notify other gateway pods
+  5. ToolCache.InvalidateServer(id)      Clear cached tool definitions
+```
+
+Implementation files:
+- `internal/registration/refresh.go` - RefreshCapabilities, ToolLister interface
+- `internal/registration/refresh_handler.go` - Push endpoint HTTP handler
+- `internal/registration/heartbeat.go` - Hash comparison integration
 
 ---
 
@@ -721,6 +1028,7 @@ Topics / Subjects:
   {gateway_id}.server.registered
   {gateway_id}.server.deregistered
   {gateway_id}.server.health_changed
+  {gateway_id}.server.capabilities_changed
   {gateway_id}.tool.called
   {gateway_id}.policy.violated
   {gateway_id}.search.fallback
@@ -734,6 +1042,7 @@ Topics / Subjects:
 | `server.registered` | New backend approved | Rebuild CapabilityIndex on other pods |
 | `server.deregistered` | Backend removed | Remove from index on other pods |
 | `server.health_changed` | Heartbeat timeout | Update server status across cluster |
+| `server.capabilities_changed` | Tool catalog changed | Refresh CapabilityIndex + search indexes on all pods |
 | `tool_cache.invalidate` | Tool definitions changed | Clear ToolCache on all pods |
 | `policy.violated` | Blocked request | Audit trail, monitoring alerts |
 
@@ -837,16 +1146,18 @@ PostgreSQL is the sole required data dependency. Schema managed via numbered SQL
 | host                |       | scopes (TEXT[])      |
 | port                |       | client_id            |
 | capabilities (JSONB)|       | policy_profile       |
-| status              |       | expires_at           |
-| policy_profile      |       | created_at           |
-| protocol            |       +---------------------+
-| lease_epoch         |
-| rate_limit          |       +---------------------+
-| rate_burst          |       | audit_log            |
-| last_heartbeat      |       |---------------------|
-| created_at          |       | id (UUID, PK)       |
-| updated_at          |       | event_type           |
-+---------------------+       | client_id            |
+| status              |       | server_scope (TEXT[])|
+| policy_profile      |       | expires_at           |
+| protocol            |       | created_at           |
+| lease_epoch         |       +---------------------+
+| capability_hash     |
+| routing_strategy    |       +---------------------+
+| rate_limit          |       | audit_log            |
+| rate_burst          |       |---------------------|
+| last_heartbeat      |       | id (UUID, PK)       |
+| created_at          |       | event_type           |
+| updated_at          |       | client_id            |
++---------------------+       |
                               | server_name          |
 +---------------------+       | username             |
 | gateway_users       |       | details (JSONB)      |
@@ -873,13 +1184,13 @@ PostgreSQL is the sole required data dependency. Schema managed via numbered SQL
                               +---------------------+
 ```
 
-Migration history (14 migrations):
+Migration history (17 migrations):
 1. `mcp_servers` - Core server registration table
 2. `api_keys` - API key storage with hash-based lookup
 3. `audit_log` - Immutable audit trail
 4. `config_cache` - Key-value config persistence
 5. `server_protocol` - Add protocol field to servers
-6. `registration_leases` - Lease epoch for consistency
+6. `registration_leases` - Lease epoch, capability_hash, sync_state
 7. `audit_log_retention_index` - Index for retention cleanup
 8. `apikey_policy_profile` - Policy profile per API key
 9. `tool_classifications` - Tool risk classification table
@@ -888,6 +1199,9 @@ Migration history (14 migrations):
 12. `user_access` - Users and per-user tool permissions
 13. `search_config` - Search engine configuration tables
 14. `audit_log_username_and_sort_support` - Audit log enhancements
+15. `server_capabilities_hash` - Ensure capabilities_hash column exists
+16. `apikey_server_scope` - Server-scope restrictions on API keys
+17. `server_routing_strategy` - Per-server routing strategy column
 
 ---
 
@@ -951,7 +1265,7 @@ The `mcpgw` binary serves as both the gateway server and an operational CLI:
 | `mcpgw server inspect <id>` | Show server details and capabilities |
 | `mcpgw server deregister <id>` | Remove a backend server |
 | `mcpgw apikey list` | List API keys |
-| `mcpgw apikey create` | Generate a new API key |
+| `mcpgw apikey create` | Generate a new API key (supports `--server-scope`) |
 | `mcpgw apikey revoke <id>` | Revoke an API key |
 | `mcpgw policy list` | List policy profiles |
 | `mcpgw health` | Check gateway liveness and readiness |
@@ -973,24 +1287,28 @@ cmd/mcpgw/
 
 internal/
   admin/                     HTMX admin dashboard and API handlers
-  auth/                      Authentication middleware (mTLS, OIDC, API key)
+  auth/                      Authentication middleware (mTLS, OIDC, API key, server scope)
   config/                    MCPGW_* environment variable loading
   events/                    NATS/Dragonfly event publishing and subscription
   identity/                  Identity context propagation and SPIFFE extraction
   llm/                       LLM client abstraction (OpenAI-compatible)
   orchestrator/              LLM-driven multi-step tool planning/execution
   policy/                    Policy evaluation engine and tool classification
-  proxy/                     Core MCP proxy: routing, caching, discovery
+  proxy/                     Core MCP proxy: routing, caching, discovery,
+                              per-server endpoints, namespace resolution,
+                              session affinity, discovery document
   ratelimit/                 Rate limiting backends (memory, Dragonfly, NATS)
-  registration/              Server registration lifecycle and heartbeats
+  registration/              Server registration lifecycle, heartbeats,
+                              capability refresh (hash detection + push)
   resilience/                Circuit breakers, retry logic, connection pooling
-  search/                    Full-text search engines (BM25, vector, hybrid)
+  search/                    Partitioned search engines (BM25, vector, hybrid),
+                              LRU embedding cache
   server/                    HTTP server, middleware, health, metrics, tracing
   store/                     PostgreSQL store implementations
   types/                     Shared type definitions
   testutil/                  Test helpers and fixtures
 
-migrations/                  PostgreSQL schema migrations (0001-0014)
+migrations/                  PostgreSQL schema migrations (0001-0017)
 charts/mcpgateway/           Helm chart for Kubernetes deployment
 deploy/                      ArgoCD and PKI deployment configuration
 ```

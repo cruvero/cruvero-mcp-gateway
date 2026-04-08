@@ -107,6 +107,7 @@ type ServerRecord struct {
 	LastPlatformAckAt      *time.Time            `json:"last_platform_ack_at"`
 	RateLimit              *int                  `json:"rate_limit,omitempty"`
 	RateBurst              *int                  `json:"rate_burst,omitempty"`
+	RoutingStrategy        string                `json:"routing_strategy,omitempty"`
 	CreatedAt              time.Time             `json:"created_at"`
 	UpdatedAt              time.Time             `json:"updated_at"`
 }
@@ -148,6 +149,7 @@ type APIKey struct {
 	Scopes        []string   `json:"scopes"`
 	ClientID      string     `json:"client_id"`
 	PolicyProfile string     `json:"policy_profile"`
+	ServerScope   []string   `json:"server_scope,omitempty"`
 	ExpiresAt     *time.Time `json:"expires_at"`
 	CreatedAt     time.Time  `json:"created_at"`
 }

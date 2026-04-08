@@ -18,6 +18,8 @@ const (
 	EventServerHealthChanged = "server.health_changed"
 	// EventPolicyViolated is emitted when a policy violation occurs.
 	EventPolicyViolated = "policy.violated"
+	// EventServerCapabilitiesChanged is emitted when a backend's tool catalog changes.
+	EventServerCapabilitiesChanged = "server.capabilities_changed"
 
 	// AckScopeServerRegistered is used for platform ack messages that confirm
 	// tool-registry ingestion of a server registration lease.
@@ -82,6 +84,13 @@ type PolicyViolatedPayload struct {
 	ToolName   string   `json:"tool_name"`
 	Violations []string `json:"violations"`
 	Decision   string   `json:"decision"`
+}
+
+// ServerCapabilitiesChangedPayload is the payload for EventServerCapabilitiesChanged.
+type ServerCapabilitiesChangedPayload struct {
+	ServerID         string   `json:"server_id"`
+	CapabilitiesHash string   `json:"capabilities_hash"`
+	ToolNames        []string `json:"tool_names"`
 }
 
 // ServerRegisteredAckPayload is emitted by the platform after processing a

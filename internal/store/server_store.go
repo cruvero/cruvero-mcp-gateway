@@ -13,7 +13,7 @@ import (
 
 const errServerStore = "server store: %w"
 
-const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, lease_epoch, capability_hash, sync_state, last_platform_ack_version, last_platform_ack_at, rate_limit, rate_burst, created_at, updated_at"
+const serverColumns = "id, name, spiffe_id, version, host, port, protocol, capabilities, status, policy_profile, last_heartbeat, lease_epoch, capability_hash, sync_state, last_platform_ack_version, last_platform_ack_at, rate_limit, rate_burst, created_at, updated_at, routing_strategy"
 
 // PostgresServerStore is a Postgres-backed implementation of ServerStore.
 type PostgresServerStore struct {
@@ -64,9 +64,10 @@ INSERT INTO mcp_servers (
 	capability_hash,
 	sync_state,
 	last_platform_ack_version,
-	last_platform_ack_at
+	last_platform_ack_at,
+	routing_strategy
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 `
 
 	protocol := strings.TrimSpace(record.Protocol)
@@ -92,11 +93,20 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		normalizedSyncState(record.SyncState),
 		strings.TrimSpace(record.LastPlatformAckVersion),
 		record.LastPlatformAckAt,
+		routingStrategyOrDefault(record.RoutingStrategy),
 	); err != nil {
 		return fmt.Errorf(errServerStore, err)
 	}
 
 	return nil
+}
+
+func routingStrategyOrDefault(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "round_robin"
+	}
+	return s
 }
 
 // Get retrieves a server by ID.
@@ -223,8 +233,9 @@ SET name = $1,
     sync_state = $13,
     last_platform_ack_version = $14,
     last_platform_ack_at = $15,
+    routing_strategy = $16,
     updated_at = now()
-WHERE id = $16
+WHERE id = $17
 `
 
 	protocol := strings.TrimSpace(record.Protocol)
@@ -250,6 +261,7 @@ WHERE id = $16
 		normalizedSyncState(record.SyncState),
 		strings.TrimSpace(record.LastPlatformAckVersion),
 		record.LastPlatformAckAt,
+		routingStrategyOrDefault(record.RoutingStrategy),
 		record.ID,
 	); err != nil {
 		return fmt.Errorf(errServerStore, err)
@@ -435,6 +447,7 @@ func scanServerRecord(scanner serverScanner) (*types.ServerRecord, error) {
 		&rateBurst,
 		&record.CreatedAt,
 		&record.UpdatedAt,
+		&record.RoutingStrategy,
 	); err != nil {
 		return nil, err
 	}

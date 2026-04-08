@@ -1,27 +1,114 @@
 services:
+  certs:
+    image: alpine/openssl:latest
+    volumes:
+      - certs:/certs
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -eu
+        if [ -f /certs/ca.crt ] && [ -f /certs/server.crt ] && [ -f /certs/keycloak.p12 ] && [ -f /certs/client.crt ]; then
+          echo "Certificates already exist, skipping generation."
+          exit 0
+        fi
+        echo "Generating CA..."
+        openssl genrsa -out /certs/ca.key 4096
+        openssl req -new -x509 -key /certs/ca.key -sha256 \
+          -subj "/CN=mcpgw-dev-ca" -days 3650 -out /certs/ca.crt
+
+        echo "Generating gateway certificate..."
+        openssl genrsa -out /certs/server.key 2048
+        cat > /tmp/gateway-ext.cnf <<'GATEWAYCFG'
+        [req]
+        distinguished_name = req_dn
+        req_extensions = v3_req
+        prompt = no
+        [req_dn]
+        CN = gateway.localhost
+        [v3_req]
+        subjectAltName = DNS:gateway.localhost,DNS:localhost,DNS:devcontainer,DNS:gateway,IP:127.0.0.1
+        GATEWAYCFG
+        openssl req -new -key /certs/server.key -out /tmp/gateway.csr \
+          -config /tmp/gateway-ext.cnf
+        openssl x509 -req -in /tmp/gateway.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
+          -CAcreateserial -out /certs/server.crt -days 3650 -sha256 \
+          -extensions v3_req -extfile /tmp/gateway-ext.cnf
+
+        echo "Generating Keycloak certificate..."
+        openssl genrsa -out /certs/keycloak.key 2048
+        cat > /tmp/keycloak-ext.cnf <<'KEYCLOAKCFG'
+        [req]
+        distinguished_name = req_dn
+        req_extensions = v3_req
+        prompt = no
+        [req_dn]
+        CN = keycloak.localhost
+        [v3_req]
+        subjectAltName = DNS:keycloak.localhost,DNS:keycloak,DNS:localhost,IP:127.0.0.1
+        KEYCLOAKCFG
+        openssl req -new -key /certs/keycloak.key -out /tmp/keycloak.csr \
+          -config /tmp/keycloak-ext.cnf
+        openssl x509 -req -in /tmp/keycloak.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
+          -CAcreateserial -out /certs/keycloak.crt -days 3650 -sha256 \
+          -extensions v3_req -extfile /tmp/keycloak-ext.cnf
+        openssl pkcs12 -export \
+          -inkey /certs/keycloak.key \
+          -in /certs/keycloak.crt \
+          -certfile /certs/ca.crt \
+          -out /certs/keycloak.p12 \
+          -passout pass:changeit
+
+        echo "Generating client certificate..."
+        openssl genrsa -out /certs/client.key 2048
+        cat > /tmp/client-ext.cnf <<'CLIENTCFG'
+        [req]
+        distinguished_name = req_dn
+        req_extensions = v3_req
+        prompt = no
+        [req_dn]
+        CN = mock-backend
+        [v3_req]
+        subjectAltName = URI:spiffe://mcpgw.local/ns/dev/sa/mock-backend
+        CLIENTCFG
+        openssl req -new -key /certs/client.key -out /tmp/client.csr \
+          -config /tmp/client-ext.cnf
+        openssl x509 -req -in /tmp/client.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
+          -CAcreateserial -out /certs/client.crt -days 3650 -sha256 \
+          -extensions v3_req -extfile /tmp/client-ext.cnf
+
+        chmod 644 /certs/*.crt /certs/*.p12 /certs/*.key
+        echo "Certificate generation complete."
+
   devcontainer:
     build:
       context: .
       dockerfile: .devcontainer/Dockerfile
+    networks:
+      default:
+        aliases:
+          - gateway.localhost
     volumes:
       - .:/workspaces/cruvero-mcp-gateway:cached
       - go-mod-cache:/home/vscode/go/pkg/mod
       - certs:/certs:ro
     environment:
       MCPGW_DB_URL: "postgres://mcpgw:mcpgw@postgres:5432/mcpgw?sslmode=disable"
-      MCPGW_LISTEN_ADDR: ":8443"
-      MCPGW_TLS_CERT: "/certs/server.crt"
-      MCPGW_TLS_KEY: "/certs/server.key"
-      MCPGW_TLS_CA: "/certs/ca.crt"
-      MCPGW_NATS_URL: "nats://nats:4222"
-      MCPGW_LOG_FORMAT: "text"
-      MCPGW_LOG_LEVEL: "debug"
-      MCPGW_METRICS_ADDR: ":9090"
-      MCPGW_CRUVERO_ENABLED: "false"
-      MCPGW_CORS_ENABLED: "true"
+      CERT_DIR: "/certs"
+      GOMODCACHE: "/tmp/go/pkg/mod"
+      GOCACHE: "/tmp/go-build"
+      MCPGW_GATEWAY_URL: "https://gateway.localhost:8443"
+      MCPGW_KEYCLOAK_URL: "https://keycloak.localhost:8444"
     depends_on:
       postgres:
         condition: service_healthy
+      certs:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_started
+    ports:
+      - "8443:8443"
+      - "9090:9090"
     command: sleep infinity
 
   postgres:
@@ -41,6 +128,64 @@ services:
       timeout: 3s
       retries: 5
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.0
+    networks:
+      default:
+        aliases:
+          - keycloak.localhost
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "admin"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "admin"
+      KC_DB: "postgres"
+      KC_DB_URL: "jdbc:postgresql://postgres:5432/mcpgw"
+      KC_DB_USERNAME: "mcpgw"
+      KC_DB_PASSWORD: "mcpgw"
+      KC_DB_SCHEMA: "keycloak"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - certs:/certs:ro
+      - ./.devcontainer/keycloak:/opt/keycloak/data/import:ro
+    command:
+      - start
+      - --import-realm
+      - --https-port=8444
+      - --hostname=https://keycloak.localhost:8444
+      - --https-key-store-file=/certs/keycloak.p12
+      - --https-key-store-password=changeit
+    depends_on:
+      postgres:
+        condition: service_healthy
+      certs:
+        condition: service_completed_successfully
+    ports:
+      - "8444:8444"
+
+  mock-backend:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    working_dir: /workspaces/cruvero-mcp-gateway
+    volumes:
+      - .:/workspaces/cruvero-mcp-gateway:cached
+      - go-mod-cache:/home/vscode/go/pkg/mod
+      - certs:/certs:ro
+    environment:
+      MOCK_BACKEND_GATEWAY_URL: "https://gateway.localhost:8443"
+      MOCK_BACKEND_LISTEN_ADDR: ":18080"
+      MOCK_BACKEND_ADVERTISE_HOST: "mock-backend"
+      MOCK_BACKEND_ADVERTISE_PORT: "18080"
+      MOCK_BACKEND_ADVERTISE_PROTOCOL: "http"
+      GOMODCACHE: "/tmp/go/pkg/mod"
+      GOCACHE: "/tmp/go-build"
+      MOCK_BACKEND_TLS_CA: "/certs/ca.crt"
+      MOCK_BACKEND_TLS_CERT: "/certs/client.crt"
+      MOCK_BACKEND_TLS_KEY: "/certs/client.key"
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+    command: bash -lc 'go run ./cmd/mock-mcp-backend'
+
   nats:
     image: nats:2.12-alpine
     command: ["--jetstream", "--store_dir", "/data"]
@@ -51,15 +196,14 @@ services:
       - natsdata:/data
     profiles:
       - nats
-      - gateway
 
   gateway:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8443:8443"
-      - "9090:9090"
+      - "18443:8443"
+      - "19090:9090"
     environment:
       MCPGW_DB_URL: "postgres://mcpgw:mcpgw@postgres:5432/mcpgw?sslmode=disable"
       MCPGW_LISTEN_ADDR: ":8443"
@@ -79,66 +223,7 @@ services:
       certs:
         condition: service_completed_successfully
     profiles:
-      - gateway
-
-  certs:
-    image: alpine/openssl:latest
-    volumes:
-      - certs:/certs
-    entrypoint: /bin/sh
-    command:
-      - -c
-      - |
-        set -eu
-        if [ -f /certs/ca.crt ]; then
-          echo "Certificates already exist, skipping generation."
-          exit 0
-        fi
-        echo "Generating CA..."
-        openssl genrsa -out /certs/ca.key 4096
-        openssl req -new -x509 -key /certs/ca.key -sha256 \
-          -subj "/CN=mcpgw-dev-ca" -days 3650 -out /certs/ca.crt
-
-        echo "Generating server certificate..."
-        openssl genrsa -out /certs/server.key 2048
-        cat > /tmp/server-ext.cnf <<'SANCFG'
-        [req]
-        distinguished_name = req_dn
-        req_extensions = v3_req
-        prompt = no
-        [req_dn]
-        CN = gateway
-        [v3_req]
-        subjectAltName = DNS:localhost,DNS:gateway,DNS:*.mcpgw.local,IP:127.0.0.1
-        SANCFG
-        openssl req -new -key /certs/server.key -out /tmp/server.csr \
-          -config /tmp/server-ext.cnf
-        openssl x509 -req -in /tmp/server.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
-          -CAcreateserial -out /certs/server.crt -days 3650 -sha256 \
-          -extensions v3_req -extfile /tmp/server-ext.cnf
-
-        echo "Generating client certificate..."
-        openssl genrsa -out /certs/client.key 2048
-        cat > /tmp/client-ext.cnf <<'CLIENTCFG'
-        [req]
-        distinguished_name = req_dn
-        req_extensions = v3_req
-        prompt = no
-        [req_dn]
-        CN = test-client
-        [v3_req]
-        subjectAltName = URI:spiffe://mcpgw.local/ns/dev/sa/test-client
-        CLIENTCFG
-        openssl req -new -key /certs/client.key -out /tmp/client.csr \
-          -config /tmp/client-ext.cnf
-        openssl x509 -req -in /tmp/client.csr -CA /certs/ca.crt -CAkey /certs/ca.key \
-          -CAcreateserial -out /certs/client.crt -days 3650 -sha256 \
-          -extensions v3_req -extfile /tmp/client-ext.cnf
-
-        chmod 644 /certs/*.crt /certs/*.key
-        echo "Certificate generation complete."
-    profiles:
-      - gateway
+      - gateway-image
 
 volumes:
   pgdata:

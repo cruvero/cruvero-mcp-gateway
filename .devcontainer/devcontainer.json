@@ -2,9 +2,10 @@
   "name": "cruvero-mcp-gateway",
   "dockerComposeFile": "../docker-compose.yml",
   "service": "devcontainer",
+  "runServices": ["certs", "postgres", "keycloak", "devcontainer", "mock-backend"],
   "workspaceFolder": "/workspaces/cruvero-mcp-gateway",
   "remoteUser": "vscode",
-  "forwardPorts": [8443, 9090],
+  "forwardPorts": [8443, 8444, 9090],
   "customizations": {
     "vscode": {
       "settings": {

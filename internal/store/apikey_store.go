@@ -12,7 +12,7 @@ import (
 const errAPIKeyStore = "api key store: %w"
 
 // #nosec G101 -- column names are not credentials.
-const apiKeyColumns = "id, key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, policy_profile, expires_at, created_at"
+const apiKeyColumns = "id, key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, policy_profile, expires_at, created_at, server_scope"
 
 // PostgresAPIKeyStore is a Postgres-backed implementation of APIKeyStore.
 type PostgresAPIKeyStore struct {
@@ -33,8 +33,8 @@ func (s *PostgresAPIKeyStore) Create(ctx context.Context, key *types.APIKey) err
 	}
 
 	const query = `
-INSERT INTO api_keys (key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, policy_profile, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO api_keys (key_lookup_hash, key_bcrypt_hash, name, scopes, client_id, policy_profile, expires_at, server_scope)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 	profile := key.PolicyProfile
@@ -52,6 +52,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 		key.ClientID,
 		profile,
 		key.ExpiresAt,
+		pq.Array(key.ServerScope),
 	); err != nil {
 		return fmt.Errorf(errAPIKeyStore, err)
 	}
@@ -133,9 +134,10 @@ type apiKeyScanner interface {
 
 func scanAPIKey(scanner apiKeyScanner) (*types.APIKey, error) {
 	var (
-		key       types.APIKey
-		scopes    pq.StringArray
-		expiresAt sql.NullTime
+		key         types.APIKey
+		scopes      pq.StringArray
+		serverScope pq.StringArray
+		expiresAt   sql.NullTime
 	)
 
 	if err := scanner.Scan(
@@ -148,11 +150,13 @@ func scanAPIKey(scanner apiKeyScanner) (*types.APIKey, error) {
 		&key.PolicyProfile,
 		&expiresAt,
 		&key.CreatedAt,
+		&serverScope,
 	); err != nil {
 		return nil, err
 	}
 
 	key.Scopes = []string(scopes)
+	key.ServerScope = []string(serverScope)
 	if expiresAt.Valid {
 		t := expiresAt.Time
 		key.ExpiresAt = &t

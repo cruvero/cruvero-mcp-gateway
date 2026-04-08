@@ -36,6 +36,7 @@ func TestPostgresAPIKeyStoreCreate(t *testing.T) {
 			key.ClientID,
 			"default",
 			key.ExpiresAt,
+			pq.Array(key.ServerScope),
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -68,6 +69,7 @@ WHERE key_lookup_hash = $1
 			"default",
 			now.Add(24*time.Hour),
 			now,
+			"{}",
 		))
 
 	key, err := s.GetByLookupHash(context.Background(), "lookup-hash")
@@ -102,8 +104,8 @@ func TestPostgresAPIKeyStoreList(t *testing.T) {
 	expectedQuery := `SELECT ` + apiKeyColumns + ` FROM api_keys ORDER BY created_at DESC`
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
 		WillReturnRows(sqlmock.NewRows(apiKeyColumnNames).
-			AddRow("key-1", "lookup-1", "bcrypt-1", "k1", "{read}", "client-1", "default", nil, now).
-			AddRow("key-2", "lookup-2", "bcrypt-2", "k2", "{admin}", "client-2", "premium", now.Add(1*time.Hour), now))
+			AddRow("key-1", "lookup-1", "bcrypt-1", "k1", "{read}", "client-1", "default", nil, now, "{}").
+			AddRow("key-2", "lookup-2", "bcrypt-2", "k2", "{admin}", "client-2", "premium", now.Add(1*time.Hour), now, "{}"))
 
 	keys, err := s.List(context.Background())
 	if err != nil {

@@ -216,6 +216,89 @@ func (i *CapabilityIndex) ListResources() []string {
 	return resources
 }
 
+// LookupServer returns the first server record whose Name matches the given
+// name (case-insensitive). It scans tool entries to find a matching server
+// record. Returns nil when no match is found.
+func (i *CapabilityIndex) LookupServer(name string) *types.ServerRecord {
+	if i == nil {
+		return nil
+	}
+
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return nil
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	for _, servers := range i.tools {
+		for _, srv := range servers {
+			if seen[srv.ID] {
+				continue
+			}
+			seen[srv.ID] = true
+			if strings.EqualFold(strings.TrimSpace(srv.Name), target) {
+				clone := cloneServerRecord(srv)
+				return &clone
+			}
+		}
+	}
+	return nil
+}
+
+// ServerStats holds per-server aggregate counts derived from the index.
+type ServerStats struct {
+	Record        types.ServerRecord
+	ToolCount     int
+	ResourceCount int
+}
+
+// ListServers returns deduplicated servers from the index with per-server
+// tool and resource counts. Results are sorted by server name.
+func (i *CapabilityIndex) ListServers() []ServerStats {
+	if i == nil {
+		return nil
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	seen := make(map[string]*ServerStats)
+	for _, servers := range i.tools {
+		for _, srv := range servers {
+			stats, ok := seen[srv.ID]
+			if !ok {
+				clone := cloneServerRecord(srv)
+				stats = &ServerStats{Record: clone}
+				seen[srv.ID] = stats
+			}
+			stats.ToolCount++
+		}
+	}
+	for _, servers := range i.resources {
+		for _, srv := range servers {
+			stats, ok := seen[srv.ID]
+			if !ok {
+				clone := cloneServerRecord(srv)
+				stats = &ServerStats{Record: clone}
+				seen[srv.ID] = stats
+			}
+			stats.ResourceCount++
+		}
+	}
+
+	result := make([]ServerStats, 0, len(seen))
+	for _, stats := range seen {
+		result = append(result, *stats)
+	}
+	sort.Slice(result, func(a, b int) bool {
+		return result[a].Record.Name < result[b].Record.Name
+	})
+	return result
+}
+
 func upsertServer(servers []types.ServerRecord, server types.ServerRecord) []types.ServerRecord {
 	for idx := range servers {
 		if servers[idx].ID == server.ID {
