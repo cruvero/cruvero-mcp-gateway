@@ -1,4 +1,4 @@
-.PHONY: build test lint vet staticcheck govulncheck gosec dupl godoc-check quality coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-size docker-run clean
+.PHONY: build test lint vet staticcheck govulncheck gosec dupl godoc-check quality coverage coverage-check test-integration test-security test-load chart-lint chart-render-base chart-render-dev chart-render-staging chart-render-prod chart-validate migrate-up migrate-down docker-build docker-size docker-run dev-serve dev-smoke clean
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -7,6 +7,12 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.bui
 
 build:
 	go build -trimpath -ldflags="$(LDFLAGS)" -o bin/mcpgw ./cmd/mcpgw
+
+dev-serve:
+	./scripts/dev-run.sh
+
+dev-smoke:
+	./scripts/dev-smoke.sh
 
 test:
 	go test -race -coverprofile=coverage.out ./...

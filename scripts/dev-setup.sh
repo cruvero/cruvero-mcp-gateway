@@ -3,13 +3,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CERT_DIR="${CERT_DIR:-/certs}"
 
 echo "=== MCP Gateway Dev Setup ==="
 
-# 1. Generate certificates.
+# 1. Trust the local CA inside the devcontainer.
 echo ""
-echo "--- Generating dev certificates ---"
-"$SCRIPT_DIR/gen-dev-certs.sh"
+echo "--- Trusting local development CA ---"
+if [ -f "$CERT_DIR/ca.crt" ]; then
+  sudo install -m 0644 "$CERT_DIR/ca.crt" /usr/local/share/ca-certificates/mcpgw-dev-ca.crt
+  sudo update-ca-certificates >/dev/null
+  echo "Trusted $CERT_DIR/ca.crt"
+else
+  echo "CA certificate not found at $CERT_DIR/ca.crt; skipping trust update."
+fi
 
 # 2. Wait for Postgres (skip gracefully if pg_isready is unavailable or DB is unreachable).
 echo ""
@@ -38,42 +45,29 @@ else
   echo "pg_isready not available or MCPGW_DB_URL not set, skipping Postgres check."
 fi
 
-# 4. Generate session key if not set.
+# 4. Build binaries.
 echo ""
-echo "--- Checking session key ---"
-if [ -z "${MCPGW_ADMIN_SESSION_KEY:-}" ]; then
-  GENERATED_KEY=$(openssl rand -hex 32)
-  echo "Generated session key (set MCPGW_ADMIN_SESSION_KEY to persist)."
-else
-  GENERATED_KEY="$MCPGW_ADMIN_SESSION_KEY"
-  echo "MCPGW_ADMIN_SESSION_KEY already set."
-fi
-
-# 5. Build binary.
-echo ""
-echo "--- Building mcpgw binary ---"
+echo "--- Building local binaries ---"
 mkdir -p "$PROJECT_DIR/bin"
 (cd "$PROJECT_DIR" && go build -o ./bin/mcpgw ./cmd/mcpgw)
+(cd "$PROJECT_DIR" && go build -o ./bin/mock-mcp-backend ./cmd/mock-mcp-backend)
 echo "Binary built at $PROJECT_DIR/bin/mcpgw"
+echo "Binary built at $PROJECT_DIR/bin/mock-mcp-backend"
 
-# 6. Print environment summary.
-CERT_DIR="${CERT_DIR:-./certs}"
+# 5. Print environment summary.
 echo ""
 echo "=== Dev Environment Ready ==="
 echo ""
-echo "Export these environment variables to run the gateway:"
+echo "Gateway URL:  https://gateway.localhost:8443"
+echo "Keycloak URL: https://keycloak.localhost:8444"
 echo ""
-echo "  export MCPGW_DB_URL=\"${MCPGW_DB_URL:-postgres://mcpgw:mcpgw@localhost:5432/mcpgw?sslmode=disable}\""
-echo "  export MCPGW_TLS_CERT=\"$CERT_DIR/server.crt\""
-echo "  export MCPGW_TLS_KEY=\"$CERT_DIR/server.key\""
-echo "  export MCPGW_TLS_CA=\"$CERT_DIR/ca.crt\""
-echo "  export MCPGW_LOG_FORMAT=\"text\""
-echo "  export MCPGW_LOG_LEVEL=\"debug\""
-echo "  export MCPGW_ADMIN_ENABLED=\"true\""
-echo "  export MCPGW_ADMIN_DEV_MODE=\"true\""
-echo "  export MCPGW_ADMIN_SESSION_KEY=\"$GENERATED_KEY\""
+echo "Seeded Keycloak users:"
+echo "  dev-admin / dev-admin"
+echo "  dev-user  / dev-user"
 echo ""
-echo "Then start the gateway:"
+echo "Start the standalone gateway inside the devcontainer:"
+echo "  ./scripts/dev-run.sh"
 echo ""
-echo "  ./bin/mcpgw serve"
+echo "Run the local smoke check once the gateway is up:"
+echo "  ./scripts/dev-smoke.sh"
 echo ""
