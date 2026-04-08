@@ -47,6 +47,9 @@ type Service struct {
 	publisher           LifecycleEventPublisher
 	broadcaster         Broadcaster
 
+	toolLister      ToolLister
+	capabilityIndex *CapabilityIndex
+
 	mu                sync.RWMutex
 	spiffeAllowList   []string
 	settingsVersion   int64
@@ -108,6 +111,22 @@ func (s *Service) SetClassificationStore(classificationStore store.ToolClassific
 		return
 	}
 	s.classificationStore = classificationStore
+}
+
+// SetToolLister sets an optional ToolLister used by heartbeat capability refresh.
+func (s *Service) SetToolLister(lister ToolLister) {
+	if s == nil {
+		return
+	}
+	s.toolLister = lister
+}
+
+// SetCapabilityIndex sets the capability index used by heartbeat capability refresh.
+func (s *Service) SetCapabilityIndex(index *CapabilityIndex) {
+	if s == nil {
+		return
+	}
+	s.capabilityIndex = index
 }
 
 // SyncClassifications reconciles tool classifications for all provided servers.

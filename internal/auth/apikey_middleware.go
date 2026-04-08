@@ -27,12 +27,16 @@ func APIKeyMiddleware(store store.APIKeyStore, logger *slog.Logger) func(http.Ha
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id, statusCode, errMsg := v.validate(r)
+			id, serverScope, statusCode, errMsg := v.validate(r)
 			if id == nil {
 				writeAuthJSONError(w, statusCode, errMsg)
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(identity.WithIdentity(r.Context(), id)))
+			ctx := identity.WithIdentity(r.Context(), id)
+			if len(serverScope) > 0 {
+				ctx = ContextWithServerScope(ctx, serverScope)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -42,19 +46,19 @@ type apiKeyValidator struct {
 	logger *slog.Logger
 }
 
-func (v *apiKeyValidator) validate(r *http.Request) (*identity.Identity, int, string) {
+func (v *apiKeyValidator) validate(r *http.Request) (*identity.Identity, []string, int, string) {
 	key, ok := extractAPIKey(r.Header.Get("Authorization"), r.Header.Get("X-API-Key"))
 	if !ok {
-		return nil, http.StatusUnauthorized, "missing or invalid api key"
+		return nil, nil, http.StatusUnauthorized, "missing or invalid api key"
 	}
 
 	record, err := v.lookupRecord(r, key)
 	if err != nil {
-		return nil, http.StatusUnauthorized, err.Error()
+		return nil, nil, http.StatusUnauthorized, err.Error()
 	}
 
 	if statusCode, msg, ok := v.verifyRecord(key, record); !ok {
-		return nil, statusCode, msg
+		return nil, nil, statusCode, msg
 	}
 
 	policyProfile := record.PolicyProfile
@@ -71,7 +75,7 @@ func (v *apiKeyValidator) validate(r *http.Request) (*identity.Identity, int, st
 			"policy_profile": policyProfile,
 		},
 	}
-	return id, 0, ""
+	return id, append([]string(nil), record.ServerScope...), 0, ""
 }
 
 func (v *apiKeyValidator) lookupRecord(r *http.Request, key string) (*types.APIKey, error) {

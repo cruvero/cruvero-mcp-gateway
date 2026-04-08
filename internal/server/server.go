@@ -45,6 +45,7 @@ type Server struct {
 	profileResolver     ratelimit.ProfileResolver
 	proxyAuthMW         func(http.Handler) http.Handler
 	proxyPolicyMW       func(http.Handler) http.Handler
+	serverScopeMW       func(http.Handler) http.Handler
 	cleanupInterval     time.Duration
 	cleanupMaxIdleTTL   time.Duration
 	eventsClient        *events.Client
@@ -436,11 +437,38 @@ func (s *Server) MountProxyRoutes(proxyHandler http.Handler) {
 		if s.proxyAuthMW != nil {
 			r.Use(s.proxyAuthMW)
 		}
+		if s.serverScopeMW != nil {
+			r.Use(s.serverScopeMW)
+		}
 		r.Use(ratelimit.RateLimitMiddleware(s.rateLimitBackend, s.profileResolver, s.logger))
 		if s.proxyPolicyMW != nil {
 			r.Use(s.proxyPolicyMW)
 		}
 		r.Mount("/", proxyHandler)
+	})
+}
+
+// MountPerServerRoutes mounts per-server MCP proxy endpoints at
+// /mcp/servers/{serverName}/ with the same auth/rate-limit/policy middleware
+// chain used by the unified /mcp endpoint.
+func (s *Server) MountPerServerRoutes(handler http.Handler) {
+	if s == nil || handler == nil {
+		return
+	}
+
+	s.router.Route("/mcp/servers/{serverName}", func(r chi.Router) {
+		if s.proxyAuthMW != nil {
+			r.Use(s.proxyAuthMW)
+		}
+		if s.serverScopeMW != nil {
+			r.Use(s.serverScopeMW)
+		}
+		r.Use(ratelimit.RateLimitMiddleware(s.rateLimitBackend, s.profileResolver, s.logger))
+		if s.proxyPolicyMW != nil {
+			r.Use(s.proxyPolicyMW)
+		}
+		r.HandleFunc("/*", handler.ServeHTTP)
+		r.HandleFunc("/", handler.ServeHTTP)
 	})
 }
 
@@ -496,6 +524,24 @@ func (s *Server) MountAPIKeyAPI(handler http.Handler) {
 	})
 }
 
+// MountDiscoveryRoutes mounts the well-known discovery document and server
+// listing endpoints. The discovery doc at /.well-known/mcp.json is only
+// mounted when cfg.WellKnownEnabled is true. The server list at /mcp/servers
+// is always mounted when a non-nil handler is provided.
+func (s *Server) MountDiscoveryRoutes(discoveryDoc http.Handler, serverList http.Handler) {
+	if s == nil {
+		return
+	}
+
+	if discoveryDoc != nil && s.cfg != nil && s.cfg.WellKnownEnabled {
+		s.router.Method(http.MethodGet, "/.well-known/mcp.json", discoveryDoc)
+	}
+
+	if serverList != nil {
+		s.router.Method(http.MethodGet, "/mcp/servers", serverList)
+	}
+}
+
 // SetRateLimitBackend replaces the default memory rate-limit backend.
 // Call before MountProxyRoutes.
 func (s *Server) SetRateLimitBackend(backend ratelimit.LimiterBackend) {
@@ -511,6 +557,15 @@ func (s *Server) SetProxyAuthMiddleware(middleware func(http.Handler) http.Handl
 		return
 	}
 	s.proxyAuthMW = middleware
+}
+
+// SetServerScopeMiddleware configures server scope enforcement middleware for
+// the /mcp chain. It runs after auth and before rate-limiting/policy.
+func (s *Server) SetServerScopeMiddleware(middleware func(http.Handler) http.Handler) {
+	if s == nil {
+		return
+	}
+	s.serverScopeMW = middleware
 }
 
 // SetProxyPolicyMiddleware configures policy middleware for the /mcp chain.

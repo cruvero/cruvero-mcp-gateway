@@ -36,11 +36,12 @@ func (h *APIKeyAPIHandler) Routes() http.Handler {
 }
 
 type createAPIKeyAPIRequest struct {
-	Name      string   `json:"name"`
-	Scopes    []string `json:"scopes"`
-	Expires   string   `json:"expires"`
-	ClientID  string   `json:"client_id"`
-	Profile   string   `json:"profile"`
+	Name        string   `json:"name"`
+	Scopes      []string `json:"scopes"`
+	Expires     string   `json:"expires"`
+	ClientID    string   `json:"client_id"`
+	Profile     string   `json:"profile"`
+	ServerScope []string `json:"server_scope"`
 }
 
 type createAPIKeyAPIResponse struct {
@@ -49,6 +50,7 @@ type createAPIKeyAPIResponse struct {
 	ClientID      string   `json:"client_id"`
 	Scopes        []string `json:"scopes"`
 	PolicyProfile string   `json:"profile"`
+	ServerScope   []string `json:"server_scope"`
 	ExpiresAt     *string  `json:"expires_at"`
 	CreatedAt     string   `json:"created_at"`
 	APIKey        string   `json:"api_key"`
@@ -60,6 +62,7 @@ type apiKeyView struct {
 	ClientID      string   `json:"client_id"`
 	Scopes        []string `json:"scopes"`
 	PolicyProfile string   `json:"profile"`
+	ServerScope   []string `json:"server_scope"`
 	ExpiresAt     *string  `json:"expires_at"`
 	CreatedAt     string   `json:"created_at"`
 }
@@ -108,11 +111,14 @@ func (h *APIKeyAPIHandler) handleCreate(w http.ResponseWriter, r *http.Request) 
 		profile = "default"
 	}
 
+	serverScope := dedupeScopes(req.ServerScope)
+
 	record := &types.APIKey{
 		Name:          name,
 		ClientID:      clientID,
 		Scopes:        scopes,
 		PolicyProfile: profile,
+		ServerScope:   serverScope,
 		ExpiresAt:     expiresAt,
 		KeyLookupHash: lookupHash,
 		KeyBcryptHash: bcryptHash,
@@ -136,6 +142,7 @@ func (h *APIKeyAPIHandler) handleCreate(w http.ResponseWriter, r *http.Request) 
 		ClientID:      record.ClientID,
 		Scopes:        record.Scopes,
 		PolicyProfile: record.PolicyProfile,
+		ServerScope:   record.ServerScope,
 		ExpiresAt:     formatTimePtr(record.ExpiresAt),
 		CreatedAt:     record.CreatedAt.UTC().Format(time.RFC3339),
 		APIKey:        plaintext,
@@ -160,6 +167,7 @@ func (h *APIKeyAPIHandler) handleList(w http.ResponseWriter, r *http.Request) {
 			ClientID:      key.ClientID,
 			Scopes:        key.Scopes,
 			PolicyProfile: key.PolicyProfile,
+			ServerScope:   key.ServerScope,
 			ExpiresAt:     formatTimePtr(key.ExpiresAt),
 			CreatedAt:     key.CreatedAt.UTC().Format(time.RFC3339),
 		})

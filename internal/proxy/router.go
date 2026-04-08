@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cruvero/mcp-gateway/internal/auth"
 	"github.com/cruvero/mcp-gateway/internal/config"
 	"github.com/cruvero/mcp-gateway/internal/ratelimit"
 	"github.com/cruvero/mcp-gateway/internal/registration"
@@ -25,6 +26,8 @@ import (
 var (
 	// ErrToolNotFound indicates no routable backend was found for a tool.
 	ErrToolNotFound = errors.New("tool not found")
+	// ErrServerScopeDenied indicates the caller's server scope does not include the target server.
+	ErrServerScopeDenied = errors.New("server scope denied")
 )
 
 // ServerRateLimitError indicates a request was rejected by per-server rate limiting.
@@ -39,9 +42,15 @@ func (e *ServerRateLimitError) Error() string {
 	return fmt.Sprintf("server %s rate limit exceeded (retry after %s)", e.ServerName, e.RetryAfter)
 }
 
+// RoutingRequest carries per-request context for routing decisions.
+type RoutingRequest struct {
+	SessionID string
+	ToolName  string
+}
+
 // RoutingStrategy selects one backend candidate for a routed request.
 type RoutingStrategy interface {
-	Select(candidates []types.ServerRecord) *types.ServerRecord
+	Select(ctx context.Context, candidates []types.ServerRecord, req *RoutingRequest) (*types.ServerRecord, error)
 }
 
 // RoundRobinStrategy selects backends in modulo order.
@@ -49,14 +58,14 @@ type RoundRobinStrategy struct {
 	counter atomic.Uint64
 }
 
-// Select chooses the next backend candidate.
-func (s *RoundRobinStrategy) Select(candidates []types.ServerRecord) *types.ServerRecord {
+// Select chooses the next backend candidate using round-robin.
+func (s *RoundRobinStrategy) Select(_ context.Context, candidates []types.ServerRecord, _ *RoutingRequest) (*types.ServerRecord, error) {
 	if len(candidates) == 0 {
-		return nil
+		return nil, nil
 	}
 	next := s.counter.Add(1) - 1
 	selected := candidates[next%uint64(len(candidates))]
-	return &selected
+	return &selected, nil
 }
 
 // Router performs tool-call routing to backend servers.
@@ -64,9 +73,10 @@ type Router struct {
 	index   *registration.CapabilityIndex
 	clients sync.Map // map[string]*resilience.ResilientClient
 
-	strategy RoutingStrategy
-	logger   *slog.Logger
-	limiter  ratelimit.LimiterBackend
+	strategy   RoutingStrategy
+	logger     *slog.Logger
+	limiter    ratelimit.LimiterBackend
+	nsResolver *NamespaceResolver
 
 	tlsConfig      *tls.Config
 	backendTimeout time.Duration
@@ -121,6 +131,14 @@ func (r *Router) SetLimiter(lb ratelimit.LimiterBackend) {
 	}
 }
 
+// SetNamespaceResolver configures the namespace resolver for federated name
+// resolution in tools/call routing.
+func (r *Router) SetNamespaceResolver(ns *NamespaceResolver) {
+	if r != nil {
+		r.nsResolver = ns
+	}
+}
+
 // Route resolves a tool to a backend and forwards tools/call.
 func (r *Router) Route(ctx context.Context, toolName string, args map[string]any) (*ToolResult, error) {
 	start := time.Now()
@@ -147,7 +165,11 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 		return nil, fmt.Errorf("route tool: %w: %s", ErrToolNotFound, name)
 	}
 
-	selected := r.strategy.Select(candidates)
+	selected, err := r.strategy.Select(ctx, candidates, &RoutingRequest{ToolName: name})
+	if err != nil {
+		servermetrics.ObserveToolCall(name, backendLabel, "routing_error", time.Since(start))
+		return nil, fmt.Errorf("route tool: strategy select: %w", err)
+	}
 	if selected == nil {
 		servermetrics.ObserveToolCall(name, backendLabel, "not_found", time.Since(start))
 		return nil, fmt.Errorf("route tool: %w: %s", ErrToolNotFound, name)
@@ -157,6 +179,11 @@ func (r *Router) Route(ctx context.Context, toolName string, args map[string]any
 		backendLabel = strings.TrimSpace(selected.ID)
 	}
 	span.SetAttributes(attribute.String("backend.name", backendLabel))
+
+	if !auth.CheckServerScope(ctx, selected.Name) {
+		servermetrics.ObserveToolCall(name, backendLabel, "scope_denied", time.Since(start))
+		return nil, fmt.Errorf("route tool: %w: server %s not in scope", ErrServerScopeDenied, selected.Name)
+	}
 
 	if err := r.checkServerRateLimit(ctx, selected); err != nil {
 		servermetrics.ObserveToolCall(name, backendLabel, "rate_limited", time.Since(start))
@@ -200,10 +227,21 @@ func matchesServerHint(actual, hint string) bool {
 // resolveFederatedName maps a federated tool name back to a raw backend tool
 // name and an optional server hint. It supports both the new compact format
 // (<displayName>.<rawTool>) and the legacy mcp.<server>.<tool> format.
+// When a NamespaceResolver is configured, it is tried first.
 func (r *Router) resolveFederatedName(name string) (rawToolName, serverHint string) {
 	// Direct index match first (covers deduped names like "k8s.list_pods").
 	if candidates := r.index.LookupTool(name); len(candidates) > 0 {
 		return name, ""
+	}
+
+	// Try namespace resolver when configured and not in reject mode.
+	if r.nsResolver != nil && r.nsResolver.Mode() != NamespaceModeReject {
+		hint, bare := r.nsResolver.ResolveNamespace(name)
+		if hint != "" && bare != "" {
+			if candidates := r.index.LookupTool(bare); len(candidates) > 0 {
+				return bare, hint
+			}
+		}
 	}
 
 	// New format: <displayName>.<rawTool> — strip first segment as server hint.

@@ -42,6 +42,7 @@ type HeartbeatResponse struct {
 	LeaseEpoch        int64                       `json:"lease_epoch"`
 	SyncState         types.RegistrationSyncState `json:"sync_state"`
 	Action            string                      `json:"action"`
+	CapabilityHash    string                      `json:"capability_hash,omitempty"`
 	ConfigVersion     int64                       `json:"config_version"`
 	EffectiveSettings map[string]any              `json:"effective_settings"`
 }
@@ -72,6 +73,7 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 			LeaseEpoch:        record.LeaseEpoch,
 			SyncState:         record.SyncState,
 			Action:            action,
+			CapabilityHash:    record.CapabilityHash,
 			ConfigVersion:     configVersion,
 			EffectiveSettings: effectiveSettings,
 		}, nil
@@ -90,6 +92,26 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 		return nil, fmt.Errorf("heartbeat: update heartbeat: %w", err)
 	}
 
+	// Trigger capability refresh when the backend reports a changed hash
+	// and the feature is enabled. Failures are logged but never fail the
+	// heartbeat itself.
+	capabilityHash := record.CapabilityHash
+	reqHash := strings.TrimSpace(req.CapabilityHash)
+	if reqHash != "" && reqHash != strings.TrimSpace(record.CapabilityHash) &&
+		s.config != nil && s.config.CapabilityRefreshEnabled && s.toolLister != nil {
+		if _, refreshErr := RefreshCapabilities(
+			ctx, *record, reqHash, s.capabilityIndex,
+			s.serverStore, s.broadcaster, s.toolLister, s.logger,
+		); refreshErr != nil {
+			s.logger.WarnContext(ctx, "heartbeat: capability refresh failed",
+				"server_id", record.ID,
+				"error", refreshErr.Error(),
+			)
+		} else {
+			capabilityHash = reqHash
+		}
+	}
+
 	syncState := record.SyncState
 	if syncState == "" {
 		syncState = types.SyncStateUnacked
@@ -100,6 +122,7 @@ func (s *Service) Heartbeat(ctx context.Context, caller *identitypkg.Identity, i
 		LeaseEpoch:        record.LeaseEpoch,
 		SyncState:         syncState,
 		Action:            action,
+		CapabilityHash:    capabilityHash,
 		ConfigVersion:     configVersion,
 		EffectiveSettings: effectiveSettings,
 	}, nil

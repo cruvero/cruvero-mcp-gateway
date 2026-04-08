@@ -95,6 +95,27 @@ func (e *HybridEngine) Remove(key string) {
 	e.vector.Remove(key)
 }
 
+// UpdatePartition updates documents for a server in both engines.
+// Vector failures are logged but do not fail the operation.
+func (e *HybridEngine) UpdatePartition(ctx context.Context, serverID string, docs []Document) error {
+	if err := e.bm25.UpdatePartition(serverID, docs); err != nil {
+		return err
+	}
+	if err := e.vector.UpdatePartition(ctx, serverID, docs); err != nil {
+		e.vectorIndexFallbacks.Add(1)
+		slog.Warn("hybrid engine: vector partition update failed",
+			slog.String("server_id", serverID),
+			slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+// RemovePartition removes all documents for a server from both engines.
+func (e *HybridEngine) RemovePartition(serverID string) {
+	e.bm25.RemovePartition(serverID)
+	e.vector.RemovePartition(serverID)
+}
+
 // Ready reports whether both engines are operational. If only vector is
 // down, the engine is still partially operational (handled at readyz level).
 func (e *HybridEngine) Ready() bool {
