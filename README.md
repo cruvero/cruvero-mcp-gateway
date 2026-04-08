@@ -6,16 +6,24 @@
 [![License](https://img.shields.io/github/license/cruvero/cruvero-mcp-gateway)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/cruvero/cruvero-mcp-gateway?include_prereleases&sort=semver)](https://github.com/cruvero/cruvero-mcp-gateway/releases)
 
-A pure-Go mTLS reverse proxy that acts as a unified gateway for MCP (Model Context Protocol) servers on Kubernetes. The gateway auto-discovers backend MCP servers via a registration handshake, aggregates their tool catalogs into a single MCP-compliant endpoint, and proxies requests with rate limiting, circuit breakers, and per-tool policy enforcement. Clients connect to one gateway instead of managing individual backends.
+A pure-Go mTLS reverse proxy that acts as a unified gateway for MCP (Model Context Protocol) servers on Kubernetes. The gateway auto-discovers backend MCP servers via a registration handshake, aggregates their tool catalogs, and proxies requests with rate limiting, circuit breakers, and per-tool policy enforcement. Clients connect to one gateway instead of managing individual backends.
 
-The gateway operates in two modes: **standalone** with only PostgreSQL as a dependency, or **Cruvero-integrated** where a NATS event bus synchronizes state with the Cruvero control plane. Both modes use the same binary and configuration surface -- Cruvero features activate only when `MCPGW_CRUVERO_ENABLED=true`.
+The gateway exposes **two endpoint modes** simultaneously:
+
+- **Unified `/mcp/`** -- aggregates tools from every active backend into a single MCP endpoint. Used by LLM agents and the Cruvero platform.
+- **Per-server `/mcp/servers/{name}/`** -- exposes each registered backend as an individual MCP-compliant endpoint with bare tool names. Used by IDE clients (Copilot, Cursor, Claude Code, Windsurf) that expect one URL per server. An auto-discovery document at `/.well-known/mcp.json` and a JSON listing at `GET /mcp/servers` enable zero-config IDE integration.
+
+The gateway operates in two deployment modes: **standalone** with only PostgreSQL as a dependency, or **Cruvero-integrated** where a NATS event bus synchronizes state with the Cruvero control plane. Both modes use the same binary and configuration surface -- Cruvero features activate only when `MCPGW_CRUVERO_ENABLED=true`.
 
 ## Key Features
 
 **Core**
 - MCP-native reverse proxy with unified tool catalog aggregation
+- **Per-server virtual endpoints** at `/mcp/servers/{name}/` for IDE-friendly individual MCP connections
+- **Auto-discovery document** at `/.well-known/mcp.json` and server listing at `GET /mcp/servers`
 - Auto-registration with heartbeat keepalive and server state machine
-- Federated tool routing (`mcp.<server>.<tool>`) with round-robin load balancing
+- Federated tool routing with round-robin or **session-affinity** routing (rendezvous hashing on `Mcp-Session-Id`)
+- **Tool namespace isolation** with three modes (`reject`, `namespace_always`, `namespace_on_conflict`) for collision-free fleet scaling
 - Resource routing by URI prefix across backends
 - Progressive tool discovery with pluggable search engines (BM25, vector, hybrid)
 - LLM-driven orchestrator meta-tool for multi-step tool planning and execution
@@ -23,6 +31,7 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 **Security**
 - mTLS with SPIFFE identity extraction
 - Dual auth: API keys (CLI/headless) + OIDC JWT (service-to-service)
+- **Server-scoped API keys** -- restrict keys to specific backend servers via `--server-scope`
 - OAuth2 Device Code flow for IDE authentication
 - Per-tool allow/deny policies with risk classification (read_only, write, destructive)
 - Per-user tool permissions with OIDC auto-registration
@@ -38,9 +47,10 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 
 **Search & Discovery**
 - Progressive tool discovery -- LLMs see meta-tools instead of the full catalog
-- BM25 full-text search engine with TF-IDF ranking
-- Vector search engine with in-process ONNX embedder (all-MiniLM-L6-v2)
+- BM25 full-text search engine with TF-IDF ranking, **partitioned per server** for incremental reindex
+- Vector search engine with in-process ONNX embedder (all-MiniLM-L6-v2) and **LRU embedding cache** keyed by content hash
 - Hybrid search combining BM25 + vector via Reciprocal Rank Fusion
+- **Realtime capability refresh** -- heartbeat hash detection + push endpoint trigger incremental search reindex when tool catalogs change
 - Synonym expansion for search query augmentation
 - Dynamic tool activation with per-session caps
 
@@ -64,19 +74,25 @@ The gateway operates in two modes: **standalone** with only PostgreSQL as a depe
 ```mermaid
 graph TB
     subgraph Clients
-        IDE["IDE / Claude Code<br/>(stdio)"]
+        IDE["IDE Clients<br/>(Copilot · Cursor · Claude Code)<br/>per-server URLs"]
+        LLM["LLM Agents<br/>(unified /mcp/)"]
         Platform["Cruvero Platform<br/>(HTTPS)"]
         CLI["CLI / Scripts<br/>(HTTPS)"]
     end
 
     subgraph Gateway["MCP Gateway :8443"]
+        Discovery[".well-known/mcp.json<br/>+ GET /mcp/servers"]
+        Virtual["Virtual Server Handler<br/>/mcp/servers/{name}/"]
+        Unified["Unified Endpoint<br/>/mcp/ (aggregated)"]
         Auth["Auth Layer<br/>mTLS · OIDC · API Key"]
+        Scope["Server Scope Middleware<br/>(scoped API keys)"]
         RL["Rate Limiter<br/>Memory · Dragonfly · NATS"]
         Policy["Policy Engine<br/>Classification · Audit"]
-        Proxy["MCP Proxy<br/>Tool Routing · Discovery"]
+        Proxy["MCP Proxy<br/>Routing · Caching · Namespace"]
+        Refresh["Capability Refresh<br/>Heartbeat hash + Push"]
         Admin["Admin Dashboard<br/>HTMX · OIDC Sessions"]
         Orch["Orchestrator<br/>LLM Plan & Execute"]
-        Search["Search Engine<br/>BM25 · Vector · Hybrid"]
+        Search["Search Engine<br/>BM25 · Vector · Hybrid<br/>(partitioned + LRU cache)"]
     end
 
     subgraph Storage
@@ -91,14 +107,20 @@ graph TB
         MCP3["MCP Server<br/>GitHub"]
     end
 
-    IDE --> Gateway
+    IDE --> Discovery
+    IDE --> Virtual
+    LLM --> Unified
     Platform --> Gateway
     CLI --> Gateway
 
-    Auth --> RL --> Policy --> Proxy
+    Virtual --> Auth
+    Unified --> Auth
+    Auth --> Scope --> RL --> Policy --> Proxy
     Proxy --> Search
     Proxy --> Orch
+    Proxy --> Refresh
     Proxy --> MCP1 & MCP2 & MCP3
+    Refresh --> Search
 
     Gateway --> PG
     Gateway -.-> NATS
@@ -317,7 +339,7 @@ Sync policies:
 | `mcpgw server list` | List registered MCP servers |
 | `mcpgw server inspect <id-or-name>` | Show server details |
 | `mcpgw server deregister <id-or-name>` | Remove a server |
-| `mcpgw apikey create` | Create a new API key |
+| `mcpgw apikey create` | Create a new API key (supports `--server-scope` to restrict to specific backends) |
 | `mcpgw apikey list` | List API keys |
 | `mcpgw apikey revoke <id>` | Revoke an API key |
 | `mcpgw policy list` | List policy profiles |
@@ -416,6 +438,37 @@ All configuration is via environment variables with the `MCPGW_` prefix. No conf
 | `MCPGW_ONNX_RUNTIME_PATH` | `/usr/lib/libonnxruntime.so` | If vector/hybrid | Path to ONNX Runtime shared library |
 | `MCPGW_ONNX_MODEL_PATH` | `/models/all-MiniLM-L6-v2.onnx` | If vector/hybrid | Path to ONNX embedding model |
 | `MCPGW_TOKENIZER_PATH` | `/models/tokenizer.json` | If vector/hybrid | Path to HuggingFace tokenizer |
+| `MCPGW_EMBEDDING_CACHE_MAX_SIZE` | `10000` | No | LRU cache size for ONNX embeddings (avoids re-embedding unchanged tools on incremental reindex) |
+
+### Per-Server Endpoints & Discovery
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_PER_SERVER_ENDPOINTS` | `true` | No | Mount per-server virtual endpoints at `/mcp/servers/{name}/` |
+| `MCPGW_WELL_KNOWN_ENABLED` | `true` | No | Serve `/.well-known/mcp.json` discovery document |
+| `MCPGW_WELL_KNOWN_CACHE_TTL` | `5s` | No | TTL for the discovery document cache |
+| `MCPGW_GATEWAY_BASE_URL` | -- | No | Public base URL used in discovery URLs (falls back to `X-Forwarded-Host` then request `Host`) |
+
+### Capability Refresh
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_CAPABILITY_REFRESH_ENABLED` | `true` | No | Compare `capabilities_hash` on each heartbeat and trigger inline refresh on mismatch |
+| `MCPGW_CAPABILITY_PUSH_ENABLED` | `true` | No | Enable `POST /v1/registrations/{id}/capabilities` push endpoint (10 req/min per server) |
+
+### Server-Scoped API Keys
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_SERVER_SCOPE_ENFORCEMENT` | `true` | No | Enforce `server_scope` restrictions on API keys; empty scope = gateway-wide access |
+
+### Routing & Namespacing
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `MCPGW_DEFAULT_ROUTING_STRATEGY` | `round_robin` | No | Default routing strategy: `round_robin` or `session_affinity` (per-server override via registration) |
+| `MCPGW_TOOL_NAMESPACE_MODE` | `reject` | No | Tool name collision policy: `reject`, `namespace_always`, or `namespace_on_conflict` |
+| `MCPGW_NAMESPACE_SEPARATOR` | `.` | No | Separator character for namespaced tool names |
 
 ### Orchestrator
 
@@ -567,7 +620,31 @@ All logs use Go's `slog` package. Configure format (`json`/`text`) via `MCPGW_LO
 
 ## IDE Integration
 
-The gateway exposes a single MCP endpoint. IDEs connect via the `mcpgw mcp-proxy` stdio bridge, which translates between stdin/stdout JSON-RPC and the gateway's HTTP transport with automatic token management.
+The gateway supports two integration patterns for IDE clients:
+
+1. **Per-server virtual endpoints** (recommended) -- IDE clients connect directly to `/mcp/servers/{name}/` URLs. Each backend appears as an individual MCP server in the IDE's configuration. Discoverable via `/.well-known/mcp.json`. Works with any client that supports HTTP MCP transport.
+2. **Stdio bridge** (legacy / unified) -- IDEs invoke the `mcpgw mcp-proxy` binary, which translates stdin/stdout JSON-RPC to the gateway's unified `/mcp/` endpoint with automatic token management.
+
+### Discovering Available Servers
+
+Query the discovery document or server listing to find available per-server URLs:
+
+```bash
+# Discovery document (zero-config IDE integration)
+curl https://gateway.example.com/.well-known/mcp.json
+# {
+#   "mcpServers": {
+#     "todoist":  {"url": "https://gateway.example.com/mcp/servers/todoist/",  "name": "todoist",  "version": "1.2.0", "status": "active"},
+#     "github":   {"url": "https://gateway.example.com/mcp/servers/github/",   "name": "github",   "version": "3.0.1", "status": "active"}
+#   }
+# }
+
+# Authenticated listing with tool/resource counts
+curl -H "X-API-Key: $MCPGW_API_KEY" https://gateway.example.com/mcp/servers
+# [{"name":"todoist","url":"...","version":"1.2.0","status":"active","tool_count":8,"resource_count":2}, ...]
+```
+
+The discovery document is cached for `MCPGW_WELL_KNOWN_CACHE_TTL` (default 5s) and invalidated automatically when servers register or deregister.
 
 ### Token Lifespan
 
@@ -592,20 +669,28 @@ The `mcp-proxy` command reads stdin JSON-RPC, forwards to the gateway with autom
 
 ### Claude Code
 
-**Project-level** (`.claude/mcp.json` in your project root):
+**Per-server endpoints (recommended)** -- one IDE entry per backend, no stdio bridge required. Add to `.claude/mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "gateway": {
-      "command": "mcpgw",
-      "args": ["mcp-proxy", "--gateway-url", "https://gateway.example.com"]
+    "todoist": {
+      "url": "https://gateway.example.com/mcp/servers/todoist/",
+      "headers": {
+        "Authorization": "Bearer mcpgw_YOUR_API_KEY"
+      }
+    },
+    "github": {
+      "url": "https://gateway.example.com/mcp/servers/github/",
+      "headers": {
+        "Authorization": "Bearer mcpgw_YOUR_API_KEY"
+      }
     }
   }
 }
 ```
 
-**Global** (`~/.claude/mcp.json`):
+**Unified endpoint via stdio bridge** -- one IDE entry that exposes every active backend as federated tools. Add to `.claude/mcp.json` (project) or `~/.claude/mcp.json` (global):
 
 ```json
 {
@@ -620,7 +705,30 @@ The `mcp-proxy` command reads stdin JSON-RPC, forwards to the gateway with autom
 
 ### GitHub Copilot (VS Code)
 
-Add to `.vscode/mcp.json` in your project root:
+**Per-server endpoints (recommended)** -- add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "todoist": {
+      "type": "http",
+      "url": "https://gateway.example.com/mcp/servers/todoist/",
+      "headers": {
+        "Authorization": "Bearer mcpgw_YOUR_API_KEY"
+      }
+    },
+    "github": {
+      "type": "http",
+      "url": "https://gateway.example.com/mcp/servers/github/",
+      "headers": {
+        "Authorization": "Bearer mcpgw_YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+**Unified endpoint via stdio bridge**:
 
 ```json
 {
@@ -633,9 +741,22 @@ Add to `.vscode/mcp.json` in your project root:
 }
 ```
 
-### OpenAI Codex CLI
+### Cursor / Windsurf
 
-Add to your Codex MCP configuration:
+Cursor and Windsurf both support HTTP MCP servers. Add per-server entries to your IDE's MCP configuration (URLs from `/.well-known/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "todoist": {
+      "url": "https://gateway.example.com/mcp/servers/todoist/",
+      "headers": { "Authorization": "Bearer mcpgw_YOUR_API_KEY" }
+    }
+  }
+}
+```
+
+### OpenAI Codex CLI
 
 ```json
 {
@@ -647,6 +768,24 @@ Add to your Codex MCP configuration:
   }
 }
 ```
+
+### Server-Scoped API Keys
+
+For least-privilege access, create API keys restricted to specific backends:
+
+```bash
+# Key restricted to todoist + github only
+mcpgw apikey create \
+  --name frontend-team \
+  --scopes "tools:call,tools:list" \
+  --server-scope "todoist,github"
+
+# Requests to /mcp/servers/slack/ with this key return 403
+# Requests to /mcp/servers/todoist/ succeed
+# Requests to the unified /mcp/ endpoint are allowed for tools resolved to todoist or github only
+```
+
+Empty `--server-scope` (or omitting the flag) creates a gateway-wide key, preserving backward compatibility with existing keys.
 
 ### API Key Mode (Headless/CI)
 
@@ -663,28 +802,55 @@ curl -X POST https://gateway.example.com/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-### Federated Tool Routing
+### Federated Tool Routing (Unified Endpoint)
 
-The gateway federates all registered MCP servers behind a single endpoint. You do **not** need a separate IDE entry per backend -- one gateway entry exposes every active server's tools automatically.
+The unified `/mcp/` endpoint federates all registered MCP servers behind a single connection. One gateway entry exposes every active server's tools automatically -- ideal for LLM agents and the stdio bridge.
 
-Tools are namespaced using the pattern `mcp.<server-name>.<tool-name>`. When the IDE calls a federated tool, the gateway extracts the server name, looks up which backend exposes it, and forwards the request.
+Tools on the unified endpoint use the pattern `<server-name>.<tool-name>`. When a client calls a federated tool, the gateway extracts the server name, looks up which backend exposes it, and forwards the request.
 
-**Example**: With SonarQube, Kubernetes, Argo CD, and GitHub MCP servers registered on the gateway, the single config above gives the IDE access to all of their tools:
+**Example**: With SonarQube, Kubernetes, Argo CD, and GitHub MCP servers registered:
 
 | Federated Tool Name | Server | Description |
 |----------------------|--------|-------------|
-| `mcp.sonarqube.search_issues` | SonarQube | Search for code quality issues |
-| `mcp.sonarqube.get_quality_gate` | SonarQube | Get project quality gate status |
-| `mcp.k8s.list_pods` | Kubernetes | List pods in a namespace |
-| `mcp.k8s.get_logs` | Kubernetes | Stream container logs |
-| `mcp.argocd.list_applications` | Argo CD | List Argo CD applications |
-| `mcp.argocd.sync_application` | Argo CD | Trigger an application sync |
-| `mcp.github.search_code` | GitHub | Search code across repositories |
-| `mcp.github.list_pull_requests` | GitHub | List PRs for a repository |
+| `sonarqube.search_issues` | SonarQube | Search for code quality issues |
+| `sonarqube.get_quality_gate` | SonarQube | Get project quality gate status |
+| `k8s.list_pods` | Kubernetes | List pods in a namespace |
+| `k8s.get_logs` | Kubernetes | Stream container logs |
+| `argocd.list_applications` | Argo CD | List Argo CD applications |
+| `argocd.sync_application` | Argo CD | Trigger an application sync |
+| `github.search_code` | GitHub | Search code across repositories |
+| `github.list_pull_requests` | GitHub | List PRs for a repository |
 
 The gateway handles authentication, rate limiting, policy enforcement, and circuit breaking for all backends transparently. Backend servers must be registered and have `active` status to be routable -- manage server status via the admin dashboard or CLI (`mcpgw server list`).
 
-If multiple servers expose the same tool name, the gateway uses round-robin selection. Use the federated prefix (`mcp.<server>.`) to target a specific backend.
+> **Per-server endpoints** (`/mcp/servers/{name}/`) return **bare tool names** (no namespace prefix) since the scope is implicit in the URL. Use per-server endpoints for IDE clients; use the unified endpoint for LLM agents that benefit from a single tool catalog.
+
+### Tool Namespace Collisions
+
+When multiple backends register tools with the same name, behavior is controlled by `MCPGW_TOOL_NAMESPACE_MODE`:
+
+| Mode | Behavior on Unified Endpoint |
+|------|------------------------------|
+| `reject` (default) | Registration fails if a tool name conflicts with an existing one |
+| `namespace_always` | Every tool is prefixed: `<server>.<tool>` |
+| `namespace_on_conflict` | Only conflicting names are prefixed; unique names stay bare |
+
+Per-server endpoints are unaffected -- they always return bare names. The separator is configurable via `MCPGW_NAMESPACE_SEPARATOR` (default `.`).
+
+### Routing Strategies
+
+Each backend can opt into session-affinity routing for stateful workloads. The gateway uses **rendezvous (HRW) hashing** on the `Mcp-Session-Id` header to consistently map a session to the same replica. On replica removal, only sessions pinned to the removed replica redistribute.
+
+Set `routing_strategy: "session_affinity"` in the backend's registration request, or change the global default via `MCPGW_DEFAULT_ROUTING_STRATEGY=session_affinity`. Backends without a session ID header fall back to round-robin.
+
+### Realtime Capability Refresh
+
+When a backend's tool catalog changes, the gateway can refresh its in-memory `CapabilityIndex` and search indexes without a restart:
+
+- **Heartbeat hash detection** -- backends include a `capabilities_hash` (SHA-256 of their serialized catalog) in heartbeat payloads. On mismatch, the gateway fetches the updated catalog inline and reindexes only that server's partition (BM25 + vector). Embeddings for unchanged tools are reused via the LRU cache. Enabled by default; disable with `MCPGW_CAPABILITY_REFRESH_ENABLED=false`.
+- **Push refresh endpoint** -- fleet servers can `POST /v1/registrations/{id}/capabilities` (mTLS, 10 req/min per server) to trigger immediate refresh without waiting for the next heartbeat. Enabled by default; disable with `MCPGW_CAPABILITY_PUSH_ENABLED=false`.
+
+Capability changes broadcast a `server.capabilities_changed` event so other gateway pods stay synchronized.
 
 ## Deployment Modes
 
@@ -728,7 +894,11 @@ NATS subject pattern: `mcpgw.{gateway_id}.{category}.{scope}` -- categories: `ev
 
 | Endpoint Group | Path | Auth | Description |
 |---------------|------|------|-------------|
-| MCP Protocol | `POST /mcp` | API key / OIDC | JSON-RPC endpoint (`tools/list`, `tools/call`, `resources/list`, `resources/read`) |
+| MCP (unified) | `POST /mcp/` | API key / OIDC | Aggregated JSON-RPC endpoint (`tools/list`, `tools/call`, `resources/list`, `resources/read`) across all backends |
+| MCP (per-server) | `POST /mcp/servers/{name}/` | API key / OIDC | Individual MCP-compliant endpoint scoped to a single backend (bare tool names) |
+| MCP (per-server SSE) | `GET\|POST /mcp/servers/{name}/sse` | API key / OIDC | SSE transport variant for the per-server endpoint |
+| Discovery | `GET /.well-known/mcp.json` | None | Auto-discovery document listing all active per-server endpoints |
+| Discovery | `GET /mcp/servers` | API key / OIDC | JSON listing of active servers with `tool_count` and `resource_count` |
 | Device Code | `POST /device/code` | None | Request device authorization code |
 | Device Token | `POST /device/token` | None | Poll for / refresh access tokens |
 | Device Verify | `GET /device/verify` | None | Browser verification page |
@@ -736,7 +906,8 @@ NATS subject pattern: `mcpgw.{gateway_id}.{category}.{scope}` -- categories: `ev
 | Health | `GET /readyz` | None | Readiness probe (checks dependencies) |
 | Metadata | `GET /meta` | None | Gateway metadata (`admin_mode`, `version`, `gateway_id`) |
 | Registration | `PUT /v1/registrations/{id}` | mTLS | Register an MCP server |
-| Registration | `POST /v1/registrations/{id}/heartbeat` | mTLS | Server keep-alive |
+| Registration | `POST /v1/registrations/{id}/heartbeat` | mTLS | Server keep-alive (accepts `capabilities_hash` for refresh detection) |
+| Registration | `POST /v1/registrations/{id}/capabilities` | mTLS | Push capability refresh (10 req/min per server) |
 | Registration | `DELETE /v1/registrations/{id}` | mTLS | Deregister server |
 | Catalog | `GET /v1/catalog` | mTLS (platform) | Platform tool catalog |
 | Admin | `GET /admin/*` | OIDC session | Web dashboard |
@@ -776,6 +947,9 @@ Migration files follow the convention `NNNN_description.{up,down}.sql` in the `m
 | 0012 | User access management |
 | 0013 | Search configuration (synonyms, reindex log) |
 | 0014 | Audit log username and sort support |
+| 0015 | Server capabilities hash column (refresh detection) |
+| 0016 | API key server scope column (per-server access control) |
+| 0017 | Server routing strategy column (round-robin / session affinity) |
 
 ## Development
 
@@ -814,6 +988,34 @@ Coverage thresholds are enforced per-package via `coverage-thresholds.json` (min
 The repository includes a `.devcontainer` configuration with Go, Helm, `kubectl`, and Argo CD CLI tooling for a reproducible development environment.
 The devcontainer image tracks the floating `1.26` minor line because the published base image is not patch-pinned; CI and release builds remain pinned to Go `1.26.1`, so local development can differ by patch level.
 
+### Local Standalone Stack
+
+The default local workflow runs the gateway inside the devcontainer in standalone mode with every dependency local:
+
+- PostgreSQL
+- Keycloak for admin OIDC and device-code authentication
+- shared development TLS certificates
+- a mock MCP backend that auto-registers with the gateway
+
+Open the repo in the devcontainer, then start the gateway inside the container:
+
+```bash
+./scripts/dev-run.sh
+```
+
+Primary local URLs:
+
+- Gateway: `https://gateway.localhost:8443`
+- Keycloak: `https://keycloak.localhost:8444`
+
+Run the local smoke check after the gateway is up:
+
+```bash
+./scripts/dev-smoke.sh
+```
+
+For the full local workflow, seeded credentials, and trust notes, see [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
+
 ### Helm Validation
 
 Validate chart rendering before deployment PRs:
@@ -833,23 +1035,27 @@ cruvero-mcp-gateway/
 │   └── mcpgw/              Single binary with subcommands
 ├── internal/
 │   ├── admin/              Admin dashboard (OIDC auth, HTMX templates, integrated API)
-│   ├── auth/               API key + OIDC + Device Code flow authentication
+│   ├── auth/               API key + OIDC + Device Code + ServerScope middleware
 │   ├── config/             Environment-based configuration
-│   ├── events/             NATS client, event types, pub/sub
+│   ├── events/             NATS client, event types (incl. server.capabilities_changed), pub/sub
 │   ├── identity/           mTLS, SPIFFE ID, cert validation
 │   ├── llm/                LLM failover client (OpenAI-compatible providers)
+│   ├── mockbackend/        Local mock MCP backend used by the dev stack
 │   ├── orchestrator/       LLM-driven tool planning and execution
 │   ├── policy/             Tool safety, allowlist/denylist, risk classification
-│   ├── proxy/              MCP protocol handler, tool/resource routing, discovery
+│   ├── proxy/              MCP proxy: routing, caching, virtual server endpoints,
+│   │                        discovery doc, server listing, namespace resolver,
+│   │                        session affinity strategy
 │   ├── ratelimit/          Token bucket with memory/dragonfly/NATS backends
-│   ├── registration/       Server registration, handshake, heartbeat
+│   ├── registration/       Server registration, heartbeat, capability refresh (hash + push)
 │   ├── resilience/         Circuit breaker, retry, connection pool
-│   ├── search/             Search engines (BM25, vector, hybrid, ONNX embedder)
+│   ├── search/             Partitioned search engines (BM25, vector, hybrid),
+│   │                        LRU embedding cache, ONNX embedder
 │   ├── server/             HTTP server, router, middleware, catalog API
 │   ├── store/              Postgres store interfaces + implementations
 │   ├── testutil/           Integration, security, and load test suites
 │   └── types/              Shared domain types
-├── migrations/             SQL migrations (0001-0014)
+├── migrations/             SQL migrations (0001-0017)
 ├── charts/
 │   └── mcpgateway/         Helm chart with values-example.yaml overlay
 ├── deploy/
