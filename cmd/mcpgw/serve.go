@@ -138,12 +138,30 @@ func serveWithContext(ctx context.Context) error {
 		Logger:        logger,
 	}))
 
+	if cfg.ServerScopeEnforcement {
+		gw.SetServerScopeMiddleware(auth.ServerScopeMiddleware(logger))
+	}
+
 	regHandler := registration.NewHandler(
 		newIndexedRegistrationService(registrationService, stores.serverStore, index, logger),
 		logger,
 	)
 	gw.MountRegistrationRoutes(regHandler.Routes())
 	gw.MountProxyRoutes(proxyServer.proxy.Handler())
+
+	if cfg.PerServerEndpoints {
+		perServerTLS, tlsErr := buildProxyTLSConfig(cfg)
+		if tlsErr != nil {
+			return fmt.Errorf("serve command: per-server tls config: %w", tlsErr)
+		}
+		vsHandler := proxy.NewVirtualServerHandler(index, perServerTLS, 0, logger)
+		gw.MountPerServerRoutes(vsHandler)
+		logger.Info("per-server endpoints enabled")
+	}
+
+	discoveryDoc := proxy.NewDiscoveryDocHandler(index, cfg, logger)
+	serverList := proxy.NewServerListHandler(index, cfg, logger)
+	gw.MountDiscoveryRoutes(discoveryDoc, serverList)
 
 	apikeyAPIHandler := server.NewAPIKeyAPIHandler(stores.apiKeyStore, logger)
 	gw.MountAPIKeyAPI(apikeyAPIHandler.Routes())

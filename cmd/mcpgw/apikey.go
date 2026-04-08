@@ -44,6 +44,7 @@ func apikeyCreateCommand(args []string) error {
 	expiresRaw := fs.String("expires", "", "expiration duration (e.g. 24h, 30d)")
 	clientID := fs.String("client-id", "", "client identity bound to the key")
 	profile := fs.String("profile", "default", "policy profile for the API key")
+	serverScopeRaw := fs.String("server-scope", "", "comma-separated server names this key can access (empty = all)")
 	gatewayURL := fs.String("gateway-url", "", "gateway base URL for remote API key management")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse apikey create flags: %w", err)
@@ -86,11 +87,14 @@ func apikeyCreateCommand(args []string) error {
 		effectiveProfile = "default"
 	}
 
+	serverScope := parseScopes(*serverScopeRaw)
+
 	record := &types.APIKey{
 		Name:          trimmedName,
 		ClientID:      effectiveClientID,
 		Scopes:        scopes,
 		PolicyProfile: effectiveProfile,
+		ServerScope:   serverScope,
 		ExpiresAt:     expiresAt,
 		KeyLookupHash: lookupHash,
 		KeyBcryptHash: bcryptHash,
@@ -121,6 +125,9 @@ func apikeyCreateCommand(args []string) error {
 	_, _ = fmt.Fprintf(stdout, "ID: %s\n", record.ID)
 	_, _ = fmt.Fprintf(stdout, "Name: %s\n", record.Name)
 	_, _ = fmt.Fprintf(stdout, "Client ID: %s\n", record.ClientID)
+	if len(record.ServerScope) > 0 {
+		_, _ = fmt.Fprintf(stdout, "Server Scope: %s\n", strings.Join(record.ServerScope, ","))
+	}
 	_, _ = fmt.Fprintf(stdout, "Expires At: %s\n", expires)
 	_, _ = fmt.Fprintf(stdout, "API Key: %s\n", plaintext)
 	return nil
@@ -180,19 +187,24 @@ func apikeyListJSON(keys []types.APIKey) error {
 
 func apikeyListTable(keys []types.APIKey) error {
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "ID\tNAME\tCLIENT_ID\tSCOPES\tEXPIRES_AT\tCREATED_AT")
+	_, _ = fmt.Fprintln(tw, "ID\tNAME\tCLIENT_ID\tSCOPES\tSERVER_SCOPE\tEXPIRES_AT\tCREATED_AT")
 	for _, key := range keys {
 		expiresAt := "never"
 		if key.ExpiresAt != nil {
 			expiresAt = key.ExpiresAt.UTC().Format(time.RFC3339)
 		}
+		scopeStr := "*"
+		if len(key.ServerScope) > 0 {
+			scopeStr = strings.Join(key.ServerScope, ",")
+		}
 		_, _ = fmt.Fprintf(
 			tw,
-			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			key.ID,
 			key.Name,
 			key.ClientID,
 			strings.Join(key.Scopes, ","),
+			scopeStr,
 			expiresAt,
 			key.CreatedAt.UTC().Format(time.RFC3339),
 		)
@@ -304,12 +316,14 @@ func safeAPIKeyView(key types.APIKey) map[string]any {
 		expiresAt = key.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 
-	return map[string]any{
-		"id":         key.ID,
-		"name":       key.Name,
-		"client_id":  key.ClientID,
-		"scopes":     append([]string(nil), key.Scopes...),
-		"expires_at": expiresAt,
-		"created_at": key.CreatedAt.UTC().Format(time.RFC3339),
+	view := map[string]any{
+		"id":           key.ID,
+		"name":         key.Name,
+		"client_id":    key.ClientID,
+		"scopes":       append([]string(nil), key.Scopes...),
+		"server_scope": append([]string(nil), key.ServerScope...),
+		"expires_at":   expiresAt,
+		"created_at":   key.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	return view
 }
