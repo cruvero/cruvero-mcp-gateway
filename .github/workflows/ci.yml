@@ -85,7 +85,7 @@ jobs:
       - name: Add Go Bin to PATH
         run: echo "${{ steps.go-bin.outputs.dir }}" >> "$GITHUB_PATH"
       - name: Restore Go Tool Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.go-bin.outputs.dir }}
           key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod', '.github/workflows/ci.yml') }}
@@ -200,7 +200,7 @@ jobs:
       - name: Add Go Bin to PATH
         run: echo "${{ steps.go-bin.outputs.dir }}" >> "$GITHUB_PATH"
       - name: Restore Go Tool Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ steps.go-bin.outputs.dir }}
           key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod', '.github/workflows/ci.yml') }}
