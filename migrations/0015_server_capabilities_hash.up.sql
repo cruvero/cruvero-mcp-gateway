@@ -1,0 +1,1 @@
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS capabilities_hash TEXT NOT NULL DEFAULT '';

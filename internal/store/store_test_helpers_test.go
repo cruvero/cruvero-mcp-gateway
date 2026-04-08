@@ -30,8 +30,9 @@ var (
 		"rate_burst",
 		"created_at",
 		"updated_at",
+		"routing_strategy",
 	}
-	apiKeyColumnNames = []string{"id", "key_lookup_hash", "key_bcrypt_hash", "name", "scopes", "client_id", "policy_profile", "expires_at", "created_at"}
+	apiKeyColumnNames = []string{"id", "key_lookup_hash", "key_bcrypt_hash", "name", "scopes", "client_id", "policy_profile", "expires_at", "created_at", "server_scope"}
 	auditColumnNames  = []string{"id", "event_type", "client_id", "username", "server_name", "details", "created_at"}
 )
 

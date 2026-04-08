@@ -149,6 +149,18 @@ func (p *Publisher) PublishPolicyViolated(
 	return p.publish(ctx, EventPolicyViolated, payload)
 }
 
+// PublishServerCapabilitiesChanged publishes a server.capabilities_changed event.
+func (p *Publisher) PublishServerCapabilitiesChanged(ctx context.Context, serverID, capabilitiesHash string, toolNames []string) error {
+	names := make([]string, len(toolNames))
+	copy(names, toolNames)
+	payload := ServerCapabilitiesChangedPayload{
+		ServerID:         strings.TrimSpace(serverID),
+		CapabilitiesHash: strings.TrimSpace(capabilitiesHash),
+		ToolNames:        names,
+	}
+	return p.publish(ctx, EventServerCapabilitiesChanged, payload)
+}
+
 func newEventID() string {
 	bytes := make([]byte, 8)
 	if _, err := rand.Read(bytes); err != nil {

@@ -37,6 +37,17 @@ const (
 	defaultAuditCleanupInterval = 1 * time.Hour
 	defaultShutdownTimeout      = 30 * time.Second
 	defaultAdminMode            = "standalone"
+
+	defaultPerServerEndpoints      = true
+	defaultWellKnownEnabled        = true
+	defaultWellKnownCacheTTL       = 5 * time.Second
+	defaultCapabilityRefreshEnabled = true
+	defaultCapabilityPushEnabled   = true
+	defaultEmbeddingCacheMaxSize   = 10000
+	defaultServerScopeEnforcement  = true
+	defaultRoutingStrategy         = "round_robin"
+	defaultToolNamespaceMode       = "reject"
+	defaultNamespaceSeparator      = "."
 )
 
 // Config contains all gateway runtime settings loaded from MCPGW_* env vars.
@@ -99,6 +110,19 @@ type Config struct {
 	OnnxModelPath          string            `json:"onnx_model_path"`
 	TokenizerPath          string            `json:"tokenizer_path"`
 	Orchestrate            OrchestrateConfig `json:"orchestrate"`
+
+	// Phase 19: Per-Server Endpoints, Capability Refresh, Scoped Keys, Routing, Namespacing
+	PerServerEndpoints      bool          `json:"per_server_endpoints"`
+	WellKnownEnabled        bool          `json:"well_known_enabled"`
+	WellKnownCacheTTL       time.Duration `json:"well_known_cache_ttl"`
+	CapabilityRefreshEnabled bool         `json:"capability_refresh_enabled"`
+	CapabilityPushEnabled   bool          `json:"capability_push_enabled"`
+	EmbeddingCacheMaxSize   int           `json:"embedding_cache_max_size"`
+	ServerScopeEnforcement  bool          `json:"server_scope_enforcement"`
+	DefaultRoutingStrategy  string        `json:"default_routing_strategy"`
+	ToolNamespaceMode       string        `json:"tool_namespace_mode"`
+	NamespaceSeparator      string        `json:"namespace_separator"`
+	GatewayBaseURL          string        `json:"gateway_base_url"`
 }
 
 // OrchestrateConfig groups all settings for the cruvero.orchestrate meta-tool.
@@ -201,6 +225,18 @@ func Load() (*Config, error) {
 		OnnxRuntimePath:        getEnv("MCPGW_ONNX_RUNTIME_PATH", "/usr/lib/libonnxruntime.so"),
 		OnnxModelPath:          getEnv("MCPGW_ONNX_MODEL_PATH", "/models/all-MiniLM-L6-v2.onnx"),
 		TokenizerPath:          getEnv("MCPGW_TOKENIZER_PATH", "/models/tokenizer.json"),
+
+		PerServerEndpoints:      bools.perServerEndpoints,
+		WellKnownEnabled:        bools.wellKnownEnabled,
+		WellKnownCacheTTL:       dur.wellKnownCacheTTL,
+		CapabilityRefreshEnabled: bools.capabilityRefreshEnabled,
+		CapabilityPushEnabled:   bools.capabilityPushEnabled,
+		EmbeddingCacheMaxSize:   ints.embeddingCacheMaxSize,
+		ServerScopeEnforcement:  bools.serverScopeEnforcement,
+		DefaultRoutingStrategy:  getEnv("MCPGW_DEFAULT_ROUTING_STRATEGY", defaultRoutingStrategy),
+		ToolNamespaceMode:       getEnv("MCPGW_TOOL_NAMESPACE_MODE", defaultToolNamespaceMode),
+		NamespaceSeparator:      getEnv("MCPGW_NAMESPACE_SEPARATOR", defaultNamespaceSeparator),
+		GatewayBaseURL:          strings.TrimSpace(os.Getenv("MCPGW_GATEWAY_BASE_URL")),
 	}
 
 	orch, err := loadOrchestrateConfig(bools.orchestrateEnabled)
@@ -224,6 +260,7 @@ type parsedDurations struct {
 	auditCleanupInterval time.Duration
 	shutdownTimeout      time.Duration
 	adminSessionTTL      time.Duration
+	wellKnownCacheTTL    time.Duration
 }
 
 // loadDurations parses all MCPGW_* duration environment variables.
@@ -252,6 +289,10 @@ func loadDurations() (parsedDurations, error) {
 	if err != nil {
 		return parsedDurations{}, err
 	}
+	wellKnownCacheTTL, err := parseDuration("MCPGW_WELL_KNOWN_CACHE_TTL", defaultWellKnownCacheTTL)
+	if err != nil {
+		return parsedDurations{}, err
+	}
 	return parsedDurations{
 		heartbeatTTL:         heartbeatTTL,
 		circuitTimeout:       circuitTimeout,
@@ -259,6 +300,7 @@ func loadDurations() (parsedDurations, error) {
 		auditCleanupInterval: auditCleanupInterval,
 		shutdownTimeout:      shutdownTimeout,
 		adminSessionTTL:      adminSessionTTL,
+		wellKnownCacheTTL:    wellKnownCacheTTL,
 	}, nil
 }
 
@@ -270,7 +312,8 @@ type parsedIntegers struct {
 	retryMax           int
 	dbMaxOpenConns     int
 	dbMaxIdleConns     int
-	auditRetentionDays int
+	auditRetentionDays     int
+	embeddingCacheMaxSize  int
 }
 
 // loadIntegers parses all MCPGW_* integer environment variables.
@@ -288,6 +331,7 @@ func loadIntegers() (parsedIntegers, error) {
 		{"MCPGW_DB_MAX_OPEN_CONNS", defaultDBMaxOpenConns, &p.dbMaxOpenConns},
 		{"MCPGW_DB_MAX_IDLE_CONNS", defaultDBMaxIdleConns, &p.dbMaxIdleConns},
 		{"MCPGW_AUDIT_RETENTION_DAYS", defaultAuditRetentionDays, &p.auditRetentionDays},
+		{"MCPGW_EMBEDDING_CACHE_MAX_SIZE", defaultEmbeddingCacheMaxSize, &p.embeddingCacheMaxSize},
 	}
 	for _, f := range fields {
 		v, err := parseInt(f.envKey, f.defaultVal)
@@ -307,8 +351,13 @@ type parsedBooleans struct {
 	deviceFlowEnabled    bool
 	adminEnabled         bool
 	adminDevMode         bool
-	progressiveDiscovery bool
-	orchestrateEnabled   bool
+	progressiveDiscovery     bool
+	orchestrateEnabled       bool
+	perServerEndpoints       bool
+	wellKnownEnabled         bool
+	capabilityRefreshEnabled bool
+	capabilityPushEnabled    bool
+	serverScopeEnforcement   bool
 }
 
 // loadBooleans parses all MCPGW_* boolean environment variables.
@@ -327,6 +376,11 @@ func loadBooleans() (parsedBooleans, error) {
 		{"MCPGW_ADMIN_DEV_MODE", false, &p.adminDevMode},
 		{"MCPGW_PROGRESSIVE_DISCOVERY", defaultProgressiveDiscovery, &p.progressiveDiscovery},
 		{"MCPGW_ORCHESTRATE_ENABLED", defaultOrchestrateEnabled, &p.orchestrateEnabled},
+		{"MCPGW_PER_SERVER_ENDPOINTS", defaultPerServerEndpoints, &p.perServerEndpoints},
+		{"MCPGW_WELL_KNOWN_ENABLED", defaultWellKnownEnabled, &p.wellKnownEnabled},
+		{"MCPGW_CAPABILITY_REFRESH_ENABLED", defaultCapabilityRefreshEnabled, &p.capabilityRefreshEnabled},
+		{"MCPGW_CAPABILITY_PUSH_ENABLED", defaultCapabilityPushEnabled, &p.capabilityPushEnabled},
+		{"MCPGW_SERVER_SCOPE_ENFORCEMENT", defaultServerScopeEnforcement, &p.serverScopeEnforcement},
 	}
 	for _, f := range fields {
 		v, err := parseBool(f.envKey, f.defaultVal)

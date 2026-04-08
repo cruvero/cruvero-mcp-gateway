@@ -41,6 +41,7 @@ func TestPostgresServerStoreCreate(t *testing.T) {
 			record.SyncState,
 			record.LastPlatformAckVersion,
 			record.LastPlatformAckAt,
+			"round_robin",
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -96,6 +97,7 @@ func TestPostgresServerStoreGetAndNotFound(t *testing.T) {
 			nil,
 			now,
 			now,
+				"round_robin",
 		))
 
 	record, err := s.Get(context.Background(), "server-1")
@@ -148,6 +150,7 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			nil,
 			now,
 			now,
+				"round_robin",
 		))
 
 	if _, err := s.GetByName(context.Background(), "alpha"); err != nil {
@@ -178,6 +181,7 @@ func TestPostgresServerStoreGetByNameAndSPIFFE(t *testing.T) {
 			nil,
 			now,
 			now,
+				"round_robin",
 		))
 
 	if _, err := s.GetBySPIFFEID(context.Background(), "spiffe://trust/ns/default/sa/alpha"); err != nil {
@@ -195,8 +199,8 @@ func TestPostgresServerStoreList(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
 		WithArgs(status.String(), "alpha%", int64(10), int64(2)).
 		WillReturnRows(serverRows().
-			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, nil, nil, now, now).
-			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, nil, nil, now, now))
+			AddRow("server-1", "alpha", "spiffe://trust/ns/default/sa/alpha", "1.0.0", "alpha.svc", 8080, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, nil, nil, now, now, "round_robin").
+			AddRow("server-2", "alpha-2", "spiffe://trust/ns/default/sa/alpha-2", "1.1.0", "alpha2.svc", 8081, "https", []byte(`{"tools":[],"resources":[],"prompts":[]}`), "active", "default", now, int64(1), "", "unacked", "", nil, nil, nil, now, now, "round_robin"))
 
 	records, err := s.List(context.Background(), types.ServerFilter{
 		Status:      &status,
@@ -239,6 +243,7 @@ func TestPostgresServerStoreUpdateMethods(t *testing.T) {
 			record.SyncState,
 			record.LastPlatformAckVersion,
 			record.LastPlatformAckAt,
+			"round_robin",
 			record.ID,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -328,6 +333,7 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			nil,
 			now,
 			now,
+				"round_robin",
 		))
 
 	stale, err := s.ListStale(context.Background(), threshold)
@@ -361,6 +367,7 @@ func TestPostgresServerStoreListStaleAndExpired(t *testing.T) {
 			nil,
 			now,
 			now,
+				"round_robin",
 		))
 
 	expired, err := s.ListExpired(context.Background(), threshold)
