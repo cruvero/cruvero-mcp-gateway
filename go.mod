@@ -11,8 +11,8 @@ require (
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/lib/pq v1.11.2
 	github.com/mark3labs/mcp-go v0.45.0
-	github.com/nats-io/nats-server/v2 v2.12.5
-	github.com/nats-io/nats.go v1.49.0
+	github.com/nats-io/nats-server/v2 v2.12.7
+	github.com/nats-io/nats.go v1.50.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/sashabaranov/go-openai v1.41.2
@@ -43,13 +43,13 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/nats-io/jwt/v2 v2.8.0 // indirect
+	github.com/nats-io/jwt/v2 v2.8.1 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
